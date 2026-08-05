@@ -310,11 +310,11 @@ button { cursor: pointer; font-family: inherit; }
 .btn-facebook { display: flex; align-items: center; justify-content: center; background: #1877f2; color: #fff; }
 .btn-facebook:hover { background: #1461c9; }
 
-/* ---- Ad carousel ---- */
-.ad-carousel { position: relative; margin-bottom: 20px; border-radius: 12px; overflow: hidden; }
-.ad-slide { display: block; position: relative; }
-.ad-slide img { width: 100%; max-height: 220px; object-fit: cover; display: block; background: #eee; }
-.ad-badge { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; padding: 4px 10px; border-radius: 12px; }
-.ad-dots { position: absolute; bottom: 10px; right: 12px; display: flex; gap: 6px; }
-.ad-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.6); }
-.ad-dot.active { background: #fff; }
+/* ---- Featured/sponsored listings carousel ---- */
+.featured-carousel { position: relative; margin-bottom: 20px; border-radius: 12px; overflow: hidden; min-height: 160px; background: #e3e0d8; }
+.featured-slide { display: block; position: relative; }
+.featured-slide img { width: 100%; max-height: 220px; min-height: 160px; object-fit: cover; display: block; background: #e3e0d8; }
+.featured-badge { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; padding: 4px 10px; border-radius: 12px; }
+.featured-dots { position: absolute; bottom: 10px; right: 12px; display: flex; gap: 6px; }
+.featured-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.6); }
+.featured-dot.active { background: #fff; }

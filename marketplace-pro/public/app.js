@@ -187,7 +187,7 @@ function renderHome() {
   // If the ad carousel is already mounted and running, don't tear it down and
   // rebuild it again (this used to happen because router() was invoked twice
   // on page load, which caused the ads to flash and then vanish).
-  if (viewEl.dataset.homeMounted === "1" && document.getElementById("ad-carousel")) {
+  if (viewEl.dataset.homeMounted === "1" && document.getElementById("featured-carousel")) {
     return;
   }
 
@@ -200,7 +200,7 @@ function renderHome() {
   ).join("");
 
   viewEl.innerHTML = `
-    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
+    <div id="featured-carousel" class="featured-carousel" style="display:none;"></div>
     <div class="hero">
       <h1>${escapeHtml(I18N.t("site.name"))}</h1>
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
@@ -209,54 +209,80 @@ function renderHome() {
     <div class="category-grid">${cards}</div>
   `;
   viewEl.dataset.homeMounted = "1";
-  loadAdCarousel();
+  loadFeaturedCarousel();
 }
 
-let adRotateTimer = null;
-let adLoadToken = 0;
+let featuredRotateTimer = null;
+let featuredWatchdog = null;
+let featuredLoadToken = 0;
 
-async function loadAdCarousel() {
-  const el = document.getElementById("ad-carousel");
+async function loadFeaturedCarousel() {
+  const el = document.getElementById("featured-carousel");
   if (!el) return;
-  if (adRotateTimer) {
-    clearInterval(adRotateTimer);
-    adRotateTimer = null;
+  if (featuredRotateTimer) {
+    clearInterval(featuredRotateTimer);
+    featuredRotateTimer = null;
   }
-  const myToken = ++adLoadToken;
+  if (featuredWatchdog) {
+    clearInterval(featuredWatchdog);
+    featuredWatchdog = null;
+  }
+  const myToken = ++featuredLoadToken;
   try {
-    const ads = await api("/api/ads");
-    // If another loadAdCarousel() started after this one, or the home view
-    // was unmounted while this request was in flight, bail out so we never
-    // write to a stale element or start a duplicate rotation timer.
-    if (myToken !== adLoadToken) return;
-    const liveEl = document.getElementById("ad-carousel");
+    const items = await api("/api/featured");
+    // If another loadFeaturedCarousel() started after this one, or the home
+    // view was unmounted while this request was in flight, bail out so we
+    // never write to a stale element or start a duplicate rotation timer.
+    if (myToken !== featuredLoadToken) return;
+    const liveEl = document.getElementById("featured-carousel");
     if (!liveEl) return;
-    if (!ads || !ads.length) return;
+    if (!items || !items.length) return;
     let idx = 0;
     const draw = () => {
-      const ad = ads[idx];
-      liveEl.innerHTML = `
-        <a class="ad-slide" href="${escapeHtml(ad.linkUrl || "#")}" target="_blank" rel="noopener">
-          <img src="${ad.imageUrl}" alt="${escapeHtml(ad.advertiserName || "")}" />
-          <span class="ad-badge">${I18N.t("ads.sponsored")}${ad.advertiserName ? " &middot; " + escapeHtml(ad.advertiserName) : ""}</span>
-        </a>
-        ${
-          ads.length > 1
-            ? `<div class="ad-dots">${ads.map((_, i) => `<span class="ad-dot ${i === idx ? "active" : ""}"></span>`).join("")}</div>`
-            : ""
-        }
-      `;
+      try {
+        const item = items[idx];
+        liveEl.innerHTML = `
+          <a class="featured-slide" href="${escapeHtml(item.linkUrl || "#")}" target="_blank" rel="noopener">
+            <img src="${item.imageUrl}" alt="${escapeHtml(item.advertiserName || "")}" />
+            <span class="featured-badge">${I18N.t("ads.sponsored")}${item.advertiserName ? " &middot; " + escapeHtml(item.advertiserName) : ""}</span>
+          </a>
+          ${
+            items.length > 1
+              ? `<div class="featured-dots">${items.map((_, i) => `<span class="featured-dot ${i === idx ? "active" : ""}"></span>`).join("")}</div>`
+              : ""
+          }
+        `;
+        liveEl.style.display = "block";
+      } catch (e) {
+        // never let a draw error leave the carousel in a broken state
+      }
     };
     draw();
-    liveEl.style.display = "block";
-    if (ads.length > 1) {
-      adRotateTimer = setInterval(() => {
-        idx = (idx + 1) % ads.length;
+    if (items.length > 1) {
+      featuredRotateTimer = setInterval(() => {
+        idx = (idx + 1) % items.length;
         draw();
       }, 5000);
     }
+    // Self-healing watchdog: a browser extension (ad blocker) or unrelated
+    // script can hide or clear this element after it mounts. Periodically
+    // verify it's still visible with content and restore it if not, so
+    // featured/sponsored listings never stay hidden.
+    featuredWatchdog = setInterval(() => {
+      const el2 = document.getElementById("featured-carousel");
+      if (!el2) return;
+      const computedHidden =
+        el2.style.display === "none" ||
+        getComputedStyle(el2).display === "none" ||
+        getComputedStyle(el2).visibility === "hidden" ||
+        el2.offsetHeight === 0;
+      if (computedHidden || !el2.querySelector(".featured-slide")) {
+        el2.removeAttribute("style");
+        draw();
+      }
+    }, 1200);
   } catch (e) {
-    // ads are best-effort; ignore failures silently
+    // best-effort; ignore failures silently
   }
 }
 
@@ -897,7 +923,7 @@ async function renderAdsManager() {
   el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
   let ads = [];
   try {
-    ads = await api("/api/ads?all=1", { auth: true });
+    ads = await api("/api/featured?all=1", { auth: true });
   } catch (e) {
     el.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
     return;
@@ -943,7 +969,7 @@ async function renderAdsManager() {
   document.getElementById("ad-add").addEventListener("click", async () => {
     const msgEl = document.getElementById("ad-msg");
     try {
-      await api("/api/ads", {
+      await api("/api/featured", {
         method: "POST",
         auth: true,
         body: {
@@ -961,14 +987,14 @@ async function renderAdsManager() {
 
   el.querySelectorAll("[data-remove]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await api("/api/ads/" + btn.dataset.remove, { method: "DELETE", auth: true });
+      await api("/api/featured/" + btn.dataset.remove, { method: "DELETE", auth: true });
       await renderAdsManager();
     });
   });
   el.querySelectorAll("[data-toggle]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const active = btn.dataset.active === "true";
-      await api("/api/ads/" + btn.dataset.toggle, { method: "PUT", auth: true, body: { active: !active } });
+      await api("/api/featured/" + btn.dataset.toggle, { method: "PUT", auth: true, body: { active: !active } });
       await renderAdsManager();
     });
   });
