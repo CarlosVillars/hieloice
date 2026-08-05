@@ -167,6 +167,7 @@ async function router() {
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
     if (parts[0] === "login") return renderLogin();
     if (parts[0] === "register") return renderRegister();
+    if (parts[0] === "oauth-callback") return renderOAuthCallback(query);
     if (parts[0] === "post") return renderPostAd();
     if (parts[0] === "edit" && parts[1]) return renderPostAd(parts[1]);
     if (parts[0] === "profile" && parts[1]) return renderProfile(parts[1]);
@@ -192,6 +193,7 @@ function renderHome() {
   ).join("");
 
   viewEl.innerHTML = `
+    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
     <div class="hero">
       <h1>${escapeHtml(I18N.t("site.name"))}</h1>
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
@@ -199,6 +201,47 @@ function renderHome() {
     <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
     <div class="category-grid">${cards}</div>
   `;
+  loadAdCarousel();
+}
+
+let adRotateTimer = null;
+
+async function loadAdCarousel() {
+  const el = document.getElementById("ad-carousel");
+  if (!el) return;
+  if (adRotateTimer) {
+    clearInterval(adRotateTimer);
+    adRotateTimer = null;
+  }
+  try {
+    const ads = await api("/api/ads");
+    if (!ads || !ads.length) return;
+    let idx = 0;
+    const draw = () => {
+      const ad = ads[idx];
+      el.innerHTML = `
+        <a class="ad-slide" href="${escapeHtml(ad.linkUrl || "#")}" target="_blank" rel="noopener">
+          <img src="${ad.imageUrl}" alt="${escapeHtml(ad.advertiserName || "")}" />
+          <span class="ad-badge">${I18N.t("ads.sponsored")}${ad.advertiserName ? " &middot; " + escapeHtml(ad.advertiserName) : ""}</span>
+        </a>
+        ${
+          ads.length > 1
+            ? `<div class="ad-dots">${ads.map((_, i) => `<span class="ad-dot ${i === idx ? "active" : ""}"></span>`).join("")}</div>`
+            : ""
+        }
+      `;
+    };
+    draw();
+    el.style.display = "block";
+    if (ads.length > 1) {
+      adRotateTimer = setInterval(() => {
+        idx = (idx + 1) % ads.length;
+        draw();
+      }, 5000);
+    }
+  } catch (e) {
+    // ads are best-effort; ignore failures silently
+  }
 }
 
 // ---------------- Category listing ----------------
@@ -423,6 +466,9 @@ function renderLogin() {
       </div>
       <button class="btn btn-primary" id="login-submit" style="width:100%;">${I18N.t("auth.submitLogin")}</button>
       <p class="form-msg" id="login-msg"></p>
+      <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
+      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
+      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
       <p class="form-footer-link">${I18N.t("auth.needAccount")} <a href="#/register">${I18N.t("auth.goRegister")}</a></p>
     </div>
   `;
@@ -457,8 +503,15 @@ function renderRegister() {
         <label>${I18N.t("auth.password")}</label>
         <input type="password" id="reg-password" />
       </div>
+      <div class="form-group">
+        <label>${I18N.t("auth.phone")}</label>
+        <input type="tel" id="reg-phone" placeholder="+1 555 555 5555" />
+      </div>
       <button class="btn btn-primary" id="reg-submit" style="width:100%;">${I18N.t("auth.submitRegister")}</button>
       <p class="form-msg" id="reg-msg"></p>
+      <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
+      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
+      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
       <p class="form-footer-link">${I18N.t("auth.haveAccount")} <a href="#/login">${I18N.t("auth.goLogin")}</a></p>
     </div>
   `;
@@ -466,9 +519,10 @@ function renderRegister() {
     const name = document.getElementById("reg-name").value;
     const email = document.getElementById("reg-email").value;
     const password = document.getElementById("reg-password").value;
+    const phone = document.getElementById("reg-phone").value;
     const msgEl = document.getElementById("reg-msg");
     try {
-      const data = await api("/api/auth/register", { method: "POST", body: { name, email, password } });
+      const data = await api("/api/auth/register", { method: "POST", body: { name, email, password, phone } });
       setAuth(data.token, data.user);
       location.hash = "#/";
     } catch (e) {
@@ -476,6 +530,23 @@ function renderRegister() {
       msgEl.className = "form-msg error";
     }
   });
+}
+
+async function renderOAuthCallback(query) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const token = query.token;
+  if (!token) {
+    location.hash = "#/login";
+    return;
+  }
+  state.token = token;
+  try {
+    const data = await api("/api/auth/me", { auth: true });
+    setAuth(token, data.user);
+  } catch (e) {
+    setAuth(null, null);
+  }
+  location.hash = "#/";
 }
 
 // ---------------- Post / Edit Ad ----------------
@@ -667,6 +738,7 @@ async function renderProfile(userId) {
       <button class="tab-btn active" data-tab="listings">${I18N.t("profile.myListings")}</button>
       <button class="tab-btn" data-tab="reviews">${I18N.t("profile.reviews")}</button>
       ${isMe ? `<button class="tab-btn" data-tab="offers">${I18N.t("profile.myOffers")}</button>` : ""}
+      ${isMe && state.user && state.user.isOwner ? `<button class="tab-btn" data-tab="ads">${I18N.t("ads.manageAds")}</button>` : ""}
     </div>
 
     <div id="tab-listings">
@@ -723,22 +795,26 @@ async function renderProfile(userId) {
     </div>
 
     ${isMe ? `<div id="tab-offers" style="display:none;"></div>` : ""}
+    ${isMe && state.user && state.user.isOwner ? `<div id="tab-ads" style="display:none;"></div>` : ""}
   `;
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "reviews", "offers"].forEach((t) => {
+      ["listings", "reviews", "offers", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
       if (btn.dataset.tab === "offers" && isMe) await renderMyOffers();
+      if (btn.dataset.tab === "ads" && isMe && state.user && state.user.isOwner) await renderAdsManager();
     });
   });
 
   if (isMe) {
-    document.getElementById("btn-edit-profile").addEventListener("click", () => openEditProfileModal(profile));
+    document.getElementById("btn-edit-profile").addEventListener("click", () =>
+      openEditProfileModal({ ...profile, phone: state.user ? state.user.phone : "" })
+    );
   }
 
   if (!isMe && state.token) {
@@ -792,6 +868,89 @@ async function renderMyOffers() {
     : `<div class="empty-state">${I18N.t("profile.noOffers")}</div>`;
 }
 
+async function renderAdsManager() {
+  const el = document.getElementById("tab-ads");
+  if (!el) return;
+  el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let ads = [];
+  try {
+    ads = await api("/api/ads?all=1", { auth: true });
+  } catch (e) {
+    el.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="form-panel" style="margin-bottom:20px;max-width:none;">
+      <div class="form-group">
+        <label>${I18N.t("ads.advertiserName")}</label>
+        <input type="text" id="ad-name" />
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("ads.imageUrl")}</label>
+        <input type="text" id="ad-image" placeholder="https://..." />
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("ads.linkUrl")}</label>
+        <input type="text" id="ad-link" placeholder="https://..." />
+      </div>
+      <button class="btn btn-primary" id="ad-add">${I18N.t("ads.addAd")}</button>
+      <p class="form-msg" id="ad-msg"></p>
+    </div>
+    ${
+      ads.length
+        ? ads
+            .map(
+              (a) => `
+      <div class="review-card" style="display:flex;align-items:center;gap:12px;">
+        <img src="${a.imageUrl}" style="width:90px;height:56px;object-fit:cover;border-radius:6px;background:#eee;" />
+        <div style="flex:1;min-width:0;">
+          <div class="review-author">${escapeHtml(a.advertiserName || "-")}${a.active ? "" : " (paused)"}</div>
+          <div class="review-comment" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(a.linkUrl || "")}</div>
+        </div>
+        <button class="btn btn-outline" data-toggle="${a.id}" data-active="${a.active}">${a.active ? I18N.t("ads.pause") : I18N.t("ads.activate")}</button>
+        <button class="btn btn-danger" data-remove="${a.id}">${I18N.t("ads.remove")}</button>
+      </div>`
+            )
+            .join("")
+        : `<div class="empty-state">${I18N.t("ads.noAds")}</div>`
+    }
+  `;
+
+  document.getElementById("ad-add").addEventListener("click", async () => {
+    const msgEl = document.getElementById("ad-msg");
+    try {
+      await api("/api/ads", {
+        method: "POST",
+        auth: true,
+        body: {
+          advertiserName: document.getElementById("ad-name").value,
+          imageUrl: document.getElementById("ad-image").value,
+          linkUrl: document.getElementById("ad-link").value,
+        },
+      });
+      await renderAdsManager();
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  });
+
+  el.querySelectorAll("[data-remove]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api("/api/ads/" + btn.dataset.remove, { method: "DELETE", auth: true });
+      await renderAdsManager();
+    });
+  });
+  el.querySelectorAll("[data-toggle]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const active = btn.dataset.active === "true";
+      await api("/api/ads/" + btn.dataset.toggle, { method: "PUT", auth: true, body: { active: !active } });
+      await renderAdsManager();
+    });
+  });
+}
+
 function openEditProfileModal(profile) {
   let photoDataUrl = profile.photo;
   const overlay = document.createElement("div");
@@ -811,6 +970,10 @@ function openEditProfileModal(profile) {
       <div class="form-group">
         <label>${I18N.t("profile.location")}</label>
         <input type="text" id="edit-location" value="${escapeHtml(profile.location || "")}" />
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("auth.phone")}</label>
+        <input type="tel" id="edit-phone" value="${escapeHtml(profile.phone || "")}" />
       </div>
       <div class="form-group">
         <label>${I18N.t("profile.bio")}</label>
@@ -848,6 +1011,7 @@ function openEditProfileModal(profile) {
         body: {
           name: document.getElementById("edit-name").value,
           location: document.getElementById("edit-location").value,
+          phone: document.getElementById("edit-phone").value,
           bio: document.getElementById("edit-bio").value,
           photo: photoDataUrl,
         },
