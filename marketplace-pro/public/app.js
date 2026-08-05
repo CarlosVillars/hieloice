@@ -109,6 +109,7 @@ document.getElementById("nav-logout").addEventListener("click", async () => {
 // ---------------- Language toggle ----------------
 
 function applyStaticI18n() {
+  document.getElementById("brand-name").textContent = I18N.t("site.name");
   document.getElementById("global-search").placeholder = I18N.t("home.searchPlaceholder");
   document.getElementById("nav-messages").textContent = I18N.t("nav.messages");
   document.getElementById("nav-profile").textContent = I18N.t("nav.profile");
