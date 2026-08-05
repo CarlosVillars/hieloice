@@ -295,6 +295,13 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
+// Extensions that carry app logic/markup. These must never be served from a
+// cached copy - browsers were caching an old, buggy app.js indefinitely
+// because no Cache-Control header was ever sent, which made bug fixes
+// invisible to returning visitors. Everything else (images, etc.) is safe to
+// cache since asset filenames don't get overwritten with different content.
+const NO_CACHE_EXT = new Set([".html", ".js", ".css"]);
+
 function serveStatic(req, res, pathname) {
   let filePath = pathname === "/" ? "/index.html" : pathname;
   filePath = path.normalize(filePath).replace(/^(\.\.[\/\\])+/, "");
@@ -311,7 +318,11 @@ function serveStatic(req, res, pathname) {
       return res.end("Not found");
     }
     const ext = path.extname(fullPath).toLowerCase();
-    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream" });
+    const headers = { "Content-Type": MIME[ext] || "application/octet-stream" };
+    headers["Cache-Control"] = NO_CACHE_EXT.has(ext)
+      ? "no-cache, no-store, must-revalidate"
+      : "public, max-age=3600";
+    res.writeHead(200, headers);
     res.end(data);
   });
 }
