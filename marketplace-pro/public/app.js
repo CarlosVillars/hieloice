@@ -119,6 +119,9 @@ function applyStaticI18n() {
   document.getElementById("nav-logout").textContent = I18N.t("nav.logout");
   document.getElementById("lang-en").classList.toggle("active", I18N.lang === "en");
   document.getElementById("lang-es").classList.toggle("active", I18N.lang === "es");
+  document.getElementById("footer-terms").textContent = I18N.t("auth.termsLink");
+  document.getElementById("footer-privacy").textContent = I18N.t("auth.privacyLink");
+  document.getElementById("footer-rights").textContent = I18N.t("footer.rights");
 }
 
 document.getElementById("lang-en").addEventListener("click", () => {
@@ -167,6 +170,8 @@ async function router() {
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
     if (parts[0] === "login") return renderLogin();
     if (parts[0] === "register") return renderRegister();
+    if (parts[0] === "terms") return renderLegal("terms");
+    if (parts[0] === "privacy") return renderLegal("privacy");
     if (parts[0] === "oauth-callback") return renderOAuthCallback(query);
     if (parts[0] === "post") return renderPostAd();
     if (parts[0] === "edit" && parts[1]) return renderPostAd(parts[1]);
@@ -180,6 +185,17 @@ async function router() {
   }
 }
 window.addEventListener("hashchange", router);
+
+// ---------------- Legal (Terms / Privacy) ----------------
+
+function renderLegal(which) {
+  viewEl.dataset.homeMounted = "";
+  const doc = (I18N.lang === "es" ? LEGAL_ES : LEGAL_EN)[which];
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/">&larr; ${I18N.t("category.back")}</a>
+    <div class="legal-doc">${doc}</div>
+  `;
+}
 
 // ---------------- Home ----------------
 
@@ -514,6 +530,7 @@ function renderLogin() {
       <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
       <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
       <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      <p class="legal-consent-note">${I18N.t("auth.oauthConsentPrefix")} <a href="#/terms" target="_blank">${I18N.t("auth.termsLink")}</a> ${I18N.t("auth.and")} <a href="#/privacy" target="_blank">${I18N.t("auth.privacyLink")}</a>.</p>
       <p class="form-footer-link">${I18N.t("auth.needAccount")} <a href="#/register">${I18N.t("auth.goRegister")}</a></p>
     </div>
   `;
@@ -553,22 +570,52 @@ function renderRegister() {
         <label>${I18N.t("auth.phone")}</label>
         <input type="tel" id="reg-phone" placeholder="+1 555 555 5555" />
       </div>
-      <button class="btn btn-primary" id="reg-submit" style="width:100%;">${I18N.t("auth.submitRegister")}</button>
+      <div class="checkbox-row">
+        <input type="checkbox" id="reg-accept" />
+        <label for="reg-accept">${I18N.t("auth.acceptTermsPrefix")} <a href="#/terms" target="_blank">${I18N.t("auth.termsLink")}</a> ${I18N.t("auth.and")} <a href="#/privacy" target="_blank">${I18N.t("auth.privacyLink")}</a>.</label>
+      </div>
+      <button class="btn btn-primary" id="reg-submit" style="width:100%;" disabled>${I18N.t("auth.submitRegister")}</button>
       <p class="form-msg" id="reg-msg"></p>
       <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google" id="reg-oauth-google">${I18N.t("auth.continueGoogle")}</a>
+      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook" id="reg-oauth-facebook">${I18N.t("auth.continueFacebook")}</a>
       <p class="form-footer-link">${I18N.t("auth.haveAccount")} <a href="#/login">${I18N.t("auth.goLogin")}</a></p>
     </div>
   `;
+  const acceptBox = document.getElementById("reg-accept");
+  const submitBtn = document.getElementById("reg-submit");
+  const msgEl = document.getElementById("reg-msg");
+  acceptBox.addEventListener("change", () => {
+    submitBtn.disabled = !acceptBox.checked;
+    if (acceptBox.checked) {
+      msgEl.textContent = "";
+      msgEl.className = "form-msg";
+    }
+  });
+  function guardOAuthClick(e) {
+    if (!acceptBox.checked) {
+      e.preventDefault();
+      msgEl.textContent = I18N.t("auth.mustAccept");
+      msgEl.className = "form-msg error";
+    }
+  }
+  document.getElementById("reg-oauth-google").addEventListener("click", guardOAuthClick);
+  document.getElementById("reg-oauth-facebook").addEventListener("click", guardOAuthClick);
   document.getElementById("reg-submit").addEventListener("click", async () => {
+    if (!acceptBox.checked) {
+      msgEl.textContent = I18N.t("auth.mustAccept");
+      msgEl.className = "form-msg error";
+      return;
+    }
     const name = document.getElementById("reg-name").value;
     const email = document.getElementById("reg-email").value;
     const password = document.getElementById("reg-password").value;
     const phone = document.getElementById("reg-phone").value;
-    const msgEl = document.getElementById("reg-msg");
     try {
-      const data = await api("/api/auth/register", { method: "POST", body: { name, email, password, phone } });
+      const data = await api("/api/auth/register", {
+        method: "POST",
+        body: { name, email, password, phone, acceptedTerms: true },
+      });
       setAuth(data.token, data.user);
       location.hash = "#/";
     } catch (e) {
