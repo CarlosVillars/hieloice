@@ -184,6 +184,13 @@ window.addEventListener("hashchange", router);
 // ---------------- Home ----------------
 
 function renderHome() {
+  // If the ad carousel is already mounted and running, don't tear it down and
+  // rebuild it again (this used to happen because router() was invoked twice
+  // on page load, which caused the ads to flash and then vanish).
+  if (viewEl.dataset.homeMounted === "1" && document.getElementById("ad-carousel")) {
+    return;
+  }
+
   const cards = CATEGORY_LIST.map(
     (c) => `
     <a class="category-card" href="#/category/${c.slug}">
@@ -201,10 +208,12 @@ function renderHome() {
     <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
     <div class="category-grid">${cards}</div>
   `;
+  viewEl.dataset.homeMounted = "1";
   loadAdCarousel();
 }
 
 let adRotateTimer = null;
+let adLoadToken = 0;
 
 async function loadAdCarousel() {
   const el = document.getElementById("ad-carousel");
@@ -213,13 +222,20 @@ async function loadAdCarousel() {
     clearInterval(adRotateTimer);
     adRotateTimer = null;
   }
+  const myToken = ++adLoadToken;
   try {
     const ads = await api("/api/ads");
+    // If another loadAdCarousel() started after this one, or the home view
+    // was unmounted while this request was in flight, bail out so we never
+    // write to a stale element or start a duplicate rotation timer.
+    if (myToken !== adLoadToken) return;
+    const liveEl = document.getElementById("ad-carousel");
+    if (!liveEl) return;
     if (!ads || !ads.length) return;
     let idx = 0;
     const draw = () => {
       const ad = ads[idx];
-      el.innerHTML = `
+      liveEl.innerHTML = `
         <a class="ad-slide" href="${escapeHtml(ad.linkUrl || "#")}" target="_blank" rel="noopener">
           <img src="${ad.imageUrl}" alt="${escapeHtml(ad.advertiserName || "")}" />
           <span class="ad-badge">${I18N.t("ads.sponsored")}${ad.advertiserName ? " &middot; " + escapeHtml(ad.advertiserName) : ""}</span>
@@ -232,7 +248,7 @@ async function loadAdCarousel() {
       `;
     };
     draw();
-    el.style.display = "block";
+    liveEl.style.display = "block";
     if (ads.length > 1) {
       adRotateTimer = setInterval(() => {
         idx = (idx + 1) % ads.length;
@@ -247,6 +263,7 @@ async function loadAdCarousel() {
 // ---------------- Category listing ----------------
 
 async function renderCategory(slug, query) {
+  viewEl.dataset.homeMounted = "";
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
 
   const params = new URLSearchParams();
@@ -312,6 +329,7 @@ async function renderCategory(slug, query) {
 // ---------------- Product detail ----------------
 
 async function renderProductDetail(id) {
+  viewEl.dataset.homeMounted = "";
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
   let p;
   try {
@@ -453,6 +471,7 @@ function wireProductActions(p) {
 // ---------------- Auth views ----------------
 
 function renderLogin() {
+  viewEl.dataset.homeMounted = "";
   viewEl.innerHTML = `
     <div class="form-panel">
       <h2 class="section-heading">${I18N.t("auth.loginTitle")}</h2>
@@ -488,6 +507,7 @@ function renderLogin() {
 }
 
 function renderRegister() {
+  viewEl.dataset.homeMounted = "";
   viewEl.innerHTML = `
     <div class="form-panel">
       <h2 class="section-heading">${I18N.t("auth.registerTitle")}</h2>
@@ -533,6 +553,7 @@ function renderRegister() {
 }
 
 async function renderOAuthCallback(query) {
+  viewEl.dataset.homeMounted = "";
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
   const token = query.token;
   if (!token) {
@@ -554,6 +575,7 @@ async function renderOAuthCallback(query) {
 let photoBuffer = [];
 
 async function renderPostAd(editId) {
+  viewEl.dataset.homeMounted = "";
   if (!state.token) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("postAd.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
     return;
@@ -699,6 +721,7 @@ function renderPhotoGrid() {
 // ---------------- Profile ----------------
 
 async function renderProfile(userId) {
+  viewEl.dataset.homeMounted = "";
   if (!userId) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
     return;
@@ -1032,6 +1055,7 @@ function openEditProfileModal(profile) {
 let convoPollTimer = null;
 
 async function renderMessages(otherUserId) {
+  viewEl.dataset.homeMounted = "";
   if (!state.token) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
     return;
@@ -1117,5 +1141,5 @@ async function loadChat(otherUserId, silent) {
 
 applyStaticI18n();
 updateNavUI();
-refreshMe().then(router);
 router();
+refreshMe();
