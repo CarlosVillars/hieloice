@@ -341,7 +341,7 @@ const CATEGORIES = [
   "vehicles", "auto-parts", "heavy-machinery", "food", "clothing",
   "video-games", "cell-phones", "computers-tech", "real-estate",
   "generators-solar", "art-crafts", "airplanes-jets",
-  "construction-materials", "appliances", "other",
+  "construction-materials", "appliances", "jewelry", "toys", "other",
 ];
 
 function productOut(p) {
