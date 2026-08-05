@@ -230,6 +230,10 @@ async function findOrCreateOAuthUser({ provider, providerId, email, name, photo 
     phone: "",
     [idField]: providerId,
     created_at: Date.now(),
+    // The frontend only allows the Google/Facebook buttons on the register
+    // page to be clicked once the Terms & Privacy checkbox is checked, so a
+    // new OAuth account reaching this point has effectively accepted them.
+    terms_accepted_at: Date.now(),
   };
   await db.insert("mkt_users", newUser);
   return newUser;
@@ -359,10 +363,13 @@ async function handleApi(req, res, pathname, query) {
   // ---- AUTH ----
   if (method === "POST" && pathname === "/api/auth/register") {
     const body = await readBody(req);
-    const { name, email, password, phone } = body;
+    const { name, email, password, phone, acceptedTerms } = body;
     if (!name || !String(name).trim()) return sendJson(res, 400, { error: "Name is required" });
     if (!isEmail(email)) return sendJson(res, 400, { error: "A valid email is required" });
     if (!password || String(password).length < 6) return sendJson(res, 400, { error: "Password must be at least 6 characters" });
+    if (acceptedTerms !== true) {
+      return sendJson(res, 400, { error: "You must accept the Terms & Conditions and Privacy Policy." });
+    }
 
     const emailLower = String(email).trim().toLowerCase();
     const existing = await db.select("mkt_users", { email: "eq." + enc(emailLower), select: "id" });
@@ -380,6 +387,7 @@ async function handleApi(req, res, pathname, query) {
       location: "",
       phone: String(phone || "").trim().slice(0, 30),
       created_at: Date.now(),
+      terms_accepted_at: Date.now(),
     };
     await db.insert("mkt_users", user);
 
