@@ -965,7 +965,7 @@ async function handleApi(req, res, pathname, query) {
     };
   }
 
-  if (method === "GET" && pathname === "/api/ads") {
+  if (method === "GET" && pathname === "/api/featured") {
     const wantAll = query.all === "1";
     let me = null;
     if (wantAll) me = await getAuthUser(req);
@@ -975,7 +975,7 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, ads.map(adOut));
   }
 
-  if (method === "POST" && pathname === "/api/ads") {
+  if (method === "POST" && pathname === "/api/featured") {
     const me = await getAuthUser(req);
     if (!isOwner(me)) return sendJson(res, 403, { error: "Not authorized" });
     const body = await readBody(req);
@@ -995,7 +995,7 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 201, adOut(ad));
   }
 
-  const adMatch = pathname.match(/^\/api\/ads\/([a-zA-Z0-9]+)$/);
+  const adMatch = pathname.match(/^\/api\/featured\/([a-zA-Z0-9]+)$/);
   if ((method === "PUT" || method === "DELETE") && adMatch) {
     const me = await getAuthUser(req);
     if (!isOwner(me)) return sendJson(res, 403, { error: "Not authorized" });
