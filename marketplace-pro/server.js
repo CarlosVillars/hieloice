@@ -19,6 +19,13 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error("Missing SUPABASE_URL or SUPABASE_KEY environment variables.");
 }
 
+const APP_URL = (process.env.APP_URL || "").replace(/\/$/, "");
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const FACEBOOK_APP_ID = process.env.FACEBOOK_APP_ID || "";
+const FACEBOOK_APP_SECRET = process.env.FACEBOOK_APP_SECRET || "";
+const OWNER_EMAIL = (process.env.OWNER_EMAIL || "").trim().toLowerCase();
+
 const MAX_PHOTOS = 12;
 
 // ---------- Supabase REST helpers ----------
@@ -84,6 +91,58 @@ function enc(s) {
   return encodeURIComponent(s);
 }
 
+function formEncode(obj) {
+  return Object.entries(obj)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
+    .join("&");
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { Location: location });
+  res.end();
+}
+
+function baseUrl(req) {
+  if (APP_URL) return APP_URL;
+  const proto = req.headers["x-forwarded-proto"] || "http";
+  return proto + "://" + req.headers.host;
+}
+
+// Generic HTTPS JSON request helper used for OAuth token/profile exchanges.
+function httpsRequestJson(method, urlStr, opts) {
+  opts = opts || {};
+  return new Promise((resolve, reject) => {
+    const target = new URL(urlStr);
+    const data = opts.body !== undefined ? opts.body : null;
+    const headers = Object.assign({}, opts.headers || {});
+    if (data) headers["Content-Length"] = Buffer.byteLength(data);
+    const req = https.request(
+      {
+        hostname: target.hostname,
+        path: target.pathname + target.search,
+        method,
+        headers,
+      },
+      (res) => {
+        let chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          const raw = Buffer.concat(chunks).toString("utf8");
+          try {
+            resolve(JSON.parse(raw));
+          } catch (e) {
+            reject(new Error("Unexpected response from " + target.hostname + ": " + raw.slice(0, 200)));
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
 const db = {
   select(table, params) {
     return sbRequest("GET", table + (params ? "?" + qs(params) : ""));
@@ -123,14 +182,57 @@ async function getAuthUser(req) {
 
 function publicUser(u) {
   if (!u) return null;
-  const { password_hash, email, ...safe } = u;
+  const { password_hash, email, phone, google_id, facebook_id, ...safe } = u;
   return toCamelUser(safe);
+}
+
+// Full view of a user's own account (used for login/register/me responses).
+function ownUser(u) {
+  if (!u) return null;
+  const { password_hash, google_id, facebook_id, ...safe } = u;
+  const camel = toCamelUser(safe);
+  camel.isOwner = !!(OWNER_EMAIL && u.email && u.email.toLowerCase() === OWNER_EMAIL);
+  return camel;
 }
 
 function toCamelUser(u) {
   if (!u) return u;
   const { created_at, ...rest } = u;
   return { ...rest, createdAt: created_at };
+}
+
+function isOwner(user) {
+  return !!(user && OWNER_EMAIL && user.email && user.email.toLowerCase() === OWNER_EMAIL);
+}
+
+async function findOrCreateOAuthUser({ provider, providerId, email, name, photo }) {
+  const idField = provider === "google" ? "google_id" : "facebook_id";
+  let rows = await db.select("mkt_users", { [idField]: "eq." + enc(providerId), select: "*" });
+  if (rows && rows[0]) return rows[0];
+
+  const emailLower = email ? String(email).trim().toLowerCase() : null;
+  if (emailLower) {
+    rows = await db.select("mkt_users", { email: "eq." + enc(emailLower), select: "*" });
+    if (rows && rows[0]) {
+      const updated = await db.update("mkt_users", { id: "eq." + enc(rows[0].id) }, { [idField]: providerId });
+      return updated[0];
+    }
+  }
+
+  const newUser = {
+    id: crypto.randomBytes(8).toString("hex"),
+    name: String(name || "New user").trim().slice(0, 80),
+    email: emailLower,
+    password_hash: hashPassword(crypto.randomBytes(20).toString("hex")),
+    photo: photo || null,
+    bio: "",
+    location: "",
+    phone: "",
+    [idField]: providerId,
+    created_at: Date.now(),
+  };
+  await db.insert("mkt_users", newUser);
+  return newUser;
 }
 
 async function userRatingSummary(userId) {
@@ -246,7 +348,7 @@ async function handleApi(req, res, pathname, query) {
   // ---- AUTH ----
   if (method === "POST" && pathname === "/api/auth/register") {
     const body = await readBody(req);
-    const { name, email, password } = body;
+    const { name, email, password, phone } = body;
     if (!name || !String(name).trim()) return sendJson(res, 400, { error: "Name is required" });
     if (!isEmail(email)) return sendJson(res, 400, { error: "A valid email is required" });
     if (!password || String(password).length < 6) return sendJson(res, 400, { error: "Password must be at least 6 characters" });
@@ -265,6 +367,7 @@ async function handleApi(req, res, pathname, query) {
       photo: null,
       bio: "",
       location: "",
+      phone: String(phone || "").trim().slice(0, 30),
       created_at: Date.now(),
     };
     await db.insert("mkt_users", user);
@@ -272,7 +375,7 @@ async function handleApi(req, res, pathname, query) {
     const token = crypto.randomBytes(24).toString("hex");
     await db.insert("mkt_sessions", { token, user_id: user.id, created_at: Date.now() });
 
-    return sendJson(res, 201, { token, user: publicUser(user) });
+    return sendJson(res, 201, { token, user: ownUser(user) });
   }
 
   if (method === "POST" && pathname === "/api/auth/login") {
@@ -286,7 +389,106 @@ async function handleApi(req, res, pathname, query) {
     }
     const token = crypto.randomBytes(24).toString("hex");
     await db.insert("mkt_sessions", { token, user_id: user.id, created_at: Date.now() });
-    return sendJson(res, 200, { token, user: publicUser(user) });
+    return sendJson(res, 200, { token, user: ownUser(user) });
+  }
+
+  if (method === "GET" && pathname === "/api/auth/google") {
+    if (!GOOGLE_CLIENT_ID) return sendJson(res, 500, { error: "Google login is not configured yet." });
+    const redirectUri = baseUrl(req) + "/api/auth/google/callback";
+    const authUrl =
+      "https://accounts.google.com/o/oauth2/v2/auth?" +
+      formEncode({
+        client_id: GOOGLE_CLIENT_ID,
+        redirect_uri: redirectUri,
+        response_type: "code",
+        scope: "openid email profile",
+        prompt: "select_account",
+      });
+    return redirect(res, authUrl);
+  }
+
+  if (method === "GET" && pathname === "/api/auth/google/callback") {
+    try {
+      const code = query.code;
+      if (!code) return redirect(res, "/#/login?error=google");
+      const redirectUri = baseUrl(req) + "/api/auth/google/callback";
+      const tokenRes = await httpsRequestJson("POST", "https://oauth2.googleapis.com/token", {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: formEncode({
+          code,
+          client_id: GOOGLE_CLIENT_ID,
+          client_secret: GOOGLE_CLIENT_SECRET,
+          redirect_uri: redirectUri,
+          grant_type: "authorization_code",
+        }),
+      });
+      if (!tokenRes.access_token) return redirect(res, "/#/login?error=google");
+      const profile = await httpsRequestJson("GET", "https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: "Bearer " + tokenRes.access_token },
+      });
+      const user = await findOrCreateOAuthUser({
+        provider: "google",
+        providerId: profile.sub,
+        email: profile.email,
+        name: profile.name,
+        photo: profile.picture,
+      });
+      const token = crypto.randomBytes(24).toString("hex");
+      await db.insert("mkt_sessions", { token, user_id: user.id, created_at: Date.now() });
+      return redirect(res, "/#/oauth-callback?token=" + token);
+    } catch (e) {
+      return redirect(res, "/#/login?error=google");
+    }
+  }
+
+  if (method === "GET" && pathname === "/api/auth/facebook") {
+    if (!FACEBOOK_APP_ID) return sendJson(res, 500, { error: "Facebook login is not configured yet." });
+    const redirectUri = baseUrl(req) + "/api/auth/facebook/callback";
+    const authUrl =
+      "https://www.facebook.com/v19.0/dialog/oauth?" +
+      formEncode({
+        client_id: FACEBOOK_APP_ID,
+        redirect_uri: redirectUri,
+        scope: "email,public_profile",
+        response_type: "code",
+      });
+    return redirect(res, authUrl);
+  }
+
+  if (method === "GET" && pathname === "/api/auth/facebook/callback") {
+    try {
+      const code = query.code;
+      if (!code) return redirect(res, "/#/login?error=facebook");
+      const redirectUri = baseUrl(req) + "/api/auth/facebook/callback";
+      const tokenRes = await httpsRequestJson(
+        "GET",
+        "https://graph.facebook.com/v19.0/oauth/access_token?" +
+          formEncode({
+            client_id: FACEBOOK_APP_ID,
+            redirect_uri: redirectUri,
+            client_secret: FACEBOOK_APP_SECRET,
+            code,
+          })
+      );
+      if (!tokenRes.access_token) return redirect(res, "/#/login?error=facebook");
+      const profile = await httpsRequestJson(
+        "GET",
+        "https://graph.facebook.com/me?" +
+          formEncode({ fields: "id,name,email,picture.type(large)", access_token: tokenRes.access_token })
+      );
+      const user = await findOrCreateOAuthUser({
+        provider: "facebook",
+        providerId: profile.id,
+        email: profile.email,
+        name: profile.name,
+        photo: profile.picture && profile.picture.data ? profile.picture.data.url : null,
+      });
+      const token = crypto.randomBytes(24).toString("hex");
+      await db.insert("mkt_sessions", { token, user_id: user.id, created_at: Date.now() });
+      return redirect(res, "/#/oauth-callback?token=" + token);
+    } catch (e) {
+      return redirect(res, "/#/login?error=facebook");
+    }
   }
 
   if (method === "POST" && pathname === "/api/auth/logout") {
@@ -302,7 +504,7 @@ async function handleApi(req, res, pathname, query) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
     const rating = await userRatingSummary(me.id);
-    return sendJson(res, 200, { user: { ...publicUser(me), ...rating } });
+    return sendJson(res, 200, { user: { ...ownUser(me), ...rating } });
   }
 
   // ---- USERS / PROFILES ----
@@ -324,10 +526,11 @@ async function handleApi(req, res, pathname, query) {
     if (body.bio !== undefined) patch.bio = String(body.bio).slice(0, 500);
     if (body.location !== undefined) patch.location = String(body.location).slice(0, 150);
     if (body.photo !== undefined) patch.photo = body.photo;
+    if (body.phone !== undefined) patch.phone = String(body.phone).trim().slice(0, 30);
     const updated = await db.update("mkt_users", { id: "eq." + enc(me.id) }, patch);
     const u = updated && updated[0];
     const rating = await userRatingSummary(u.id);
-    return sendJson(res, 200, { user: { ...publicUser(u), ...rating } });
+    return sendJson(res, 200, { user: { ...ownUser(u), ...rating } });
   }
 
   // ---- REVIEWS ----
@@ -736,6 +939,70 @@ async function handleApi(req, res, pathname, query) {
       read: message.read,
       createdAt: message.created_at,
     });
+  }
+
+  // ---- ADS (advertiser carousel) ----
+  function adOut(a) {
+    const { image_url, link_url, advertiser_name, sort_order, created_at, ...rest } = a;
+    return {
+      ...rest,
+      imageUrl: image_url,
+      linkUrl: link_url,
+      advertiserName: advertiser_name,
+      sortOrder: sort_order,
+      createdAt: created_at,
+    };
+  }
+
+  if (method === "GET" && pathname === "/api/ads") {
+    const wantAll = query.all === "1";
+    let me = null;
+    if (wantAll) me = await getAuthUser(req);
+    const params = { order: "sort_order.asc,created_at.desc", select: "*" };
+    if (!(wantAll && isOwner(me))) params.active = "eq.true";
+    const ads = await db.select("mkt_ads", params);
+    return sendJson(res, 200, ads.map(adOut));
+  }
+
+  if (method === "POST" && pathname === "/api/ads") {
+    const me = await getAuthUser(req);
+    if (!isOwner(me)) return sendJson(res, 403, { error: "Not authorized" });
+    const body = await readBody(req);
+    if (!body.imageUrl || !String(body.imageUrl).trim()) {
+      return sendJson(res, 400, { error: "Image URL is required" });
+    }
+    const ad = {
+      id: crypto.randomBytes(8).toString("hex"),
+      advertiser_name: String(body.advertiserName || "").trim().slice(0, 80),
+      image_url: String(body.imageUrl).trim().slice(0, 1000),
+      link_url: String(body.linkUrl || "").trim().slice(0, 1000),
+      active: true,
+      sort_order: Number(body.sortOrder) || 0,
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_ads", ad);
+    return sendJson(res, 201, adOut(ad));
+  }
+
+  const adMatch = pathname.match(/^\/api\/ads\/([a-zA-Z0-9]+)$/);
+  if ((method === "PUT" || method === "DELETE") && adMatch) {
+    const me = await getAuthUser(req);
+    if (!isOwner(me)) return sendJson(res, 403, { error: "Not authorized" });
+
+    if (method === "DELETE") {
+      await db.remove("mkt_ads", { id: "eq." + enc(adMatch[1]) });
+      return sendJson(res, 200, { ok: true });
+    }
+
+    const body = await readBody(req);
+    const patch = {};
+    if (body.advertiserName !== undefined) patch.advertiser_name = String(body.advertiserName).trim().slice(0, 80);
+    if (body.imageUrl !== undefined) patch.image_url = String(body.imageUrl).trim().slice(0, 1000);
+    if (body.linkUrl !== undefined) patch.link_url = String(body.linkUrl).trim().slice(0, 1000);
+    if (body.active !== undefined) patch.active = !!body.active;
+    if (body.sortOrder !== undefined) patch.sort_order = Number(body.sortOrder) || 0;
+    const updated = await db.update("mkt_ads", { id: "eq." + enc(adMatch[1]) }, patch);
+    return sendJson(res, 200, adOut(updated[0]));
   }
 
   return sendJson(res, 404, { error: "Route not found" });
