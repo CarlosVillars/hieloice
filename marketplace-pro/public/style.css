@@ -34,8 +34,8 @@ button { cursor: pointer; font-family: inherit; }
   gap: 8px;
   white-space: nowrap;
 }
-.brand-logo { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
-.brand-logo svg { display: block; }
+.brand-logo-wrap { display: inline-flex; align-items: center; background: #fff; border-radius: 8px; padding: 5px 10px; line-height: 0; }
+.brand-logo-img { display: block; height: 30px; width: auto; }
 
 .topbar-search {
   flex: 1;
