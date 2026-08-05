@@ -410,6 +410,7 @@ async function renderProductDetail(id) {
           <span class="badge">${escapeHtml(I18N.categoryName(p.category))}</span>
           <span class="badge ${p.allowReturn ? "" : "no"}">${p.allowReturn ? I18N.t("product.returnsAllowed") : I18N.t("product.returnsNotAllowed")}</span>
         </div>
+        ${renderShareRow(p)}
         <p style="white-space:pre-wrap;font-size:14px;margin-top:14px;">${escapeHtml(p.description)}</p>
 
         <a class="seller-card" href="#/profile/${p.sellerId}">
@@ -448,6 +449,21 @@ async function renderProductDetail(id) {
   } else {
     wireProductActions(p);
   }
+}
+
+function renderShareRow(p) {
+  const shareUrl = location.origin + "/#/product/" + p.id;
+  const shareText = encodeURIComponent(p.title);
+  const shareUrlEnc = encodeURIComponent(shareUrl);
+  return `
+    <div class="share-row">
+      <span class="share-label">${I18N.t("product.share")}</span>
+      <a class="share-btn share-whatsapp" target="_blank" rel="noopener noreferrer" title="WhatsApp" href="https://wa.me/?text=${shareText}%20-%20${shareUrlEnc}">\u{1F4AC}</a>
+      <a class="share-btn share-facebook" target="_blank" rel="noopener noreferrer" title="Facebook" href="https://www.facebook.com/sharer/sharer.php?u=${shareUrlEnc}">\u{1F4D8}</a>
+      <a class="share-btn share-x" target="_blank" rel="noopener noreferrer" title="X" href="https://twitter.com/intent/tweet?url=${shareUrlEnc}&text=${shareText}">✖</a>
+      <a class="share-btn share-email" title="Email" href="mailto:?subject=${shareText}&body=${shareUrlEnc}">✉️</a>
+    </div>
+  `;
 }
 
 function renderProductActions(p) {

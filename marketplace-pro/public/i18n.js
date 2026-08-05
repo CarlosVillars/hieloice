@@ -15,6 +15,8 @@ const CATEGORY_LIST = [
   { slug: "airplanes-jets", icon: "\u{2708}\u{FE0F}", en: "Airplanes & Jets", es: "Aviones y Jets" },
   { slug: "construction-materials", icon: "\u{1F9F1}", en: "Construction Materials", es: "Materiales de Construccion" },
   { slug: "appliances", icon: "\u{1F9FA}", en: "Appliances", es: "Electrodomesticos" },
+  { slug: "jewelry", icon: "\u{1F48D}", en: "Jewelry", es: "Joyas" },
+  { slug: "toys", icon: "\u{1F9F8}", en: "Toys", es: "Juguetes" },
   { slug: "other", icon: "\u{1F4E6}", en: "Other", es: "Otros" },
 ];
 
@@ -51,6 +53,7 @@ const STRINGS = {
     "product.returnsAllowed": "Returns accepted",
     "product.returnsNotAllowed": "No returns",
     "product.contactSeller": "Message Seller",
+    "product.share": "Share:",
     "product.photos": "Photos",
     "product.viewProfile": "View Profile",
     "product.notFound": "This listing was not found.",
@@ -172,6 +175,7 @@ const STRINGS = {
     "product.returnsAllowed": "Acepta devoluciones",
     "product.returnsNotAllowed": "Sin devoluciones",
     "product.contactSeller": "Mensaje al Vendedor",
+    "product.share": "Compartir:",
     "product.photos": "Fotos",
     "product.viewProfile": "Ver Perfil",
     "product.notFound": "No se encontro este aviso.",
