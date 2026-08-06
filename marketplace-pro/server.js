@@ -1024,6 +1024,26 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, adOut(updated[0]));
   }
 
+  // ---- BUG REPORTS ----
+  if (method === "POST" && pathname === "/api/report-bug") {
+    const me = await getAuthUser(req);
+    const body = await readBody(req);
+    const description = String(body.description || "").trim();
+    if (!description) {
+      return sendJson(res, 400, { error: "Please describe the issue." });
+    }
+    const report = {
+      id: crypto.randomBytes(8).toString("hex"),
+      user_id: me ? me.id : null,
+      email: String(body.email || "").trim().slice(0, 200),
+      description: description.slice(0, 2000),
+      page_url: String(body.pageUrl || "").trim().slice(0, 500),
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_bug_reports", report);
+    return sendJson(res, 201, { ok: true });
+  }
+
   return sendJson(res, 404, { error: "Route not found" });
 }
 
