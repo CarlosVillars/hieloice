@@ -1,0 +1,11 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+          <linearGradient id="ytGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#ff4d4d"/>
+                  <stop offset="100%" stop-color="#d90000"/>
+          </linearGradient>
+    </defs>
+    <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#ytGrad)"/>
+    <rect x="14" y="22" width="36" height="20" rx="6" fill="#ffffff"/>
+    <path d="M29 27.5 L38.5 32 L29 36.5 Z" fill="#d90000"/>
+</svg>
