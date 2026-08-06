@@ -1,0 +1,10 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+          <linearGradient id="fbGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#3b82f6"/>
+                  <stop offset="100%" stop-color="#1354c9"/>
+          </linearGradient>
+    </defs>
+    <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#fbGrad)"/>
+    <path d="M36 22h5v-8h-5c-6 0-10 4-10 10v4h-6v8h6v18h8V36h6l1-8h-7v-4c0-1.4 1.2-2 3-2z" fill="#ffffff"/>
+</svg>
