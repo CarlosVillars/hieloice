@@ -304,7 +304,7 @@ const MIME = {
 // because no Cache-Control header was ever sent, which made bug fixes
 // invisible to returning visitors. Everything else (images, etc.) is safe to
 // cache since asset filenames don't get overwritten with different content.
-const NO_CACHE_EXT = new Set([".html", ".js", ".css"]);
+const NO_CACHE_EXT = new Set([".html", ".js", ".css", ".svg"]);
 
 function serveStatic(req, res, pathname) {
   let filePath = pathname === "/" ? "/index.html" : pathname;
