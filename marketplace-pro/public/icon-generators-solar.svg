@@ -1,0 +1,14 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <rect x="4" y="30" width="24" height="16" rx="3" fill="#eef5ef" stroke="#0f3d2e" stroke-width="3"/>
+  <circle cx="9" cy="48" r="3" fill="#0f3d2e"/>
+  <circle cx="25" cy="48" r="3" fill="#0f3d2e"/>
+  <rect x="8" y="23" width="5" height="9" rx="1.5" fill="#0f3d2e"/>
+  <text x="16" y="41" font-size="9" font-weight="700" fill="#d4a017" font-family="Arial, sans-serif">⚡</text>
+  <path d="M32 46 L60 46 L54 24 L36 24 Z" fill="#fff" stroke="#0f3d2e" stroke-width="3" stroke-linejoin="round"/>
+  <line x1="38" y1="24" x2="34" y2="46" stroke="#0f3d2e" stroke-width="1.5"/>
+  <line x1="45" y1="24" x2="43.5" y2="46" stroke="#0f3d2e" stroke-width="1.5"/>
+  <line x1="52" y1="24" x2="53" y2="46" stroke="#0f3d2e" stroke-width="1.5"/>
+  <line x1="35" y1="32" x2="58.5" y2="32" stroke="#0f3d2e" stroke-width="1.5"/>
+  <line x1="33.5" y1="39" x2="59.5" y2="39" stroke="#0f3d2e" stroke-width="1.5"/>
+  <path d="M46 12 L46 17 M39 15 L42 19 M53 15 L50 19" stroke="#d4a017" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

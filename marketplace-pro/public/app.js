@@ -121,6 +121,7 @@ function applyStaticI18n() {
   document.getElementById("lang-es").classList.toggle("active", I18N.lang === "es");
   document.getElementById("footer-terms").textContent = I18N.t("auth.termsLink");
   document.getElementById("footer-privacy").textContent = I18N.t("auth.privacyLink");
+  document.getElementById("footer-bug").textContent = I18N.t("footer.reportBug");
   document.getElementById("footer-rights").textContent = I18N.t("footer.rights");
 }
 
@@ -172,6 +173,7 @@ async function router() {
     if (parts[0] === "register") return renderRegister();
     if (parts[0] === "terms") return renderLegal("terms");
     if (parts[0] === "privacy") return renderLegal("privacy");
+    if (parts[0] === "report-bug") return renderReportBug();
     if (parts[0] === "oauth-callback") return renderOAuthCallback(query);
     if (parts[0] === "post") return renderPostAd();
     if (parts[0] === "edit" && parts[1]) return renderPostAd(parts[1]);
@@ -197,6 +199,53 @@ function renderLegal(which) {
   `;
 }
 
+// ---------------- Report a Bug ----------------
+
+function renderReportBug() {
+  viewEl.dataset.homeMounted = "";
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/">&larr; ${I18N.t("category.back")}</a>
+    <div class="bug-report-form">
+      <h1>${I18N.t("bug.title")}</h1>
+      <p>${I18N.t("bug.intro")}</p>
+      <form id="bug-form">
+        <label>${I18N.t("bug.description")}</label>
+        <textarea id="bug-description" rows="6" placeholder="${I18N.t("bug.descriptionPlaceholder")}" required></textarea>
+        <label>${I18N.t("bug.email")}</label>
+        <input type="email" id="bug-email" />
+        <div id="bug-msg" class="form-msg"></div>
+        <button type="submit" class="btn btn-gold">${I18N.t("bug.submit")}</button>
+      </form>
+    </div>
+  `;
+
+  const form = document.getElementById("bug-form");
+  const msgEl = document.getElementById("bug-msg");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const description = document.getElementById("bug-description").value.trim();
+    const email = document.getElementById("bug-email").value.trim();
+    if (!description) {
+      msgEl.textContent = I18N.t("bug.required");
+      msgEl.className = "form-msg error";
+      return;
+    }
+    try {
+      await api("/api/report-bug", {
+        method: "POST",
+        auth: true,
+        body: { description, email, pageUrl: location.href },
+      });
+      msgEl.textContent = I18N.t("bug.sent");
+      msgEl.className = "form-msg ok";
+      form.reset();
+    } catch (err) {
+      msgEl.textContent = err.message || I18N.t("common.error");
+      msgEl.className = "form-msg error";
+    }
+  });
+}
+
 // ---------------- Home ----------------
 
 function renderHome() {
@@ -210,7 +259,11 @@ function renderHome() {
   const cards = CATEGORY_LIST.map(
     (c) => `
     <a class="category-card" href="#/category/${c.slug}">
-      <span class="category-icon">${c.icon}</span>
+      ${
+        c.img
+          ? `<img class="category-icon category-icon-img" src="${c.img}" alt="" />`
+          : `<span class="category-icon">${c.icon}</span>`
+      }
       <span class="category-label">${I18N.lang === "es" ? c.es : c.en}</span>
     </a>`
   ).join("");
