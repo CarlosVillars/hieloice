@@ -122,6 +122,7 @@ function applyStaticI18n() {
   document.getElementById("footer-terms").textContent = I18N.t("auth.termsLink");
   document.getElementById("footer-privacy").textContent = I18N.t("auth.privacyLink");
   document.getElementById("footer-bug").textContent = I18N.t("footer.reportBug");
+  document.getElementById("footer-contact").textContent = I18N.t("footer.contact");
   document.getElementById("footer-rights").textContent = I18N.t("footer.rights");
 }
 
