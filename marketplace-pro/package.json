@@ -8,5 +8,20 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
+  }
+}
+{
+  "name": "marketplace-pro",
+  "version": "1.0.0",
+  "description": "Mercado Global - bilingual classifieds marketplace",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
