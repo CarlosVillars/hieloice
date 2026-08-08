@@ -169,6 +169,47 @@ const db = {
   },
 };
 
+// ---------- Supabase Storage (photos / moment videos) ----------
+// Uploads a data: URL to a public Storage bucket using the service_role key
+// (the backend is the only thing that ever touches Storage - no client-side
+// Supabase access - so bucket/object RLS is not a concern here).
+function sbStorageUpload(bucket, path, dataUrl) {
+  return new Promise((resolve, reject) => {
+    const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl || "");
+    if (!match) return reject(new Error("Invalid file data"));
+    const mime = match[1];
+    const buffer = Buffer.from(match[2], "base64");
+    const target = new URL(SUPABASE_URL + "/storage/v1/object/" + bucket + "/" + path);
+    const req = https.request(
+      {
+        hostname: target.hostname,
+        path: target.pathname,
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: "Bearer " + SUPABASE_KEY,
+          "Content-Type": mime,
+          "Content-Length": buffer.length,
+          "x-upsert": "true",
+        },
+      },
+      (res) => {
+        let chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          if (res.statusCode >= 400) {
+            return reject(new Error("Upload failed (" + res.statusCode + "): " + Buffer.concat(chunks).toString().slice(0, 200)));
+          }
+          resolve(SUPABASE_URL + "/storage/v1/object/public/" + bucket + "/" + path);
+        });
+      }
+    );
+    req.on("error", reject);
+    req.write(buffer);
+    req.end();
+  });
+}
+
 // ---------- auth helpers ----------
 
 function hashPassword(password, salt) {
@@ -208,12 +249,22 @@ function ownUser(u) {
 
 function toCamelUser(u) {
   if (!u) return u;
-  const { created_at, ...rest } = u;
-  return { ...rest, createdAt: created_at };
+  const { created_at, cover_photo, chat_privacy, ...rest } = u;
+  return { ...rest, createdAt: created_at, coverPhoto: cover_photo, chatPrivacy: chat_privacy };
 }
 
 function isOwner(user) {
   return !!(user && OWNER_EMAIL && user.email && user.email.toLowerCase() === OWNER_EMAIL);
+}
+
+async function isFriendsWith(userIdA, userIdB) {
+  const rows = await db.select("mkt_friendships", {
+    status: "eq.accepted",
+    or:
+      "(and(requester_id.eq." + enc(userIdA) + ",addressee_id.eq." + enc(userIdB) + "),and(requester_id.eq." + enc(userIdB) + ",addressee_id.eq." + enc(userIdA) + "))",
+    select: "id",
+  });
+  return !!(rows && rows.length);
 }
 
 async function findOrCreateOAuthUser({ provider, providerId, email, name, photo }) {
@@ -367,7 +418,7 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     let chunks = [];
     let size = 0;
-    const LIMIT = 60 * 1024 * 1024; // 60MB - enough for up to 12 photos as base64
+    const LIMIT = 120 * 1024 * 1024; // 120MB - enough for photos and short moment videos as base64
     req.on("data", (chunk) => {
       size += chunk.length;
       if (size > LIMIT) {
@@ -433,7 +484,7 @@ const CATEGORIES = [
   "vehicles", "auto-parts", "heavy-machinery", "food", "clothing",
   "video-games", "cell-phones", "computers-tech", "real-estate",
   "generators-solar", "art-crafts", "airplanes-jets",
-  "construction-materials", "appliances", "other",
+  "construction-materials", "appliances", "jewelry", "toys", "other",
 ];
 
 const REPORT_REASONS = ["spam", "prohibited", "inappropriate", "fraud", "other"];
@@ -644,6 +695,14 @@ async function handleApi(req, res, pathname, query) {
     if (body.location !== undefined) patch.location = String(body.location).slice(0, 150);
     if (body.photo !== undefined) patch.photo = body.photo;
     if (body.phone !== undefined) patch.phone = String(body.phone).trim().slice(0, 30);
+    if (body.coverPhoto !== undefined) patch.cover_photo = body.coverPhoto;
+    if (body.hometown !== undefined) patch.hometown = String(body.hometown).slice(0, 150);
+    if (body.interests !== undefined) patch.interests = String(body.interests).slice(0, 300);
+    if (body.education !== undefined) patch.education = String(body.education).slice(0, 200);
+    if (body.work !== undefined) patch.work = String(body.work).slice(0, 200);
+    if (body.chatPrivacy !== undefined && ["everyone", "friends"].includes(body.chatPrivacy)) {
+      patch.chat_privacy = body.chatPrivacy;
+    }
     const updated = await db.update("mkt_users", { id: "eq." + enc(me.id) }, patch);
     const u = updated && updated[0];
     const rating = await userRatingSummary(u.id);
@@ -1194,8 +1253,15 @@ async function handleApi(req, res, pathname, query) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
     const otherId = convoMatch[1];
-    const others = await db.select("mkt_users", { id: "eq." + enc(otherId), select: "id" });
+    const others = await db.select("mkt_users", { id: "eq." + enc(otherId), select: "id,chat_privacy" });
     if (!others || !others[0]) return sendJson(res, 404, { error: "User not found" });
+
+    if (otherId !== me.id && others[0].chat_privacy === "friends") {
+      const areFriends = await isFriendsWith(me.id, otherId);
+      if (!areFriends) {
+        return sendJson(res, 403, { error: "This user only accepts messages from friends." });
+      }
+    }
 
     const body = await readBody(req);
     if (!body.text || !String(body.text).trim()) return sendJson(res, 400, { error: "Message text is required" });
@@ -1224,6 +1290,298 @@ async function handleApi(req, res, pathname, query) {
       read: message.read,
       createdAt: message.created_at,
     });
+  }
+
+  // ---- USER PHOTOS (gallery) ----
+
+  function photoOut(p) {
+    const { user_id, created_at, ...rest } = p;
+    return { ...rest, userId: user_id, createdAt: created_at };
+  }
+
+  if (method === "POST" && pathname === "/api/users/me/photos") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    if (!body.photo || typeof body.photo !== "string" || !body.photo.startsWith("data:image/")) {
+      return sendJson(res, 400, { error: "A photo is required" });
+    }
+    let photoUrl;
+    try {
+      photoUrl = await sbStorageUpload("media", "photos/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", body.photo);
+    } catch (e) {
+      return sendJson(res, 500, { error: "Could not upload photo" });
+    }
+    const photo = {
+      id: crypto.randomBytes(8).toString("hex"),
+      user_id: me.id,
+      url: photoUrl,
+      caption: String(body.caption || "").slice(0, 300),
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_user_photos", photo);
+    return sendJson(res, 201, photoOut(photo));
+  }
+
+  const userPhotosMatch = pathname.match(/^\/api\/users\/([a-zA-Z0-9]+)\/photos$/);
+  if (method === "GET" && userPhotosMatch) {
+    const photos = await db.select("mkt_user_photos", {
+      user_id: "eq." + enc(userPhotosMatch[1]),
+      order: "created_at.desc",
+      select: "*",
+    });
+    return sendJson(res, 200, photos.map(photoOut));
+  }
+
+  const photoMatch = pathname.match(/^\/api\/photos\/([a-zA-Z0-9]+)$/);
+  if (method === "DELETE" && photoMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_user_photos", { id: "eq." + enc(photoMatch[1]), select: "*" });
+    const p = rows && rows[0];
+    if (!p) return sendJson(res, 404, { error: "Photo not found" });
+    if (p.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this photo" });
+    await db.remove("mkt_user_photos", { id: "eq." + enc(p.id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // ---- FRIENDS ----
+
+  function friendshipOut(f) {
+    const { requester_id, addressee_id, created_at, responded_at, ...rest } = f;
+    return { ...rest, requesterId: requester_id, addresseeId: addressee_id, createdAt: created_at, respondedAt: responded_at };
+  }
+
+  if (method === "POST" && pathname === "/api/friends/request") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const targetId = String(body.userId || "").trim();
+    if (!targetId || targetId === me.id) return sendJson(res, 400, { error: "Invalid user" });
+    const targets = await db.select("mkt_users", { id: "eq." + enc(targetId), select: "id" });
+    if (!targets || !targets[0]) return sendJson(res, 404, { error: "User not found" });
+
+    const existing = await db.select("mkt_friendships", {
+      or:
+        "(and(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(targetId) + "),and(requester_id.eq." + enc(targetId) + ",addressee_id.eq." + enc(me.id) + "))",
+      select: "*",
+    });
+    const existingRow = existing && existing[0];
+    if (existingRow) {
+      if (existingRow.status === "accepted") return sendJson(res, 409, { error: "You are already friends" });
+      if (existingRow.requester_id === targetId) {
+        const updated = await db.update("mkt_friendships", { id: "eq." + enc(existingRow.id) }, { status: "accepted", responded_at: Date.now() });
+        return sendJson(res, 200, friendshipOut(updated[0]));
+      }
+      return sendJson(res, 409, { error: "Friend request already sent" });
+    }
+
+    const friendship = {
+      id: crypto.randomBytes(8).toString("hex"),
+      requester_id: me.id,
+      addressee_id: targetId,
+      status: "pending",
+      created_at: Date.now(),
+      responded_at: null,
+    };
+    await db.insert("mkt_friendships", friendship);
+    return sendJson(res, 201, friendshipOut(friendship));
+  }
+
+  const friendAcceptMatch = pathname.match(/^\/api\/friends\/([a-zA-Z0-9]+)\/accept$/);
+  if (method === "POST" && friendAcceptMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_friendships", { id: "eq." + enc(friendAcceptMatch[1]), select: "*" });
+    const f = rows && rows[0];
+    if (!f) return sendJson(res, 404, { error: "Request not found" });
+    if (f.addressee_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    const updated = await db.update("mkt_friendships", { id: "eq." + enc(f.id) }, { status: "accepted", responded_at: Date.now() });
+    return sendJson(res, 200, friendshipOut(updated[0]));
+  }
+
+  const friendRejectMatch = pathname.match(/^\/api\/friends\/([a-zA-Z0-9]+)\/reject$/);
+  if (method === "POST" && friendRejectMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_friendships", { id: "eq." + enc(friendRejectMatch[1]), select: "*" });
+    const f = rows && rows[0];
+    if (!f) return sendJson(res, 404, { error: "Request not found" });
+    if (f.addressee_id !== me.id && f.requester_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    await db.remove("mkt_friendships", { id: "eq." + enc(f.id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  const friendRemoveMatch = pathname.match(/^\/api\/friends\/user\/([a-zA-Z0-9]+)$/);
+  if (method === "DELETE" && friendRemoveMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const targetId = friendRemoveMatch[1];
+    const rows = await db.select("mkt_friendships", {
+      status: "eq.accepted",
+      or:
+        "(and(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(targetId) + "),and(requester_id.eq." + enc(targetId) + ",addressee_id.eq." + enc(me.id) + "))",
+      select: "id",
+    });
+    if (rows && rows[0]) await db.remove("mkt_friendships", { id: "eq." + enc(rows[0].id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (method === "GET" && pathname === "/api/friends") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_friendships", {
+      status: "eq.accepted",
+      or: "(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(me.id) + ")",
+      select: "*",
+    });
+    const friendIds = rows.map((f) => (f.requester_id === me.id ? f.addressee_id : f.requester_id));
+    let users = [];
+    if (friendIds.length) {
+      users = await db.select("mkt_users", { id: "in.(" + friendIds.map(enc).join(",") + ")", select: "id,name,photo" });
+    }
+    const out = rows.map((f) => {
+      const friendId = f.requester_id === me.id ? f.addressee_id : f.requester_id;
+      const u = users.find((x) => x.id === friendId);
+      return { friendshipId: f.id, userId: friendId, name: u ? u.name : "Unknown", photo: u ? u.photo : null };
+    });
+    return sendJson(res, 200, out);
+  }
+
+  if (method === "GET" && pathname === "/api/friends/requests") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_friendships", {
+      status: "eq.pending",
+      addressee_id: "eq." + enc(me.id),
+      select: "*",
+      order: "created_at.desc",
+    });
+    const requesterIds = rows.map((f) => f.requester_id);
+    let users = [];
+    if (requesterIds.length) {
+      users = await db.select("mkt_users", { id: "in.(" + requesterIds.map(enc).join(",") + ")", select: "id,name,photo" });
+    }
+    const out = rows.map((f) => {
+      const u = users.find((x) => x.id === f.requester_id);
+      return { friendshipId: f.id, userId: f.requester_id, name: u ? u.name : "Unknown", photo: u ? u.photo : null, createdAt: f.created_at };
+    });
+    return sendJson(res, 200, out);
+  }
+
+  const friendStatusMatch = pathname.match(/^\/api\/friends\/status\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && friendStatusMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const targetId = friendStatusMatch[1];
+    if (targetId === me.id) return sendJson(res, 200, { status: "self" });
+    const rows = await db.select("mkt_friendships", {
+      or:
+        "(and(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(targetId) + "),and(requester_id.eq." + enc(targetId) + ",addressee_id.eq." + enc(me.id) + "))",
+      select: "*",
+    });
+    const f = rows && rows[0];
+    if (!f) return sendJson(res, 200, { status: "none" });
+    if (f.status === "accepted") return sendJson(res, 200, { status: "friends", friendshipId: f.id });
+    if (f.requester_id === me.id) return sendJson(res, 200, { status: "pending_sent", friendshipId: f.id });
+    return sendJson(res, 200, { status: "pending_received", friendshipId: f.id });
+  }
+
+  // ---- MOMENTS (photo/video stories, visible 24h) ----
+
+  function momentOut(m) {
+    const { user_id, media_url, media_type, created_at, expires_at, ...rest } = m;
+    return { ...rest, userId: user_id, mediaUrl: media_url, mediaType: media_type, createdAt: created_at, expiresAt: expires_at };
+  }
+
+  if (method === "POST" && pathname === "/api/moments") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const ip = getClientIp(req);
+    if (!checkRateLimit("moment:" + ip, 20, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many moments posted. Please try again later." });
+    }
+    const body = await readBody(req);
+    const mediaType = body.mediaType === "video" ? "video" : "image";
+    const prefix = mediaType === "video" ? "data:video/" : "data:image/";
+    if (!body.media || typeof body.media !== "string" || !body.media.startsWith(prefix)) {
+      return sendJson(res, 400, { error: "Valid media is required" });
+    }
+    const ext = mediaType === "video" ? ".mp4" : ".jpg";
+    let mediaUrl;
+    try {
+      mediaUrl = await sbStorageUpload("media", "moments/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ext, body.media);
+    } catch (e) {
+      return sendJson(res, 500, { error: "Could not upload moment" });
+    }
+    const now = Date.now();
+    const moment = {
+      id: crypto.randomBytes(8).toString("hex"),
+      user_id: me.id,
+      media_url: mediaUrl,
+      media_type: mediaType,
+      caption: String(body.caption || "").slice(0, 300),
+      created_at: now,
+      expires_at: now + 24 * 60 * 60 * 1000,
+    };
+    await db.insert("mkt_moments", moment);
+    return sendJson(res, 201, momentOut(moment));
+  }
+
+  if (method === "GET" && pathname === "/api/moments/feed") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const friendRows = await db.select("mkt_friendships", {
+      status: "eq.accepted",
+      or: "(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(me.id) + ")",
+      select: "requester_id,addressee_id",
+    });
+    const friendIds = friendRows.map((f) => (f.requester_id === me.id ? f.addressee_id : f.requester_id));
+    const userIds = [me.id, ...friendIds];
+    const moments = await db.select("mkt_moments", {
+      user_id: "in.(" + userIds.map(enc).join(",") + ")",
+      expires_at: "gt." + Date.now(),
+      order: "created_at.asc",
+      select: "*",
+    });
+    const authors = await db.select("mkt_users", { id: "in.(" + userIds.map(enc).join(",") + ")", select: "id,name,photo" });
+    const grouped = {};
+    for (const m of moments) {
+      if (!grouped[m.user_id]) {
+        const u = authors.find((x) => x.id === m.user_id);
+        grouped[m.user_id] = { userId: m.user_id, userName: u ? u.name : "Unknown", userPhoto: u ? u.photo : null, moments: [] };
+      }
+      grouped[m.user_id].moments.push(momentOut(m));
+    }
+    const result = [];
+    if (grouped[me.id]) result.push(grouped[me.id]);
+    for (const uid of friendIds) {
+      if (grouped[uid]) result.push(grouped[uid]);
+    }
+    return sendJson(res, 200, result);
+  }
+
+  const userMomentsMatch = pathname.match(/^\/api\/moments\/user\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && userMomentsMatch) {
+    const moments = await db.select("mkt_moments", {
+      user_id: "eq." + enc(userMomentsMatch[1]),
+      expires_at: "gt." + Date.now(),
+      order: "created_at.asc",
+      select: "*",
+    });
+    return sendJson(res, 200, moments.map(momentOut));
+  }
+
+  const momentMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)$/);
+  if (method === "DELETE" && momentMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_moments", { id: "eq." + enc(momentMatch[1]), select: "*" });
+    const m = rows && rows[0];
+    if (!m) return sendJson(res, 404, { error: "Moment not found" });
+    if (m.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this moment" });
+    await db.remove("mkt_moments", { id: "eq." + enc(m.id) });
+    return sendJson(res, 200, { ok: true });
   }
 
   // ---- INTERNATIONAL COMPANIES (producer/distributor cross-border matching) ----
@@ -1506,6 +1864,16 @@ setInterval(async () => {
     console.error("reminder sweep failed:", e.message);
   }
 }, 6 * 60 * 60 * 1000).unref();
+
+// Moment cleanup: delete expired moments from the DB every hour (Storage
+// objects are left in place - cheap to keep, avoids extra Storage API calls).
+setInterval(async () => {
+  try {
+    await db.remove("mkt_moments", { expires_at: "lt." + Date.now() });
+  } catch (e) {
+    console.error("moment cleanup failed:", e.message);
+  }
+}, 60 * 60 * 1000).unref();
 
 server.listen(PORT, () => {
   console.log("Marketplace Pro running at http://localhost:" + PORT);
