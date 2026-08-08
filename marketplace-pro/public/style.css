@@ -317,16 +317,60 @@ button { cursor: pointer; font-family: inherit; }
 .photo-slot img { width: 100%; height: 100%; object-fit: cover; }
 .photo-slot .remove-photo { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 1; }
 
-/* ---- Profile ---- */
-.profile-header { display: flex; gap: 20px; align-items: center; background: #fff; border: 1px solid #e3e0d8; border-radius: 10px; padding: 24px; margin-bottom: 24px; flex-wrap: wrap; }
-.profile-avatar { width: 96px; height: 96px; border-radius: 50%; object-fit: cover; background: #ddd; }
-.profile-avatar-placeholder { width: 96px; height: 96px; border-radius: 50%; background: #0f3d2e; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 34px; font-weight: 700; }
+/* ---- Profile (Facebook-style: cover photo + overlapping avatar) ---- */
+.profile-cover-wrap { position: relative; margin-bottom: 56px; }
+.profile-cover {
+  width: 100%;
+  height: 220px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #0f3d2e, #1c6b4f);
+  background-size: cover;
+  background-position: center;
+  position: relative;
+  overflow: hidden;
+}
+.profile-cover-edit-btn {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.profile-cover-edit-btn:hover { background: rgba(0,0,0,0.75); }
+.profile-cover-input { display: none; }
+
+.profile-header {
+  display: flex;
+  gap: 20px;
+  align-items: flex-end;
+  background: #fff;
+  border: 1px solid #e3e0d8;
+  border-radius: 10px;
+  padding: 16px 24px 20px;
+  margin: -46px 16px 0;
+  flex-wrap: wrap;
+  position: relative;
+}
+.profile-avatar-wrap { position: relative; margin-top: -56px; flex-shrink: 0; }
+.profile-avatar { width: 112px; height: 112px; border-radius: 50%; object-fit: cover; background: #ddd; border: 4px solid #fff; }
+.profile-avatar-placeholder { width: 112px; height: 112px; border-radius: 50%; background: #0f3d2e; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 38px; font-weight: 700; border: 4px solid #fff; }
 .profile-name { font-size: 22px; font-weight: 800; margin: 0 0 4px; }
 .profile-bio { font-size: 14px; color: #555; margin: 6px 0; max-width: 500px; }
 .profile-sub { font-size: 12px; color: #888; }
-.profile-actions { margin-left: auto; display: flex; gap: 10px; flex-wrap: wrap; }
+.profile-actions { margin-left: auto; display: flex; gap: 10px; flex-wrap: wrap; align-self: center; }
+.profile-friends-count { font-size: 12px; color: #888; margin-top: 2px; }
 
-.tabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid #ddd; }
+.profile-about-card { background: #fff; border: 1px solid #e3e0d8; border-radius: 10px; padding: 18px 20px; margin: 16px 16px 20px; }
+.profile-about-row { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: #333; margin-bottom: 8px; }
+.profile-about-row:last-child { margin-bottom: 0; }
+.profile-about-icon { width: 20px; text-align: center; flex-shrink: 0; }
+
+.tabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
 .tab-btn { background: none; border: none; padding: 10px 16px; font-size: 14px; font-weight: 600; color: #777; border-bottom: 2px solid transparent; }
 .tab-btn.active { color: #0f3d2e; border-color: #0f3d2e; }
 
@@ -335,6 +379,62 @@ button { cursor: pointer; font-family: inherit; }
 .review-author { font-weight: 700; font-size: 13px; }
 .review-date { font-size: 11px; color: #999; margin-left: auto; }
 .review-comment { font-size: 13px; color: #444; }
+
+/* ---- Photo gallery (profile Photos tab) ---- */
+.photo-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.photo-gallery-item { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #eee; }
+.photo-gallery-item img { width: 100%; height: 100%; object-fit: cover; }
+.photo-gallery-item .photo-remove-btn { position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 22px; height: 22px; font-size: 13px; line-height: 1; }
+.photo-gallery-add { aspect-ratio: 1; border: 2px dashed #bbb; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: #888; cursor: pointer; background: #fafafa; text-align: center; padding: 8px; }
+.photo-gallery-add:hover { border-color: #0f3d2e; color: #0f3d2e; }
+.photo-gallery-add input { display: none; }
+
+/* ---- Friends ---- */
+.friends-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
+.friend-card { background: #fff; border: 1px solid #e3e0d8; border-radius: 10px; overflow: hidden; text-align: center; }
+.friend-card-photo { width: 100%; aspect-ratio: 1; object-fit: cover; background: #eee; }
+.friend-card-photo-placeholder { width: 100%; aspect-ratio: 1; background: #0f3d2e; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 700; }
+.friend-card-body { padding: 8px; }
+.friend-card-name { font-size: 13px; font-weight: 700; margin: 0 0 6px; }
+.friend-card-remove { background: none; border: none; color: #a83232; font-size: 11px; text-decoration: underline; padding: 0; }
+
+.friend-request-row { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #e3e0d8; border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
+.friend-request-name { font-weight: 700; font-size: 14px; flex: 1; }
+
+.btn-friend-status { background: #eef5ef; color: #0f3d2e; border: 1px solid #cfe8dd; }
+
+/* ---- Moments (stories: photo/video, 24h) ---- */
+.moments-bar { display: flex; gap: 12px; overflow-x: auto; padding: 4px 2px 14px; margin-bottom: 6px; }
+.moment-circle-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; width: 68px; cursor: pointer; }
+.moment-circle { width: 60px; height: 60px; border-radius: 50%; padding: 2px; background: linear-gradient(135deg, #d4a017, #0f3d2e); display: flex; align-items: center; justify-content: center; position: relative; }
+.moment-circle.seen { background: #ccc; }
+.moment-circle-inner { width: 100%; height: 100%; border-radius: 50%; overflow: hidden; border: 2px solid #fff; background: #ddd; }
+.moment-circle-inner img { width: 100%; height: 100%; object-fit: cover; }
+.moment-circle-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #0f3d2e; color: #fff; font-weight: 700; font-size: 18px; }
+.moment-circle-add-badge { position: absolute; bottom: -2px; right: -2px; width: 20px; height: 20px; border-radius: 50%; background: #d4a017; color: #1a1a1a; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; border: 2px solid #fff; }
+.moment-circle-label { font-size: 11px; color: #555; text-align: center; max-width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.moment-viewer-overlay { position: fixed; inset: 0; background: #000; z-index: 500; display: flex; align-items: center; justify-content: center; }
+.moment-viewer-media-wrap { position: relative; width: 100%; max-width: 480px; height: 100%; max-height: 100vh; display: flex; align-items: center; justify-content: center; background: #111; }
+.moment-viewer-media { max-width: 100%; max-height: 100%; object-fit: contain; }
+.moment-viewer-progress { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; gap: 4px; z-index: 2; }
+.moment-viewer-progress-bar { flex: 1; height: 3px; background: rgba(255,255,255,0.3); border-radius: 2px; overflow: hidden; }
+.moment-viewer-progress-fill { height: 100%; background: #fff; width: 0%; }
+.moment-viewer-progress-bar.done .moment-viewer-progress-fill { width: 100%; }
+.moment-viewer-head { position: absolute; top: 18px; left: 12px; right: 12px; display: flex; align-items: center; gap: 8px; z-index: 2; color: #fff; }
+.moment-viewer-head img { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; border: 1px solid #fff; }
+.moment-viewer-head-name { font-size: 13px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.moment-viewer-close { margin-left: auto; background: none; border: none; color: #fff; font-size: 22px; }
+.moment-viewer-caption { position: absolute; bottom: 20px; left: 16px; right: 16px; color: #fff; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); z-index: 2; }
+.moment-viewer-delete { position: absolute; bottom: 20px; right: 16px; background: rgba(168,50,50,0.85); color: #fff; border: none; border-radius: 6px; padding: 6px 12px; font-size: 12px; z-index: 2; }
+.moment-viewer-nav { position: absolute; top: 0; bottom: 0; width: 40%; z-index: 1; background: transparent; border: none; }
+.moment-viewer-nav.prev { left: 0; }
+.moment-viewer-nav.next { right: 0; }
+
+.moment-upload-preview { width: 100%; max-height: 260px; object-fit: contain; border-radius: 8px; background: #eee; margin: 10px 0; }
+.moment-upload-choices { display: flex; gap: 10px; margin-top: 6px; }
+.moment-upload-choices label { flex: 1; text-align: center; background: #eef5ef; color: #0f3d2e; border: 1px dashed #0f3d2e; border-radius: 8px; padding: 14px 8px; font-size: 13px; font-weight: 700; cursor: pointer; }
+.moment-upload-choices input { display: none; }
 
 /* ---- Messages ---- */
 .messages-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; height: 560px; }
@@ -355,7 +455,7 @@ button { cursor: pointer; font-family: inherit; }
 .chat-input-row input { flex: 1; padding: 9px 10px; border: 1px solid #ccc; border-radius: 6px; }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
-.modal-box { background: #fff; border-radius: 10px; padding: 24px; max-width: 420px; width: 100%; }
+.modal-box { background: #fff; border-radius: 10px; padding: 24px; max-width: 420px; width: 100%; max-height: 90vh; overflow-y: auto; }
 
 /* ---- OAuth buttons ---- */
 .oauth-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0; font-size: 12px; color: #999; }

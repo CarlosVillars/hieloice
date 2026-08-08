@@ -243,6 +243,7 @@ function renderHome() {
 
   viewEl.innerHTML = `
     <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
+    <div class="moments-bar" id="home-moments-bar" style="display:none;"></div>
     <div class="hero">
       <h1>${escapeHtml(I18N.t("site.name"))}</h1>
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
@@ -251,6 +252,7 @@ function renderHome() {
     <div class="category-grid">${cards}</div>
   `;
   loadAdCarousel();
+  loadHomeMomentsBar();
 }
 
 let adRotateTimer = null;
@@ -857,6 +859,476 @@ function renderPhotoGrid() {
   });
 }
 
+// ---------------- Friends ----------------
+
+function friendActionMarkup(fs) {
+  if (!state.token) {
+    return `<a class="btn btn-outline" href="#/login">${I18N.t("friends.addFriend")}</a>`;
+  }
+  if (!fs || fs.status === "none") {
+    return `<button class="btn btn-outline" id="btn-friend-add">${I18N.t("friends.addFriend")}</button>`;
+  }
+  if (fs.status === "pending_sent") {
+    return `<button class="btn btn-friend-status" id="btn-friend-cancel" data-fid="${fs.friendshipId}">${I18N.t("friends.requestSent")}</button>`;
+  }
+  if (fs.status === "pending_received") {
+    return `
+      <button class="btn btn-primary" id="btn-friend-accept" data-fid="${fs.friendshipId}">${I18N.t("friends.accept")}</button>
+      <button class="btn btn-secondary" id="btn-friend-decline" data-fid="${fs.friendshipId}">${I18N.t("friends.decline")}</button>
+    `;
+  }
+  if (fs.status === "friends") {
+    return `<button class="btn btn-friend-status" id="btn-friend-remove">${I18N.t("friends.friendsBadge")}</button>`;
+  }
+  return "";
+}
+
+function wireFriendActionButtons(otherUserId) {
+  const addBtn = document.getElementById("btn-friend-add");
+  if (addBtn) {
+    addBtn.addEventListener("click", async () => {
+      try {
+        await api("/api/friends/request", { method: "POST", auth: true, body: { userId: otherUserId } });
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+  const cancelBtn = document.getElementById("btn-friend-cancel");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", async () => {
+      try {
+        await api("/api/friends/" + cancelBtn.dataset.fid + "/reject", { method: "POST", auth: true });
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+  const acceptBtn = document.getElementById("btn-friend-accept");
+  if (acceptBtn) {
+    acceptBtn.addEventListener("click", async () => {
+      try {
+        await api("/api/friends/" + acceptBtn.dataset.fid + "/accept", { method: "POST", auth: true });
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+  const declineBtn = document.getElementById("btn-friend-decline");
+  if (declineBtn) {
+    declineBtn.addEventListener("click", async () => {
+      try {
+        await api("/api/friends/" + declineBtn.dataset.fid + "/reject", { method: "POST", auth: true });
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+  const removeBtn = document.getElementById("btn-friend-remove");
+  if (removeBtn) {
+    removeBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("friends.confirmRemove"))) return;
+      try {
+        await api("/api/friends/user/" + otherUserId, { method: "DELETE", auth: true });
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+}
+
+async function renderFriendsTab() {
+  const el = document.getElementById("tab-friends");
+  if (!el) return;
+  el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const friends = await api("/api/friends", { auth: true });
+  el.innerHTML = friends.length
+    ? `<div class="friends-grid">${friends
+        .map(
+          (f) => `
+      <div class="friend-card">
+        <a href="#/profile/${f.userId}">
+          ${f.photo ? `<img class="friend-card-photo" src="${f.photo}" />` : `<div class="friend-card-photo-placeholder">${initials(f.name)}</div>`}
+        </a>
+        <div class="friend-card-body">
+          <p class="friend-card-name">${escapeHtml(f.name)}</p>
+          <button class="friend-card-remove" data-uid="${f.userId}">${I18N.t("friends.removeFriend")}</button>
+        </div>
+      </div>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("friends.noFriends")}</div>`;
+
+  el.querySelectorAll(".friend-card-remove").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("friends.confirmRemove"))) return;
+      await api("/api/friends/user/" + btn.dataset.uid, { method: "DELETE", auth: true });
+      renderFriendsTab();
+    });
+  });
+}
+
+async function renderRequestsTab() {
+  const el = document.getElementById("tab-requests");
+  if (!el) return;
+  el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const requests = await api("/api/friends/requests", { auth: true });
+  el.innerHTML = requests.length
+    ? requests
+        .map(
+          (r) => `
+      <div class="friend-request-row">
+        ${r.photo ? `<img class="mini-avatar" style="width:36px;height:36px;" src="${r.photo}" />` : `<div class="seller-avatar-placeholder" style="width:36px;height:36px;">${initials(r.name)}</div>`}
+        <span class="friend-request-name">${escapeHtml(r.name)}</span>
+        <button class="btn btn-primary" data-accept="${r.friendshipId}">${I18N.t("friends.accept")}</button>
+        <button class="btn btn-secondary" data-decline="${r.friendshipId}">${I18N.t("friends.decline")}</button>
+      </div>`
+        )
+        .join("")
+    : `<div class="empty-state">${I18N.t("friends.noRequests")}</div>`;
+
+  el.querySelectorAll("[data-accept]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api("/api/friends/" + btn.dataset.accept + "/accept", { method: "POST", auth: true });
+      renderRequestsTab();
+      pollUnread();
+    });
+  });
+  el.querySelectorAll("[data-decline]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api("/api/friends/" + btn.dataset.decline + "/reject", { method: "POST", auth: true });
+      renderRequestsTab();
+    });
+  });
+}
+
+// ---------------- Photo gallery (profile Photos tab) ----------------
+
+function renderPhotosGalleryTab(photos, isMe) {
+  const el = document.getElementById("tab-photos");
+  if (!el) return;
+  const tiles = photos
+    .map(
+      (p) => `
+    <div class="photo-gallery-item" data-id="${p.id}">
+      <img src="${p.url}" />
+      ${isMe ? `<button class="photo-remove-btn" data-id="${p.id}">&times;</button>` : ""}
+    </div>`
+    )
+    .join("");
+  const addTile = isMe
+    ? `<label class="photo-gallery-add">+ ${I18N.t("profile.addPhotoBtn")}<input type="file" id="gallery-photo-input" accept="image/*" /></label>`
+    : "";
+  el.innerHTML = `<div class="photo-gallery-grid">${addTile}${tiles}</div>${
+    !photos.length && !isMe ? `<div class="empty-state">${I18N.t("profile.noPhotos")}</div>` : ""
+  }`;
+
+  if (isMe) {
+    const input = document.getElementById("gallery-photo-input");
+    input.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          await api("/api/users/me/photos", { method: "POST", auth: true, body: { photo: reader.result } });
+          router();
+        } catch (err) {
+          alert(err.message);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+    el.querySelectorAll(".photo-remove-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(I18N.t("common.delete") + "?")) return;
+        try {
+          await api("/api/photos/" + btn.dataset.id, { method: "DELETE", auth: true });
+          router();
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+    });
+  }
+}
+
+// ---------------- Moments (stories: photo/video, visible 24h) ----------------
+
+function renderMomentGroupsBar(containerEl, groups, opts) {
+  let html = "";
+  if (opts && opts.showAddForUserId) {
+    const mine = groups.find((g) => g.userId === opts.showAddForUserId);
+    const hasOwn = !!(mine && mine.moments.length);
+    html += `
+      <div class="moment-circle-wrap" id="moment-add-circle">
+        <div class="moment-circle">
+          <div class="moment-circle-inner">
+            ${opts.ownPhoto ? `<img src="${opts.ownPhoto}" />` : `<div class="moment-circle-placeholder">${initials(opts.ownName || "")}</div>`}
+          </div>
+          <span class="moment-circle-add-badge">+</span>
+        </div>
+        <span class="moment-circle-label">${I18N.t("moments.yourMoment")}</span>
+      </div>`;
+    if (!hasOwn) {
+      // nothing else to add here; handled by click handler below
+    }
+  }
+  const others = opts && opts.showAddForUserId ? groups.filter((g) => g.userId !== opts.showAddForUserId) : groups;
+  others.forEach((g) => {
+    html += `
+      <div class="moment-circle-wrap" data-uid="${g.userId}">
+        <div class="moment-circle">
+          <div class="moment-circle-inner">
+            ${g.userPhoto ? `<img src="${g.userPhoto}" />` : `<div class="moment-circle-placeholder">${initials(g.userName)}</div>`}
+          </div>
+        </div>
+        <span class="moment-circle-label">${escapeHtml(g.userName)}</span>
+      </div>`;
+  });
+  containerEl.innerHTML = html;
+
+  if (opts && opts.showAddForUserId) {
+    const addCircle = document.getElementById("moment-add-circle");
+    if (addCircle) {
+      addCircle.addEventListener("click", () => {
+        const mine = groups.find((g) => g.userId === opts.showAddForUserId);
+        if (mine && mine.moments.length) {
+          openMomentsViewer(mine.moments, 0, mine);
+        } else {
+          openMomentUploadModal();
+        }
+      });
+    }
+  }
+  containerEl.querySelectorAll(".moment-circle-wrap[data-uid]").forEach((wrap) => {
+    wrap.addEventListener("click", () => {
+      const g = groups.find((x) => x.userId === wrap.dataset.uid);
+      if (g) openMomentsViewer(g.moments, 0, g);
+    });
+  });
+}
+
+async function loadHomeMomentsBar() {
+  const el = document.getElementById("home-moments-bar");
+  if (!el) return;
+  if (!state.token) {
+    el.style.display = "none";
+    return;
+  }
+  try {
+    const groups = await api("/api/moments/feed", { auth: true });
+    el.style.display = "flex";
+    renderMomentGroupsBar(el, groups, {
+      showAddForUserId: state.user.id,
+      ownPhoto: state.user.photo,
+      ownName: state.user.name,
+    });
+  } catch (e) {
+    el.style.display = "none";
+  }
+}
+
+function renderProfileMomentsBar(userId, userName, userPhoto, moments, isMe) {
+  const el = document.getElementById("profile-moments-bar");
+  if (!el) return;
+  if (!moments.length && !isMe) {
+    el.innerHTML = `<p style="color:#888;font-size:13px;">${I18N.t("moments.noMoments")}</p>`;
+    return;
+  }
+  const group = { userId, userName, userPhoto, moments };
+  const groups = moments.length ? [group] : [];
+  renderMomentGroupsBar(el, groups, isMe ? { showAddForUserId: userId, ownPhoto: userPhoto, ownName: userName } : undefined);
+}
+
+let momentViewerState = null;
+let momentViewerTimer = null;
+
+function openMomentsViewer(moments, startIndex, group) {
+  if (!moments || !moments.length) return;
+  momentViewerState = { moments: moments.slice(), index: startIndex || 0, group };
+  const overlay = document.createElement("div");
+  overlay.className = "moment-viewer-overlay";
+  overlay.id = "moment-viewer-overlay";
+  document.body.appendChild(overlay);
+  drawMomentViewer();
+}
+
+function closeMomentsViewer() {
+  if (momentViewerTimer) {
+    clearTimeout(momentViewerTimer);
+    momentViewerTimer = null;
+  }
+  const overlay = document.getElementById("moment-viewer-overlay");
+  if (overlay) overlay.remove();
+  momentViewerState = null;
+}
+
+function drawMomentViewer() {
+  const overlay = document.getElementById("moment-viewer-overlay");
+  if (!overlay || !momentViewerState) return;
+  if (momentViewerTimer) {
+    clearTimeout(momentViewerTimer);
+    momentViewerTimer = null;
+  }
+  const { moments, index, group } = momentViewerState;
+  const m = moments[index];
+  const isOwn = state.user && m.userId === state.user.id;
+
+  const bars = moments
+    .map((_, i) => `<div class="moment-viewer-progress-bar ${i < index ? "done" : ""}"><div class="moment-viewer-progress-fill" id="progress-fill-${i}"></div></div>`)
+    .join("");
+
+  overlay.innerHTML = `
+    <div class="moment-viewer-media-wrap">
+      <div class="moment-viewer-progress">${bars}</div>
+      <div class="moment-viewer-head">
+        ${group && group.userPhoto ? `<img src="${group.userPhoto}" />` : ""}
+        <span class="moment-viewer-head-name">${escapeHtml((group && group.userName) || "")}</span>
+        <button class="moment-viewer-close" id="moment-viewer-close">&times;</button>
+      </div>
+      ${
+        m.mediaType === "video"
+          ? `<video class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>`
+          : `<img class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" />`
+      }
+      ${m.caption ? `<div class="moment-viewer-caption">${escapeHtml(m.caption)}</div>` : ""}
+      ${isOwn ? `<button class="moment-viewer-delete" id="moment-viewer-delete">${I18N.t("moments.delete")}</button>` : ""}
+      <button class="moment-viewer-nav prev" id="moment-viewer-prev"></button>
+      <button class="moment-viewer-nav next" id="moment-viewer-next"></button>
+    </div>
+  `;
+
+  document.getElementById("moment-viewer-close").addEventListener("click", closeMomentsViewer);
+  document.getElementById("moment-viewer-prev").addEventListener("click", () => stepMomentViewer(-1));
+  document.getElementById("moment-viewer-next").addEventListener("click", () => stepMomentViewer(1));
+  const delBtn = document.getElementById("moment-viewer-delete");
+  if (delBtn) {
+    delBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("moments.confirmDelete"))) return;
+      try {
+        await api("/api/moments/" + m.id, { method: "DELETE", auth: true });
+        momentViewerState.moments.splice(index, 1);
+        if (!momentViewerState.moments.length) {
+          closeMomentsViewer();
+          router();
+          return;
+        }
+        momentViewerState.index = Math.min(index, momentViewerState.moments.length - 1);
+        drawMomentViewer();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+
+  const duration = m.mediaType === "video" ? 15000 : 5000;
+  const fill = document.getElementById("progress-fill-" + index);
+  if (fill) {
+    requestAnimationFrame(() => {
+      fill.style.transition = "width " + duration + "ms linear";
+      fill.style.width = "100%";
+    });
+  }
+  momentViewerTimer = setTimeout(() => stepMomentViewer(1), duration);
+}
+
+function stepMomentViewer(dir) {
+  if (!momentViewerState) return;
+  const next = momentViewerState.index + dir;
+  if (next < 0) return;
+  if (next >= momentViewerState.moments.length) {
+    closeMomentsViewer();
+    return;
+  }
+  momentViewerState.index = next;
+  drawMomentViewer();
+}
+
+function openMomentUploadModal() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  let mediaDataUrl = null;
+  let mediaType = null;
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <h2 class="section-heading">${I18N.t("moments.add")}</h2>
+      <div id="moment-upload-preview-wrap"></div>
+      <div class="moment-upload-choices" id="moment-upload-choices">
+        <label>${I18N.t("moments.uploadPhoto")}<input type="file" id="moment-photo-input" accept="image/*" /></label>
+        <label>${I18N.t("moments.uploadVideo")}<input type="file" id="moment-video-input" accept="video/*" /></label>
+      </div>
+      <div class="form-group" style="margin-top:10px;">
+        <textarea id="moment-caption" rows="2" placeholder="${I18N.t("moments.captionPlaceholder")}"></textarea>
+      </div>
+      <div class="action-row">
+        <button class="btn btn-primary" id="moment-submit" disabled>${I18N.t("moments.post")}</button>
+        <button class="btn btn-secondary" id="moment-cancel">${I18N.t("common.cancel")}</button>
+      </div>
+      <p class="form-msg" id="moment-upload-msg"></p>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const previewWrap = document.getElementById("moment-upload-preview-wrap");
+  const submitBtn = document.getElementById("moment-submit");
+
+  function handleFile(file, type) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      mediaDataUrl = reader.result;
+      mediaType = type;
+      previewWrap.innerHTML =
+        type === "video"
+          ? `<video class="moment-upload-preview" src="${mediaDataUrl}" controls></video>`
+          : `<img class="moment-upload-preview" src="${mediaDataUrl}" />`;
+      submitBtn.disabled = false;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  document.getElementById("moment-photo-input").addEventListener("change", (e) => {
+    if (e.target.files[0]) handleFile(e.target.files[0], "image");
+  });
+  document.getElementById("moment-video-input").addEventListener("change", (e) => {
+    if (e.target.files[0]) handleFile(e.target.files[0], "video");
+  });
+  document.getElementById("moment-cancel").addEventListener("click", () => overlay.remove());
+  submitBtn.addEventListener("click", async () => {
+    const msgEl = document.getElementById("moment-upload-msg");
+    if (!mediaDataUrl) return;
+    submitBtn.disabled = true;
+    msgEl.textContent = I18N.t("moments.uploading");
+    msgEl.className = "form-msg";
+    try {
+      await api("/api/moments", {
+        method: "POST",
+        auth: true,
+        body: { mediaType, media: mediaDataUrl, caption: document.getElementById("moment-caption").value },
+      });
+      msgEl.textContent = I18N.t("moments.posted");
+      msgEl.className = "form-msg ok";
+      setTimeout(() => {
+        overlay.remove();
+        router();
+      }, 700);
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+      submitBtn.disabled = false;
+    }
+  });
+}
+
 // ---------------- Profile ----------------
 
 async function renderProfile(userId) {
@@ -866,117 +1338,159 @@ async function renderProfile(userId) {
   }
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
 
-  const [profile, reviews, products] = await Promise.all([
+  const isMe = state.user && state.user.id === userId;
+
+  const [profile, reviews, products, photos, moments] = await Promise.all([
     api("/api/users/" + userId),
     api("/api/users/" + userId + "/reviews"),
     api("/api/products?category=all").then((list) => list.filter((p) => p.sellerId === userId)),
+    api("/api/users/" + userId + "/photos"),
+    api("/api/moments/user/" + userId),
   ]);
 
-  const isMe = state.user && state.user.id === userId;
+  let friendStatus = null;
+  if (state.token && !isMe) {
+    try {
+      friendStatus = await api("/api/friends/status/" + userId, { auth: true });
+    } catch (e) {}
+  }
+
+  const aboutRows = [
+    profile.hometown ? `<div class="profile-about-row"><span class="profile-about-icon">\u{1F30D}</span>${I18N.t("profile.hometown")}: ${escapeHtml(profile.hometown)}</div>` : "",
+    profile.work ? `<div class="profile-about-row"><span class="profile-about-icon">\u{1F4BC}</span>${I18N.t("profile.work")}: ${escapeHtml(profile.work)}</div>` : "",
+    profile.education ? `<div class="profile-about-row"><span class="profile-about-icon">\u{1F393}</span>${I18N.t("profile.education")}: ${escapeHtml(profile.education)}</div>` : "",
+    profile.interests ? `<div class="profile-about-row"><span class="profile-about-icon">\u{2764}\u{FE0F}</span>${I18N.t("profile.interests")}: ${escapeHtml(profile.interests)}</div>` : "",
+  ]
+    .filter(Boolean)
+    .join("");
 
   viewEl.innerHTML = `
-    <div class="profile-header">
-      ${
-        profile.photo
-          ? `<img class="profile-avatar" src="${profile.photo}" />`
-          : `<div class="profile-avatar-placeholder">${initials(profile.name)}</div>`
-      }
-      <div>
-        <p class="profile-name">${escapeHtml(profile.name)}</p>
-        <div class="stars">${starsMarkup(profile.ratingAvg)} <span style="color:#888;font-size:12px;">(${profile.ratingCount})</span></div>
-        <p class="profile-sub">${I18N.t("profile.buyerAndSeller")} &middot; ${I18N.t("profile.memberSince")} ${fmtDate(profile.createdAt)}</p>
-        ${profile.location ? `<p class="profile-sub">\u{1F4CD} ${escapeHtml(profile.location)}</p>` : ""}
-        ${profile.bio ? `<p class="profile-bio">${escapeHtml(profile.bio)}</p>` : ""}
+    <div class="profile-cover-wrap">
+      <div class="profile-cover" id="profile-cover" style="${profile.coverPhoto ? `background-image:url('${profile.coverPhoto}')` : ""}">
+        ${isMe ? `<button class="profile-cover-edit-btn" id="btn-edit-cover">${I18N.t("profile.changeCover")}</button><input type="file" id="cover-input" class="profile-cover-input" accept="image/*" />` : ""}
       </div>
-      <div class="profile-actions">
-        ${isMe ? `<button class="btn btn-outline" id="btn-edit-profile">${I18N.t("profile.editProfile")}</button>` : ""}
-        ${isMe ? `<a class="btn btn-gold" href="#/post">${I18N.t("profile.postNewListing")}</a>` : ""}
-        ${!isMe && state.token ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}
+      <div class="profile-header">
+        <div class="profile-avatar-wrap">
+          ${
+            profile.photo
+              ? `<img class="profile-avatar" src="${profile.photo}" />`
+              : `<div class="profile-avatar-placeholder">${initials(profile.name)}</div>`
+          }
+        </div>
+        <div>
+          <p class="profile-name">${escapeHtml(profile.name)}</p>
+          <div class="stars">${starsMarkup(profile.ratingAvg)} <span style="color:#888;font-size:12px;">(${profile.ratingCount})</span></div>
+          <p class="profile-sub">${I18N.t("profile.memberSince")} ${fmtDate(profile.createdAt)}</p>
+          ${profile.location ? `<p class="profile-sub">\u{1F4CD} ${escapeHtml(profile.location)}</p>` : ""}
+          ${profile.bio ? `<p class="profile-bio">${escapeHtml(profile.bio)}</p>` : ""}
+        </div>
+        <div class="profile-actions" id="profile-actions">
+          ${isMe ? `<button class="btn btn-outline" id="btn-edit-profile">${I18N.t("profile.editProfile")}</button>` : ""}
+          ${isMe ? `<a class="btn btn-gold" href="#/post">${I18N.t("profile.postNewListing")}</a>` : ""}
+          ${!isMe ? friendActionMarkup(friendStatus) : ""}
+          ${!isMe && state.token ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}
+        </div>
       </div>
     </div>
-    ${
-      !isMe && state.token
-        ? `<p style="margin:-14px 0 20px;"><a href="#" id="report-user-link" class="report-link">${I18N.t("report.reportUser")}</a></p>`
-        : ""
-    }
 
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="listings">${I18N.t("profile.myListings")}</button>
-      <button class="tab-btn" data-tab="reviews">${I18N.t("profile.reviews")}</button>
-      ${isMe ? `<button class="tab-btn" data-tab="offers">${I18N.t("profile.myOffers")}</button>` : ""}
-      ${isMe && state.token ? `<button class="tab-btn" data-tab="notifications">${I18N.t("notif.tabTitle")}</button>` : ""}
-      ${isMe && state.user && state.user.isOwner ? `<button class="tab-btn" data-tab="ads">${I18N.t("ads.manageAds")}</button>` : ""}
+    ${aboutRows ? `<div class="profile-about-card"><h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("profile.about")}</h2>${aboutRows}</div>` : ""}
+
+    <div style="margin:0 16px 20px;">
+      <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("moments.title")}</h2>
+      <div class="moments-bar" id="profile-moments-bar"></div>
     </div>
 
-    <div id="tab-listings">
-      <div class="product-grid">
+    <div style="margin:0 16px;">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="listings">${I18N.t("profile.myListings")}</button>
+        <button class="tab-btn" data-tab="photos">${I18N.t("profile.photosTab")}</button>
+        <button class="tab-btn" data-tab="reviews">${I18N.t("profile.reviews")}</button>
+        ${isMe ? `<button class="tab-btn" data-tab="friends">${I18N.t("profile.friendsTab")}</button>` : ""}
+        ${isMe ? `<button class="tab-btn" data-tab="requests">${I18N.t("profile.requestsTab")}</button>` : ""}
+        ${isMe ? `<button class="tab-btn" data-tab="offers">${I18N.t("profile.myOffers")}</button>` : ""}
+        ${isMe && state.token ? `<button class="tab-btn" data-tab="notifications">${I18N.t("notif.tabTitle")}</button>` : ""}
+        ${isMe && state.user && state.user.isOwner ? `<button class="tab-btn" data-tab="ads">${I18N.t("ads.manageAds")}</button>` : ""}
+      </div>
+
+      <div id="tab-listings">
+        <div class="product-grid">
+          ${
+            products.length
+              ? products
+                  .map(
+                    (p) => `
+            <a class="product-card" href="#/product/${p.id}">
+              <div class="product-thumb-wrap">
+                ${p.photos && p.photos[0] ? `<img class="product-thumb" src="${p.photos[0]}" />` : `<div class="product-thumb-empty">\u{1F4E6}</div>`}
+                ${statusBadgeMarkup(p.status)}
+              </div>
+              <div class="product-card-body">
+                <p class="product-title">${escapeHtml(p.title)}</p>
+                <p class="product-price">${fmtPrice(p.price)}</p>
+              </div>
+            </a>`
+                  )
+                  .join("")
+              : `<div class="empty-state">${I18N.t("profile.noListings")}</div>`
+          }
+        </div>
+      </div>
+
+      <div id="tab-photos" style="display:none;"></div>
+
+      <div id="tab-reviews" style="display:none;">
         ${
-          products.length
-            ? products
+          !isMe && state.token
+            ? `
+          <div class="form-panel" style="margin-bottom:20px;">
+            <label>${I18N.t("profile.leaveReview")}</label>
+            <div id="star-input" style="margin:8px 0;"></div>
+            <textarea id="review-comment" rows="2" placeholder="${I18N.t("profile.comment")}"></textarea>
+            <button class="btn btn-primary" id="review-submit" style="margin-top:8px;">${I18N.t("profile.submitReview")}</button>
+            <p class="form-msg" id="review-msg"></p>
+          </div>`
+            : ""
+        }
+        ${
+          reviews.length
+            ? reviews
                 .map(
-                  (p) => `
-          <a class="product-card" href="#/product/${p.id}">
-            <div class="product-thumb-wrap">
-              ${p.photos && p.photos[0] ? `<img class="product-thumb" src="${p.photos[0]}" />` : `<div class="product-thumb-empty">\u{1F4E6}</div>`}
-              ${statusBadgeMarkup(p.status)}
-            </div>
-            <div class="product-card-body">
-              <p class="product-title">${escapeHtml(p.title)}</p>
-              <p class="product-price">${fmtPrice(p.price)}</p>
-            </div>
-          </a>`
+                  (r) => `
+            <div class="review-card">
+              <div class="review-head">
+                <span class="review-author">${escapeHtml(r.authorName)}</span>
+                <span class="stars">${starsMarkup(r.rating)}</span>
+                <span class="review-date">${fmtDate(r.createdAt)}</span>
+              </div>
+              <div class="review-comment">${escapeHtml(r.comment)}</div>
+            </div>`
                 )
                 .join("")
-            : `<div class="empty-state">${I18N.t("profile.noListings")}</div>`
+            : `<div class="empty-state">${I18N.t("profile.noReviews")}</div>`
         }
       </div>
-    </div>
 
-    <div id="tab-reviews" style="display:none;">
-      ${
-        !isMe && state.token
-          ? `
-        <div class="form-panel" style="margin-bottom:20px;">
-          <label>${I18N.t("profile.leaveReview")}</label>
-          <div id="star-input" style="margin:8px 0;"></div>
-          <textarea id="review-comment" rows="2" placeholder="${I18N.t("profile.comment")}"></textarea>
-          <button class="btn btn-primary" id="review-submit" style="margin-top:8px;">${I18N.t("profile.submitReview")}</button>
-          <p class="form-msg" id="review-msg"></p>
-        </div>`
-          : ""
-      }
-      ${
-        reviews.length
-          ? reviews
-              .map(
-                (r) => `
-          <div class="review-card">
-            <div class="review-head">
-              <span class="review-author">${escapeHtml(r.authorName)}</span>
-              <span class="stars">${starsMarkup(r.rating)}</span>
-              <span class="review-date">${fmtDate(r.createdAt)}</span>
-            </div>
-            <div class="review-comment">${escapeHtml(r.comment)}</div>
-          </div>`
-              )
-              .join("")
-          : `<div class="empty-state">${I18N.t("profile.noReviews")}</div>`
-      }
+      ${isMe ? `<div id="tab-friends" style="display:none;"></div>` : ""}
+      ${isMe ? `<div id="tab-requests" style="display:none;"></div>` : ""}
+      ${isMe ? `<div id="tab-offers" style="display:none;"></div>` : ""}
+      ${isMe && state.token ? `<div id="tab-notifications" style="display:none;"></div>` : ""}
+      ${isMe && state.user && state.user.isOwner ? `<div id="tab-ads" style="display:none;"></div>` : ""}
     </div>
-
-    ${isMe ? `<div id="tab-offers" style="display:none;"></div>` : ""}
-    ${isMe && state.token ? `<div id="tab-notifications" style="display:none;"></div>` : ""}
-    ${isMe && state.user && state.user.isOwner ? `<div id="tab-ads" style="display:none;"></div>` : ""}
   `;
+
+  renderPhotosGalleryTab(photos, isMe);
+  renderProfileMomentsBar(userId, profile.name, profile.photo, moments, isMe);
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "reviews", "offers", "notifications", "ads"].forEach((t) => {
+      ["listings", "photos", "reviews", "friends", "requests", "offers", "notifications", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
+      if (btn.dataset.tab === "friends" && isMe) await renderFriendsTab();
+      if (btn.dataset.tab === "requests" && isMe) await renderRequestsTab();
       if (btn.dataset.tab === "offers" && isMe) await renderMyOffers();
       if (btn.dataset.tab === "notifications" && isMe && state.token) await renderNotificationSettings();
       if (btn.dataset.tab === "ads" && isMe && state.user && state.user.isOwner) await renderAdsManager();
@@ -987,9 +1501,30 @@ async function renderProfile(userId) {
     document.getElementById("btn-edit-profile").addEventListener("click", () =>
       openEditProfileModal({ ...profile, phone: state.user ? state.user.phone : "" })
     );
+    const coverBtn = document.getElementById("btn-edit-cover");
+    const coverInput = document.getElementById("cover-input");
+    if (coverBtn && coverInput) {
+      coverBtn.addEventListener("click", () => coverInput.click());
+      coverInput.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            await api("/api/users/me", { method: "PUT", auth: true, body: { coverPhoto: reader.result } });
+            document.getElementById("profile-cover").style.backgroundImage = `url('${reader.result}')`;
+          } catch (err) {
+            alert(err.message);
+          }
+        };
+        reader.readAsDataURL(file);
+      });
+    }
   }
 
-  if (!isMe && state.token) {
+  if (!isMe) {
+    wireFriendActionButtons(userId);
+
     const reportUserLink = document.getElementById("report-user-link");
     if (reportUserLink) {
       reportUserLink.addEventListener("click", (e) => {
@@ -998,33 +1533,35 @@ async function renderProfile(userId) {
       });
     }
 
-    let selectedRating = 5;
-    const starInput = document.getElementById("star-input");
-    function drawStars() {
-      starInput.innerHTML = [1, 2, 3, 4, 5]
-        .map((n) => `<span class="star-input ${n <= selectedRating ? "filled" : ""}" data-n="${n}">★</span>`)
-        .join("");
-      starInput.querySelectorAll(".star-input").forEach((s) => {
-        s.addEventListener("click", () => {
-          selectedRating = Number(s.dataset.n);
-          drawStars();
+    if (state.token) {
+      let selectedRating = 5;
+      const starInput = document.getElementById("star-input");
+      function drawStars() {
+        starInput.innerHTML = [1, 2, 3, 4, 5]
+          .map((n) => `<span class="star-input ${n <= selectedRating ? "filled" : ""}" data-n="${n}">★</span>`)
+          .join("");
+        starInput.querySelectorAll(".star-input").forEach((s) => {
+          s.addEventListener("click", () => {
+            selectedRating = Number(s.dataset.n);
+            drawStars();
+          });
         });
+      }
+      drawStars();
+
+      document.getElementById("review-submit").addEventListener("click", async () => {
+        const comment = document.getElementById("review-comment").value;
+        const msgEl = document.getElementById("review-msg");
+        try {
+          await api(`/api/users/${userId}/reviews`, { method: "POST", auth: true, body: { rating: selectedRating, comment } });
+          location.hash = "#/profile/" + userId;
+          router();
+        } catch (e) {
+          msgEl.textContent = e.message;
+          msgEl.className = "form-msg error";
+        }
       });
     }
-    drawStars();
-
-    document.getElementById("review-submit").addEventListener("click", async () => {
-      const comment = document.getElementById("review-comment").value;
-      const msgEl = document.getElementById("review-msg");
-      try {
-        await api(`/api/users/${userId}/reviews`, { method: "POST", auth: true, body: { rating: selectedRating, comment } });
-        location.hash = "#/profile/" + userId;
-        router();
-      } catch (e) {
-        msgEl.textContent = e.message;
-        msgEl.className = "form-msg error";
-      }
-    });
   }
 }
 
@@ -1308,6 +1845,29 @@ function openEditProfileModal(profile) {
         <label>${I18N.t("profile.bio")}</label>
         <textarea id="edit-bio" rows="3">${escapeHtml(profile.bio || "")}</textarea>
       </div>
+      <div class="form-group">
+        <label>${I18N.t("profile.hometown")}</label>
+        <input type="text" id="edit-hometown" placeholder="${I18N.t("profile.hometownPlaceholder")}" value="${escapeHtml(profile.hometown || "")}" />
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("profile.work")}</label>
+        <input type="text" id="edit-work" placeholder="${I18N.t("profile.workPlaceholder")}" value="${escapeHtml(profile.work || "")}" />
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("profile.education")}</label>
+        <input type="text" id="edit-education" placeholder="${I18N.t("profile.educationPlaceholder")}" value="${escapeHtml(profile.education || "")}" />
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("profile.interests")}</label>
+        <input type="text" id="edit-interests" placeholder="${I18N.t("profile.interestsPlaceholder")}" value="${escapeHtml(profile.interests || "")}" />
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("settings.chatPrivacyLabel")}</label>
+        <select id="edit-chat-privacy">
+          <option value="everyone" ${!profile.chatPrivacy || profile.chatPrivacy === "everyone" ? "selected" : ""}>${I18N.t("settings.chatPrivacyEveryone")}</option>
+          <option value="friends" ${profile.chatPrivacy === "friends" ? "selected" : ""}>${I18N.t("settings.chatPrivacyFriends")}</option>
+        </select>
+      </div>
       <div class="action-row">
         <button class="btn btn-primary" id="edit-save">${I18N.t("profile.save")}</button>
         <button class="btn btn-secondary" id="edit-cancel">${I18N.t("common.cancel")}</button>
@@ -1343,6 +1903,11 @@ function openEditProfileModal(profile) {
           phone: document.getElementById("edit-phone").value,
           bio: document.getElementById("edit-bio").value,
           photo: photoDataUrl,
+          hometown: document.getElementById("edit-hometown").value,
+          work: document.getElementById("edit-work").value,
+          education: document.getElementById("edit-education").value,
+          interests: document.getElementById("edit-interests").value,
+          chatPrivacy: document.getElementById("edit-chat-privacy").value,
         },
       });
       state.user = { ...state.user, ...data.user };
@@ -1432,9 +1997,13 @@ async function loadChat(otherUserId, silent) {
       const text = input.value.trim();
       if (!text) return;
       input.value = "";
-      await api("/api/conversations/" + otherUserId, { method: "POST", auth: true, body: { text } });
-      await loadChat(otherUserId, true);
-      await loadConvoList(otherUserId);
+      try {
+        await api("/api/conversations/" + otherUserId, { method: "POST", auth: true, body: { text } });
+        await loadChat(otherUserId, true);
+        await loadConvoList(otherUserId);
+      } catch (e) {
+        alert(e.message);
+      }
     };
     sendBtn.addEventListener("click", send);
     document.getElementById("chat-text").addEventListener("keydown", (e) => {
