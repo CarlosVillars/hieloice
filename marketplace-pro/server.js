@@ -316,6 +316,29 @@ async function userRatingSummary(userId) {
   return { ratingAvg: Math.round(avg * 10) / 10, ratingCount: count };
 }
 
+// LinkedIn-style trust profile: sales history (completed = seller marked the
+// listing "sold", the strongest signal we have without an escrow system yet)
+// plus a small "recent sales" preview for the profile page.
+async function userTrustSummary(userId) {
+  const sold = await db.select("mkt_products", {
+    seller_id: "eq." + enc(userId),
+    status: "eq.sold",
+    select: "id,title,price",
+    order: "created_at.desc",
+  });
+  return { salesCount: sold.length, recentSales: sold.slice(0, 5) };
+}
+
+// Auto-computed "Verified Seller" badge - no manual review queue (that
+// overhead is reserved for the higher-stakes International companies
+// section). A seller earns it once they've added a phone number, have a
+// real track record on the platform, and have been a member for a while -
+// simple, defensible signals rather than a subjective admin call.
+function computeVerifiedSeller(u, salesCount) {
+  const ageDays = (Date.now() - (u.created_at || 0)) / (24 * 60 * 60 * 1000);
+  return !!(u.phone && salesCount >= 3 && ageDays >= 30);
+}
+
 // ---------- rate limiting (in-memory, per-IP, no external service) ----------
 
 const rateLimitBuckets = new Map();
@@ -700,8 +723,9 @@ async function handleApi(req, res, pathname, query) {
     const users = await db.select("mkt_users", { id: "eq." + enc(userMatch[1]), select: "*" });
     const u = users && users[0];
     if (!u) return sendJson(res, 404, { error: "User not found" });
-    const rating = await userRatingSummary(u.id);
-    return sendJson(res, 200, { ...publicUser(u), ...rating });
+    const [rating, trust] = await Promise.all([userRatingSummary(u.id), userTrustSummary(u.id)]);
+    const verified = computeVerifiedSeller(u, trust.salesCount);
+    return sendJson(res, 200, { ...publicUser(u), ...rating, ...trust, verified });
   }
 
   if (method === "PUT" && pathname === "/api/users/me") {
@@ -971,14 +995,16 @@ async function handleApi(req, res, pathname, query) {
       const me = await getAuthUser(req);
       if (!me || me.id !== p.seller_id) return sendJson(res, 404, { error: "Product not found" });
     }
-    const sellers = await db.select("mkt_users", { id: "eq." + enc(p.seller_id), select: "id,name,photo" });
+    const sellers = await db.select("mkt_users", { id: "eq." + enc(p.seller_id), select: "id,name,photo,phone,created_at" });
     const seller = sellers && sellers[0];
-    const rating = await userRatingSummary(p.seller_id);
+    const [rating, trust] = await Promise.all([userRatingSummary(p.seller_id), userTrustSummary(p.seller_id)]);
     const savedRows = await db.select("mkt_saved_items", { product_id: "eq." + enc(p.id), select: "user_id" });
     const out = productOut(p);
     out.sellerName = seller ? seller.name : "Unknown";
     out.sellerPhoto = seller ? seller.photo : null;
     out.sellerRating = rating;
+    out.sellerSalesCount = trust.salesCount;
+    out.sellerVerified = seller ? computeVerifiedSeller(seller, trust.salesCount) : false;
     out.saveCount = (savedRows || []).length;
     const me = await getAuthUser(req);
     out.saved = !!(me && savedRows.some((r) => r.user_id === me.id));
