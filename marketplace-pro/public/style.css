@@ -160,6 +160,8 @@ button { cursor: pointer; font-family: inherit; }
   border-bottom: 3px solid transparent;
 }
 .icon-nav-btn-plain { cursor: pointer; }
+.icon-nav-btn-center .icon-nav-emoji { font-size: 25px; }
+.icon-nav-btn-center { font-weight: 800; }
 .icon-nav-btn:hover { color: #0f3d2e; border-bottom-color: #d4a017; }
 .icon-nav-emoji { font-size: 21px; line-height: 1; }
 .icon-nav-label { white-space: nowrap; }
@@ -500,6 +502,22 @@ button { cursor: pointer; font-family: inherit; }
 .moment-upload-choices { display: flex; gap: 10px; margin-top: 6px; }
 .moment-upload-choices label { flex: 1; text-align: center; background: #eef5ef; color: #0f3d2e; border: 1px dashed #0f3d2e; border-radius: 8px; padding: 14px 8px; font-size: 13px; font-weight: 700; cursor: pointer; }
 .moment-upload-choices input { display: none; }
+
+/* ---- Moments video feed ("#/shorts" - vertical Reels/Shorts-style player) ---- */
+.shorts-overlay { position: fixed; inset: 0; background: #000; z-index: 500; display: flex; align-items: center; justify-content: center; }
+.shorts-item { position: relative; width: 100%; max-width: 480px; height: 100%; max-height: 100vh; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.shorts-video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.shorts-close { position: absolute; top: 16px; right: 16px; background: rgba(0,0,0,0.4); border: none; color: #fff; font-size: 22px; width: 34px; height: 34px; border-radius: 50%; z-index: 2; }
+.shorts-info { position: absolute; left: 14px; right: 70px; bottom: 24px; z-index: 2; color: #fff; }
+.shorts-author-link { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.shorts-avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid #fff; }
+.shorts-avatar-placeholder { width: 34px; height: 34px; border-radius: 50%; background: #0f3d2e; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; border: 1px solid #fff; }
+.shorts-author { font-weight: 700; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.shorts-caption { font-size: 13px; margin: 0 0 10px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.shorts-follow { display: block; }
+.shorts-nav-col { position: absolute; right: 10px; bottom: 100px; display: flex; flex-direction: column; gap: 10px; z-index: 2; }
+.shorts-nav { width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,0.18); border: none; color: #fff; font-size: 16px; }
+.shorts-nav:disabled { opacity: 0.3; }
 
 /* ---- Messages ---- */
 .messages-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; height: 560px; }

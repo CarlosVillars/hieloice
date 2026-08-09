@@ -175,6 +175,7 @@ function applyStaticI18n() {
   document.getElementById("lang-es").classList.toggle("active", I18N.lang === "es");
   document.getElementById("icon-nav-home-label").textContent = I18N.t("iconnav.home");
   document.getElementById("icon-nav-friends-label").textContent = I18N.t("iconnav.friends");
+  document.getElementById("icon-nav-shorts-label").textContent = I18N.t("iconnav.shorts");
   document.getElementById("icon-nav-marketplace-label").textContent = I18N.t("iconnav.marketplace");
   document.getElementById("icon-nav-notifications-label").textContent = I18N.t("iconnav.notifications");
   document.getElementById("icon-nav-dropdown-marketplace").textContent = "🛒 " + I18N.t("iconnav.dropdownMarketplace");
@@ -252,6 +253,7 @@ async function router() {
     if (parts.length === 0) return renderHome();
     if (parts[0] === "marketplace") return renderMarketplaceHome();
     if (parts[0] === "friends") return renderFriendsPage();
+    if (parts[0] === "shorts") return renderShorts();
     if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
@@ -1558,6 +1560,150 @@ function stepMomentViewer(dir) {
   }
   momentViewerState.index = next;
   drawMomentViewer();
+}
+
+// ---------------- "Moments" full-screen video feed ("#/shorts") ----------------
+// A single vertical stream of every active video Moment on the platform,
+// ranked by /api/moments/videos/feed (friends > followed Pages > Pages >
+// recency). Distinct from the story-style moments-bar above: this is a
+// continuous scroll/swipe feed like Reels/Shorts, browsing all video content.
+
+let shortsState = null;
+
+async function renderShorts() {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let videos = [];
+  try {
+    videos = await api("/api/moments/videos/feed", { auth: true });
+  } catch (e) {}
+  if (!videos.length) {
+    viewEl.innerHTML = `<div class="empty-state">${I18N.t("shorts.empty")}</div>`;
+    return;
+  }
+  viewEl.innerHTML = "";
+  openShortsPlayer(videos, 0);
+}
+
+function openShortsPlayer(videos, startIndex) {
+  shortsState = { videos, index: startIndex || 0 };
+  const overlay = document.createElement("div");
+  overlay.className = "shorts-overlay";
+  overlay.id = "shorts-overlay";
+  document.body.appendChild(overlay);
+  drawShorts();
+
+  let touchStartY = null;
+  overlay.addEventListener(
+    "wheel",
+    (e) => {
+      if (overlay.dataset.wheelLock === "1") return;
+      overlay.dataset.wheelLock = "1";
+      setTimeout(() => (overlay.dataset.wheelLock = "0"), 500);
+      if (e.deltaY > 30) stepShorts(1);
+      else if (e.deltaY < -30) stepShorts(-1);
+    },
+    { passive: true }
+  );
+  overlay.addEventListener(
+    "touchstart",
+    (e) => {
+      touchStartY = e.touches[0].clientY;
+    },
+    { passive: true }
+  );
+  overlay.addEventListener(
+    "touchend",
+    (e) => {
+      if (touchStartY === null) return;
+      const diff = touchStartY - e.changedTouches[0].clientY;
+      if (diff > 50) stepShorts(1);
+      else if (diff < -50) stepShorts(-1);
+      touchStartY = null;
+    },
+    { passive: true }
+  );
+}
+
+function closeShortsPlayer() {
+  const overlay = document.getElementById("shorts-overlay");
+  if (overlay) overlay.remove();
+  shortsState = null;
+  if (location.hash.startsWith("#/shorts")) location.hash = "#/";
+}
+
+function drawShorts() {
+  const overlay = document.getElementById("shorts-overlay");
+  if (!overlay || !shortsState) return;
+  const { videos, index } = shortsState;
+  const v = videos[index];
+  const isOwn = state.user && v.userId === state.user.id;
+  const showFollow = v.isPage && state.token && !isOwn;
+
+  overlay.innerHTML = `
+    <div class="shorts-item">
+      <video class="shorts-video" id="shorts-video" src="${v.mediaUrl}" autoplay loop playsinline></video>
+      <button class="shorts-close" id="shorts-close">&times;</button>
+      <div class="shorts-info">
+        <a class="shorts-author-link" href="#/profile/${v.userId}">
+          ${v.userPhoto ? `<img class="shorts-avatar" src="${v.userPhoto}" />` : `<div class="shorts-avatar-placeholder">${initials(v.userName)}</div>`}
+          <span class="shorts-author">${escapeHtml(v.userName)}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        </a>
+        ${v.caption ? `<p class="shorts-caption">${escapeHtml(v.caption)}</p>` : ""}
+        ${showFollow ? `<button class="btn-follow-inline shorts-follow" id="shorts-follow">${I18N.t("pages.follow")}</button>` : ""}
+      </div>
+      <div class="shorts-nav-col">
+        <button class="shorts-nav" id="shorts-prev" ${index === 0 ? "disabled" : ""}>▲</button>
+        <button class="shorts-nav" id="shorts-next" ${index === videos.length - 1 ? "disabled" : ""}>▼</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("shorts-close").addEventListener("click", closeShortsPlayer);
+  document.getElementById("shorts-prev").addEventListener("click", () => stepShorts(-1));
+  document.getElementById("shorts-next").addEventListener("click", () => stepShorts(1));
+
+  const videoEl = document.getElementById("shorts-video");
+  if (videoEl) {
+    videoEl.muted = false;
+    videoEl.volume = 1;
+  }
+
+  const followBtn = document.getElementById("shorts-follow");
+  if (followBtn) {
+    api("/api/follow/status/" + v.userId, { auth: true })
+      .then((st) => {
+        followBtn.dataset.following = st.following ? "1" : "0";
+        followBtn.textContent = st.following ? I18N.t("pages.following") : I18N.t("pages.follow");
+      })
+      .catch(() => {});
+    followBtn.addEventListener("click", async () => {
+      const following = followBtn.dataset.following === "1";
+      followBtn.disabled = true;
+      try {
+        if (following) {
+          await api("/api/follow/" + v.userId, { method: "DELETE", auth: true });
+          followBtn.dataset.following = "0";
+          followBtn.textContent = I18N.t("pages.follow");
+        } else {
+          await api("/api/follow/" + v.userId, { method: "POST", auth: true });
+          followBtn.dataset.following = "1";
+          followBtn.textContent = I18N.t("pages.following");
+        }
+      } catch (e) {
+        alert(e.message);
+      } finally {
+        followBtn.disabled = false;
+      }
+    });
+  }
+}
+
+function stepShorts(dir) {
+  if (!shortsState) return;
+  const next = shortsState.index + dir;
+  if (next < 0 || next >= shortsState.videos.length) return;
+  shortsState.index = next;
+  drawShorts();
 }
 
 const MAX_ACTIVE_MOMENTS = 3;
