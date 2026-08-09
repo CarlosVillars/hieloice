@@ -197,6 +197,7 @@ function applyStaticI18n() {
   setText("icon-nav-notifications-label", I18N.t("iconnav.notifications"));
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
+  setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
 }
 
 document.getElementById("lang-en").addEventListener("click", () => {
@@ -271,6 +272,8 @@ async function router() {
     if (parts[0] === "marketplace") return renderMarketplaceHome();
     if (parts[0] === "friends") return renderFriendsPage();
     if (parts[0] === "shorts") return renderShorts();
+    if (parts[0] === "groups" && parts[1]) return renderGroupDetail(parts[1]);
+    if (parts[0] === "groups") return renderGroupsHome();
     if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
@@ -1233,6 +1236,208 @@ async function renderFriendsPage() {
       if (!confirm(I18N.t("friends.confirmRemove"))) return;
       await api("/api/friends/user/" + btn.dataset.uid, { method: "DELETE", auth: true });
       renderFriendsPage();
+    });
+  });
+}
+
+// ---------------- Communities ("#/groups", "#/groups/:slug") ----------------
+// Reddit-style category/city groups: open posting (no join step, v1), ranked
+// by community upvote/downvote instead of a corporate algorithm. This is the
+// trust-layer piece a plain marketplace (Facebook Marketplace included)
+// doesn't have - scam warnings, seller reviews, and questions surfaced by
+// what the community actually values, not by who paid or who you follow.
+
+function categoryLabel(slug) {
+  const c = CATEGORY_LIST.find((x) => x.slug === slug);
+  if (!c) return slug || "";
+  return I18N.lang === "es" ? c.es : c.en;
+}
+
+async function renderGroupsHome() {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const groups = await api("/api/groups");
+
+  const listHtml = groups.length
+    ? `<div class="groups-grid">${groups
+        .map(
+          (g) => `
+      <a class="group-card" href="#/groups/${g.slug}">
+        <p class="group-card-name">${escapeHtml(g.name)}</p>
+        <p class="group-card-meta">${[g.category ? categoryLabel(g.category) : "", g.city]
+          .filter(Boolean)
+          .map(escapeHtml)
+          .join(" · ")}</p>
+        ${g.description ? `<p class="group-card-desc">${escapeHtml(g.description)}</p>` : ""}
+      </a>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("groups.empty")}</div>`;
+
+  viewEl.innerHTML = `
+    <div class="groups-header">
+      <h2 class="section-heading">${I18N.t("groups.heading")}</h2>
+      ${state.token ? `<button class="btn btn-primary" id="groups-create-btn">${I18N.t("groups.create")}</button>` : ""}
+    </div>
+    <p class="groups-subtitle">${I18N.t("groups.subtitle")}</p>
+    <div id="groups-create-form" style="display:none;"></div>
+    ${listHtml}
+  `;
+
+  const createBtn = document.getElementById("groups-create-btn");
+  if (createBtn) {
+    createBtn.addEventListener("click", () => {
+      const formWrap = document.getElementById("groups-create-form");
+      if (formWrap.style.display !== "none") {
+        formWrap.style.display = "none";
+        return;
+      }
+      formWrap.style.display = "block";
+      formWrap.innerHTML = `
+        <form id="group-create-form" class="stacked-form">
+          <label>${I18N.t("groups.name")}<input type="text" name="name" required maxlength="100" /></label>
+          <label>${I18N.t("groups.category")}
+            <select name="category">
+              <option value="">${I18N.t("groups.categoryAny")}</option>
+              ${CATEGORY_LIST.map((c) => `<option value="${c.slug}">${escapeHtml(I18N.lang === "es" ? c.es : c.en)}</option>`).join("")}
+            </select>
+          </label>
+          <label>${I18N.t("groups.city")}<input type="text" name="city" maxlength="80" /></label>
+          <label>${I18N.t("groups.description")}<textarea name="description" maxlength="1000"></textarea></label>
+          <button type="submit" class="btn btn-primary">${I18N.t("groups.createSubmit")}</button>
+          <p class="form-msg" id="group-create-msg"></p>
+        </form>
+      `;
+      document.getElementById("group-create-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const msgEl = document.getElementById("group-create-msg");
+        try {
+          const g = await api("/api/groups", {
+            method: "POST",
+            auth: true,
+            body: {
+              name: fd.get("name"),
+              category: fd.get("category") || undefined,
+              city: fd.get("city"),
+              description: fd.get("description"),
+            },
+          });
+          location.hash = "#/groups/" + g.slug;
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+        }
+      });
+    });
+  }
+}
+
+async function renderGroupDetail(slug) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let group, posts;
+  try {
+    [group, posts] = await Promise.all([
+      api("/api/groups/" + encodeURIComponent(slug)),
+      api("/api/groups/" + encodeURIComponent(slug) + "/posts", state.token ? { auth: true } : {}),
+    ]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const postsHtml = posts.length
+    ? posts
+        .map(
+          (p) => `
+      <div class="group-post" data-post="${p.id}">
+        <div class="group-post-votes">
+          <button class="vote-btn vote-up ${p.myVote === 1 ? "active" : ""}" data-vote="${p.id}" data-value="1">&#9650;</button>
+          <span class="vote-score">${p.score}</span>
+          <button class="vote-btn vote-down ${p.myVote === -1 ? "active" : ""}" data-vote="${p.id}" data-value="-1">&#9660;</button>
+        </div>
+        <div class="group-post-body">
+          <span class="group-post-type group-post-type-${p.postType}">${I18N.t("groups.postType." + p.postType)}</span>
+          <p class="group-post-title">${escapeHtml(p.title)}</p>
+          ${p.body ? `<p class="group-post-text">${escapeHtml(p.body)}</p>` : ""}
+          <p class="group-post-meta">${escapeHtml(p.authorName)} &middot; ${fmtDate(p.createdAt)}</p>
+        </div>
+      </div>`
+        )
+        .join("")
+    : `<div class="empty-state">${I18N.t("groups.noPosts")}</div>`;
+
+  viewEl.innerHTML = `
+    <a href="#/groups" class="back-link">&larr; ${I18N.t("groups.backToList")}</a>
+    <h2 class="section-heading">${escapeHtml(group.name)}</h2>
+    <p class="groups-subtitle">${[group.category ? categoryLabel(group.category) : "", group.city].filter(Boolean).map(escapeHtml).join(" · ")}</p>
+    ${group.description ? `<p class="group-detail-desc">${escapeHtml(group.description)}</p>` : ""}
+    <div id="group-post-form-wrap">${
+      state.token
+        ? `
+      <form id="group-post-form" class="stacked-form">
+        <label>${I18N.t("groups.postTitleLabel")}<input type="text" name="title" required maxlength="200" /></label>
+        <label>${I18N.t("groups.postBodyLabel")}<textarea name="body" maxlength="5000"></textarea></label>
+        <label>${I18N.t("groups.postTypeLabel")}
+          <select name="postType">
+            <option value="discussion">${I18N.t("groups.postType.discussion")}</option>
+            <option value="question">${I18N.t("groups.postType.question")}</option>
+            <option value="review">${I18N.t("groups.postType.review")}</option>
+            <option value="warning">${I18N.t("groups.postType.warning")}</option>
+          </select>
+        </label>
+        <button type="submit" class="btn btn-primary">${I18N.t("groups.postSubmit")}</button>
+        <p class="form-msg" id="group-post-msg"></p>
+      </form>`
+        : `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`
+    }</div>
+    <div id="group-posts-list">${postsHtml}</div>
+  `;
+
+  const postForm = document.getElementById("group-post-form");
+  if (postForm) {
+    postForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("group-post-msg");
+      try {
+        await api("/api/groups/" + encodeURIComponent(slug) + "/posts", {
+          method: "POST",
+          auth: true,
+          body: {
+            title: fd.get("title"),
+            body: fd.get("body"),
+            postType: fd.get("postType"),
+          },
+        });
+        renderGroupDetail(slug);
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+
+  document.querySelectorAll("[data-vote]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      try {
+        const result = await api("/api/posts/" + btn.dataset.vote + "/vote", {
+          method: "POST",
+          auth: true,
+          body: { value: Number(btn.dataset.value) },
+        });
+        const postEl = btn.closest(".group-post");
+        postEl.querySelector(".vote-score").textContent = result.score;
+        postEl.querySelectorAll(".vote-btn").forEach((b) => b.classList.remove("active"));
+        if (result.myVote !== 0) {
+          postEl.querySelector('[data-value="' + result.myVote + '"]').classList.add("active");
+        }
+      } catch (err) {
+        alert(err.message);
+      }
     });
   });
 }
