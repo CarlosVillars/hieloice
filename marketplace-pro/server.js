@@ -251,7 +251,7 @@ function ownUser(u) {
 
 function toCamelUser(u) {
   if (!u) return u;
-  const { created_at, cover_photo, chat_privacy, is_page, page_category, ...rest } = u;
+  const { created_at, cover_photo, chat_privacy, is_page, page_category, subscription_mode, ...rest } = u;
   return {
     ...rest,
     createdAt: created_at,
@@ -259,6 +259,7 @@ function toCamelUser(u) {
     chatPrivacy: chat_privacy,
     isPage: !!is_page,
     pageCategory: page_category || "",
+    subscriptionMode: subscription_mode || "manual",
   };
 }
 
@@ -748,6 +749,9 @@ async function handleApi(req, res, pathname, query) {
     }
     if (body.isPage !== undefined) patch.is_page = !!body.isPage;
     if (body.pageCategory !== undefined) patch.page_category = String(body.pageCategory).slice(0, 80);
+    if (body.subscriptionMode !== undefined && ["auto", "manual"].includes(body.subscriptionMode)) {
+      patch.subscription_mode = body.subscriptionMode;
+    }
     const updated = await db.update("mkt_users", { id: "eq." + enc(me.id) }, patch);
     const u = updated && updated[0];
     const rating = await userRatingSummary(u.id);
@@ -1612,36 +1616,49 @@ async function handleApi(req, res, pathname, query) {
 
   // ---- FOLLOW (one-directional, only for "Public Page" accounts - separate from friends) ----
 
+  // Subscribing to a Page sends a request that stays "pending" until the
+  // owner accepts it, unless the owner has switched their subscription_mode
+  // to "auto" (settable from their own profile), in which case it's accepted
+  // immediately - same instant behavior the old plain "Follow" used to have.
   const followMatch = pathname.match(/^\/api\/follow\/([a-zA-Z0-9]+)$/);
   if (method === "POST" && followMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
     const targetId = followMatch[1];
     if (targetId === me.id) return sendJson(res, 400, { error: "You cannot follow yourself" });
-    const targets = await db.select("mkt_users", { id: "eq." + enc(targetId), select: "id,is_page" });
+    const targets = await db.select("mkt_users", { id: "eq." + enc(targetId), select: "id,name,is_page,subscription_mode" });
     const target = targets && targets[0];
     if (!target) return sendJson(res, 404, { error: "User not found" });
     if (!target.is_page) return sendJson(res, 400, { error: "Only public pages can be followed" });
     const existing = await db.select("mkt_follows", {
       follower_id: "eq." + enc(me.id),
       followed_id: "eq." + enc(targetId),
-      select: "id",
+      select: "id,status",
     });
-    if (existing && existing[0]) return sendJson(res, 200, { ok: true, following: true });
+    if (existing && existing[0]) {
+      return sendJson(res, 200, { ok: true, status: existing[0].status === "accepted" ? "accepted" : "pending" });
+    }
+    const auto = target.subscription_mode === "auto";
     await db.insert("mkt_follows", {
       id: crypto.randomBytes(8).toString("hex"),
       follower_id: me.id,
       followed_id: targetId,
+      status: auto ? "accepted" : "pending",
       created_at: Date.now(),
     });
-    return sendJson(res, 201, { ok: true, following: true });
+    if (auto) {
+      notifyUser(targetId, "follows", { title: "Nuevo suscriptor", body: (me.name || "Alguien") + " se suscribió a tu página.", url: "/#/profile/" + me.id }).catch(() => {});
+    } else {
+      notifyUser(targetId, "follows", { title: "Solicitud de suscripción", body: (me.name || "Alguien") + " quiere suscribirse a tu página.", url: "/#/profile" }).catch(() => {});
+    }
+    return sendJson(res, 201, { ok: true, status: auto ? "accepted" : "pending" });
   }
 
   if (method === "DELETE" && followMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
     await db.remove("mkt_follows", { follower_id: "eq." + enc(me.id), followed_id: "eq." + enc(followMatch[1]) });
-    return sendJson(res, 200, { ok: true, following: false });
+    return sendJson(res, 200, { ok: true, status: "none" });
   }
 
   const followStatusMatch = pathname.match(/^\/api\/follow\/status\/([a-zA-Z0-9]+)$/);
@@ -1652,10 +1669,63 @@ async function handleApi(req, res, pathname, query) {
     const rows = await db.select("mkt_follows", {
       follower_id: "eq." + enc(me.id),
       followed_id: "eq." + enc(targetId),
-      select: "id",
+      select: "id,status",
     });
-    const followerCount = await db.select("mkt_follows", { followed_id: "eq." + enc(targetId), select: "id" });
-    return sendJson(res, 200, { following: !!(rows && rows[0]), followerCount: (followerCount || []).length });
+    const row = rows && rows[0];
+    const status = row ? (row.status === "accepted" ? "accepted" : "pending") : "none";
+    const followerCount = await db.select("mkt_follows", { followed_id: "eq." + enc(targetId), status: "eq.accepted", select: "id" });
+    return sendJson(res, 200, { following: status === "accepted", pending: status === "pending", status, followerCount: (followerCount || []).length });
+  }
+
+  // Pending subscription requests waiting on the current user's decision
+  // (only relevant if they own a Page and haven't switched to auto-accept).
+  if (method === "GET" && pathname === "/api/follow/requests") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_follows", { followed_id: "eq." + enc(me.id), status: "eq.pending", select: "*", order: "created_at.desc" });
+    if (!rows.length) return sendJson(res, 200, []);
+    const requesterIds = [...new Set(rows.map((r) => r.follower_id))];
+    const requesters = await db.select("mkt_users", { id: "in.(" + requesterIds.map(enc).join(",") + ")", select: "id,name,photo" });
+    return sendJson(
+      res,
+      200,
+      rows.map((r) => {
+        const u = requesters.find((x) => x.id === r.follower_id);
+        return { id: r.id, userId: r.follower_id, name: u ? u.name : "Unknown", photo: u ? u.photo : null };
+      })
+    );
+  }
+
+  const followReqAcceptMatch = pathname.match(/^\/api\/follow\/requests\/([a-zA-Z0-9]+)\/accept$/);
+  if (method === "POST" && followReqAcceptMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_follows", { id: "eq." + enc(followReqAcceptMatch[1]), select: "*" });
+    const row = rows && rows[0];
+    if (!row || row.followed_id !== me.id) return sendJson(res, 404, { error: "Request not found" });
+    await db.update("mkt_follows", { id: "eq." + enc(row.id) }, { status: "accepted" });
+    notifyUser(row.follower_id, "follows", { title: "Suscripción aceptada", body: (me.name || "La página") + " aceptó tu suscripción.", url: "/#/profile/" + me.id }).catch(() => {});
+    return sendJson(res, 200, { ok: true });
+  }
+
+  const followReqRejectMatch = pathname.match(/^\/api\/follow\/requests\/([a-zA-Z0-9]+)\/reject$/);
+  if (method === "POST" && followReqRejectMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_follows", { id: "eq." + enc(followReqRejectMatch[1]), select: "*" });
+    const row = rows && rows[0];
+    if (!row || row.followed_id !== me.id) return sendJson(res, 404, { error: "Request not found" });
+    await db.remove("mkt_follows", { id: "eq." + enc(row.id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Simple name search used by the Friends page's "Search friends/products" bar.
+  if (method === "GET" && pathname === "/api/users/search") {
+    const me = await getAuthUser(req);
+    const q = (query.q || "").trim();
+    if (!q) return sendJson(res, 200, []);
+    const rows = await db.select("mkt_users", { name: "ilike.*" + enc(q) + "*", select: "id,name,photo", limit: "20" });
+    return sendJson(res, 200, rows.filter((u) => !me || u.id !== me.id).map((u) => ({ userId: u.id, name: u.name, photo: u.photo })));
   }
 
   if (method === "GET" && pathname === "/api/pages/suggested") {
@@ -1961,7 +2031,7 @@ async function handleApi(req, res, pathname, query) {
         or: "(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(me.id) + ")",
         select: "requester_id,addressee_id",
       }),
-      db.select("mkt_follows", { follower_id: "eq." + enc(me.id), select: "followed_id" }),
+      db.select("mkt_follows", { follower_id: "eq." + enc(me.id), status: "eq.accepted", select: "followed_id" }),
     ]);
     const friendIds = friendRows.map((f) => (f.requester_id === me.id ? f.addressee_id : f.requester_id));
     const followedPageIds = followRows.map((f) => f.followed_id);
@@ -1973,6 +2043,7 @@ async function handleApi(req, res, pathname, query) {
     if (suggestedCandidates.length) {
       const allFollows = await db.select("mkt_follows", {
         followed_id: "in.(" + suggestedCandidates.map((p) => enc(p.id)).join(",") + ")",
+        status: "eq.accepted",
         select: "followed_id",
       });
       const counts = {};
@@ -2046,7 +2117,7 @@ async function handleApi(req, res, pathname, query) {
           or: "(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(me.id) + ")",
           select: "requester_id,addressee_id",
         }),
-        db.select("mkt_follows", { follower_id: "eq." + enc(me.id), select: "followed_id" }),
+        db.select("mkt_follows", { follower_id: "eq." + enc(me.id), status: "eq.accepted", select: "followed_id" }),
       ]);
       friendIds = friendRows.map((f) => (f.requester_id === me.id ? f.addressee_id : f.requester_id));
       followedIds = followRows.map((f) => f.followed_id);
