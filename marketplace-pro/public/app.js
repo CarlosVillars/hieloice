@@ -167,25 +167,36 @@ async function pollUnread() {
 
 // ---------------- Language toggle ----------------
 
+// Null-safe: a mismatch between an id referenced here and the actual DOM
+// (e.g. a markup element renamed/removed during a UI refactor) must never
+// throw and abort the rest of the app's init sequence - that previously
+// caused refreshMe()/router() to never run on a real page load, which
+// looked exactly like the user being logged out (the auth token itself was
+// never touched - the UI just froze in its pre-JS default state).
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
 function applyStaticI18n() {
-  document.getElementById("brand-name").textContent = I18N.t("site.name");
-  document.getElementById("global-search").placeholder = I18N.t("home.searchPlaceholder");
-  document.getElementById("nav-intl-label").textContent = I18N.t("nav.intl");
-  document.getElementById("nav-messages-label").textContent = I18N.t("nav.messages");
-  document.getElementById("nav-profile").textContent = I18N.t("nav.profile");
-  document.getElementById("nav-post").textContent = I18N.t("nav.postAd");
-  document.getElementById("nav-login").textContent = I18N.t("nav.login");
-  document.getElementById("nav-register").textContent = I18N.t("nav.register");
-  document.getElementById("nav-logout").textContent = I18N.t("nav.logout");
+  setText("brand-name", I18N.t("site.name"));
+  const searchEl = document.getElementById("global-search");
+  if (searchEl) searchEl.placeholder = I18N.t("home.searchPlaceholder");
+  setText("nav-messages", I18N.t("nav.messages"));
+  setText("nav-profile", I18N.t("nav.profile"));
+  setText("nav-post", I18N.t("nav.postAd"));
+  setText("nav-login", I18N.t("nav.login"));
+  setText("nav-register", I18N.t("nav.register"));
+  setText("nav-logout", I18N.t("nav.logout"));
   document.getElementById("lang-en").classList.toggle("active", I18N.lang === "en");
   document.getElementById("lang-es").classList.toggle("active", I18N.lang === "es");
-  document.getElementById("icon-nav-home-label").textContent = I18N.t("iconnav.home");
-  document.getElementById("icon-nav-friends-label").textContent = I18N.t("iconnav.friends");
-  document.getElementById("icon-nav-shorts-label").textContent = I18N.t("iconnav.shorts");
-  document.getElementById("icon-nav-marketplace-label").textContent = I18N.t("iconnav.marketplace");
-  document.getElementById("icon-nav-notifications-label").textContent = I18N.t("iconnav.notifications");
-  document.getElementById("icon-nav-dropdown-marketplace").textContent = "🛒 " + I18N.t("iconnav.dropdownMarketplace");
-  document.getElementById("icon-nav-dropdown-intl").textContent = "🌎 " + I18N.t("iconnav.dropdownIntl");
+  setText("icon-nav-home-label", I18N.t("iconnav.home"));
+  setText("icon-nav-friends-label", I18N.t("iconnav.friends"));
+  setText("icon-nav-shorts-label", I18N.t("iconnav.shorts"));
+  setText("icon-nav-marketplace-label", I18N.t("iconnav.marketplace"));
+  setText("icon-nav-notifications-label", I18N.t("iconnav.notifications"));
+  setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
+  setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
 }
 
 document.getElementById("lang-en").addEventListener("click", () => {

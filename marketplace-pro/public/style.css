@@ -161,9 +161,9 @@ button { cursor: pointer; font-family: inherit; }
 }
 .icon-nav-btn-plain { cursor: pointer; }
 .icon-nav-btn-center { font-weight: 800; }
-.icon-nav-icecube { display: block; margin: 0 auto; }
+.icon-nav-icecube { display: block; margin: 0 auto; height: 27px; width: 27px; }
 .icon-nav-btn:hover { color: #0f3d2e; border-bottom-color: #d4a017; }
-.icon-nav-emoji { font-size: 21px; line-height: 1; }
+.icon-nav-emoji { font-size: 21px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; }
 .icon-nav-label { white-space: nowrap; }
 .icon-nav-badge { position: absolute; top: 3px; right: 8px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: #c0392b; color: #fff; font-size: 10px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; }
 .icon-nav-dropdown-wrap { position: relative; }
