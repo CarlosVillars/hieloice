@@ -1884,10 +1884,70 @@ function openShortsPlayer(videos, startIndex) {
 }
 
 function closeShortsPlayer() {
+  reportShortsWatch();
   const overlay = document.getElementById("shorts-overlay");
   if (overlay) overlay.remove();
   shortsState = null;
   if (location.hash.startsWith("#/shorts")) location.hash = "#/";
+}
+
+// Reports how the viewer engaged with the video currently on screen -
+// "complete" if they stuck around for most of it (it loops, so a near-full
+// watch counts even without a real "ended" event), "skip" otherwise. Called
+// right before we move away from a video, feeding the affinity/popularity
+// signals the v2 ranking in /api/moments/videos/feed uses.
+function reportShortsWatch() {
+  if (!shortsState) return;
+  const v = shortsState.videos[shortsState.index];
+  if (!v || !shortsState.watchStart) return;
+  const watchMs = Date.now() - shortsState.watchStart;
+  const durationMs = shortsState.currentDurationMs || 0;
+  const type = durationMs && watchMs >= durationMs * 0.85 ? "complete" : "skip";
+  api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type, watchMs, durationMs } }).catch(() => {});
+  shortsState.watchStart = null;
+}
+
+function toggleShortsLike() {
+  if (!shortsState) return;
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  const v = shortsState.videos[shortsState.index];
+  const wasLiked = v.liked;
+  v.liked = !wasLiked;
+  v.likeCount = Math.max(0, (v.likeCount || 0) + (v.liked ? 1 : -1));
+  updateShortsLikeUI();
+  api("/api/moments/" + v.id + "/like", { method: v.liked ? "POST" : "DELETE", auth: true, body: {} }).catch(() => {
+    v.liked = wasLiked;
+    v.likeCount = Math.max(0, (v.likeCount || 0) + (wasLiked ? 1 : -1));
+    updateShortsLikeUI();
+  });
+  if (v.liked) {
+    api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type: "like" } }).catch(() => {});
+  }
+}
+
+function updateShortsLikeUI() {
+  if (!shortsState) return;
+  const v = shortsState.videos[shortsState.index];
+  const btn = document.getElementById("shorts-like");
+  const countEl = document.getElementById("shorts-like-count");
+  if (btn) {
+    btn.classList.toggle("active", !!v.liked);
+    btn.textContent = v.liked ? "❤️" : "\u{1F90D}";
+  }
+  if (countEl) countEl.textContent = v.likeCount || 0;
+}
+
+function burstShortsHeart() {
+  const item = document.querySelector(".shorts-item");
+  if (!item) return;
+  const heart = document.createElement("div");
+  heart.className = "shorts-heart-burst";
+  heart.textContent = "❤️";
+  item.appendChild(heart);
+  setTimeout(() => heart.remove(), 900);
 }
 
 function drawShorts() {
@@ -1910,6 +1970,12 @@ function drawShorts() {
         ${v.caption ? `<p class="shorts-caption">${escapeHtml(v.caption)}</p>` : ""}
         ${showFollow ? `<button class="btn-follow-inline shorts-follow" id="shorts-follow">${I18N.t("pages.follow")}</button>` : ""}
       </div>
+      <div class="shorts-actions-col">
+        <div class="shorts-action">
+          <button class="shorts-action-btn ${v.liked ? "active" : ""}" id="shorts-like">${v.liked ? "❤️" : "\u{1F90D}"}</button>
+          <span class="shorts-action-count" id="shorts-like-count">${v.likeCount || 0}</span>
+        </div>
+      </div>
       <div class="shorts-nav-col">
         <button class="shorts-nav" id="shorts-prev" ${index === 0 ? "disabled" : ""}>▲</button>
         <button class="shorts-nav" id="shorts-next" ${index === videos.length - 1 ? "disabled" : ""}>▼</button>
@@ -1920,11 +1986,28 @@ function drawShorts() {
   document.getElementById("shorts-close").addEventListener("click", closeShortsPlayer);
   document.getElementById("shorts-prev").addEventListener("click", () => stepShorts(-1));
   document.getElementById("shorts-next").addEventListener("click", () => stepShorts(1));
+  document.getElementById("shorts-like").addEventListener("click", toggleShortsLike);
+
+  shortsState.watchStart = Date.now();
+  shortsState.currentDurationMs = 0;
 
   const videoEl = document.getElementById("shorts-video");
   if (videoEl) {
     videoEl.muted = false;
     videoEl.volume = 1;
+    videoEl.addEventListener("loadedmetadata", () => {
+      if (shortsState) shortsState.currentDurationMs = (videoEl.duration || 0) * 1000;
+    });
+    let lastTap = 0;
+    videoEl.addEventListener("click", () => {
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        const cur = shortsState.videos[shortsState.index];
+        if (!cur.liked) toggleShortsLike();
+        burstShortsHeart();
+      }
+      lastTap = now;
+    });
   }
 
   const followBtn = document.getElementById("shorts-follow");
@@ -1961,6 +2044,7 @@ function stepShorts(dir) {
   if (!shortsState) return;
   const next = shortsState.index + dir;
   if (next < 0 || next >= shortsState.videos.length) return;
+  reportShortsWatch();
   shortsState.index = next;
   drawShorts();
 }
