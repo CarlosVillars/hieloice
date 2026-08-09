@@ -43,7 +43,21 @@
       <span class="icon-nav-emoji">👥</span><span class="icon-nav-label" id="icon-nav-friends-label">Friends</span>
     </a>
     <a href="#/shorts" class="icon-nav-btn icon-nav-btn-center" id="icon-nav-shorts">
-      <span class="icon-nav-emoji">🧊</span><span class="icon-nav-label" id="icon-nav-shorts-label">Moments</span>
+      <svg class="icon-nav-icecube" viewBox="0 0 24 24" width="19" height="19" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="iceCubeGrad" x1="0" y1="0" x2="0.7" y2="1">
+            <stop offset="0%" stop-color="#f2fbfd" />
+            <stop offset="55%" stop-color="#bfe7f5" />
+            <stop offset="100%" stop-color="#8fd0ea" />
+          </linearGradient>
+        </defs>
+        <polygon points="12,1.5 22,7 22,17 12,22.5 2,17 2,7" fill="url(#iceCubeGrad)" stroke="#5fb8dc" stroke-width="0.7" stroke-linejoin="round" />
+        <polygon points="12,1.5 22,7 12,12.5 2,7" fill="#ffffff" fill-opacity="0.55" />
+        <polygon points="12,12.5 22,7 22,17 12,22.5" fill="#0f3d2e" fill-opacity="0.12" />
+        <line x1="12" y1="1.5" x2="12" y2="22.5" stroke="#ffffff" stroke-opacity="0.6" stroke-width="0.5" />
+        <line x1="12" y1="12.5" x2="4.5" y2="8.2" stroke="#ffffff" stroke-opacity="0.5" stroke-width="0.4" />
+      </svg>
+      <span class="icon-nav-label" id="icon-nav-shorts-label">Moments</span>
     </a>
     <div class="icon-nav-dropdown-wrap">
       <button class="icon-nav-btn icon-nav-btn-plain" id="icon-nav-marketplace">

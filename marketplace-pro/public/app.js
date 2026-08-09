@@ -95,7 +95,13 @@ async function refreshMe() {
     state.user = data.user;
     localStorage.setItem("authUser", JSON.stringify(data.user));
   } catch (e) {
-    setAuth(null, null);
+    // Only clear the session on a genuine "not authenticated" rejection
+    // (HTTP 401) from the server. A network hiccup - e.g. right after a
+    // mobile pull-to-refresh reload, or a brief connectivity blip - must
+    // never log the user out; just keep the existing token/user as-is.
+    if (e.status === 401) {
+      setAuth(null, null);
+    }
   }
   updateNavUI();
 }

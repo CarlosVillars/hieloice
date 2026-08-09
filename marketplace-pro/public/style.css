@@ -160,8 +160,8 @@ button { cursor: pointer; font-family: inherit; }
   border-bottom: 3px solid transparent;
 }
 .icon-nav-btn-plain { cursor: pointer; }
-.icon-nav-btn-center .icon-nav-emoji { font-size: 25px; }
 .icon-nav-btn-center { font-weight: 800; }
+.icon-nav-icecube { display: block; margin: 0 auto; }
 .icon-nav-btn:hover { color: #0f3d2e; border-bottom-color: #d4a017; }
 .icon-nav-emoji { font-size: 21px; line-height: 1; }
 .icon-nav-label { white-space: nowrap; }
