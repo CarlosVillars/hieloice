@@ -536,7 +536,18 @@ async function renderProductDetail(id) {
       </div>
       <div class="detail-panel">
         <h1 class="detail-title">${escapeHtml(p.title)}</h1>
-        <div class="detail-price">${fmtPrice(p.price)}</div>
+        <div class="detail-price-row">
+          <div class="detail-price">${fmtPrice(p.price)}</div>
+          ${
+            isOwnerOfListing
+              ? `<span class="save-count-badge">\u{1F516} ${I18N.t("saved.countLabel").replace("{n}", p.saveCount || 0)}</span>`
+              : `<button class="save-btn ${p.saved ? "active" : ""}" id="save-toggle-btn" data-id="${p.id}">
+                  <span id="save-btn-icon">${p.saved ? "\u{1F516}" : "\u{1F5A4}"}</span>
+                  <span id="save-btn-label">${p.saved ? I18N.t("saved.saved") : I18N.t("saved.save")}</span>
+                  <span id="save-btn-count">(${p.saveCount || 0})</span>
+                </button>`
+          }
+        </div>
         <div class="detail-meta">\u{1F4CD} ${escapeHtml(locationLabel(p)) || "-"} &middot; ${fmtDate(p.createdAt)}</div>
         <div>
           <span class="badge">${escapeHtml(I18N.categoryName(p.category))}</span>
@@ -610,6 +621,32 @@ async function renderProductDetail(id) {
         openReportModal("product", p.id);
       });
     }
+  }
+
+  const saveBtn = document.getElementById("save-toggle-btn");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      const nowSaved = !saveBtn.classList.contains("active");
+      try {
+        if (nowSaved) {
+          await api("/api/products/" + saveBtn.dataset.id + "/save", { method: "POST", auth: true, body: {} });
+        } else {
+          await api("/api/products/" + saveBtn.dataset.id + "/save", { method: "DELETE", auth: true });
+        }
+        saveBtn.classList.toggle("active", nowSaved);
+        document.getElementById("save-btn-icon").textContent = nowSaved ? "\u{1F516}" : "\u{1F5A4}";
+        document.getElementById("save-btn-label").textContent = nowSaved ? I18N.t("saved.saved") : I18N.t("saved.save");
+        const countEl = document.getElementById("save-btn-count");
+        const current = Number(countEl.textContent.replace(/[()]/g, "")) || 0;
+        countEl.textContent = "(" + (nowSaved ? current + 1 : Math.max(0, current - 1)) + ")";
+      } catch (e) {
+        alert(e.message);
+      }
+    });
   }
 }
 
@@ -2142,6 +2179,7 @@ async function renderProfile(userId) {
         <button class="tab-btn" data-tab="reviews">${I18N.t("profile.reviews")}</button>
         ${isMe ? `<button class="tab-btn" data-tab="friends">${I18N.t("profile.friendsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="requests">${I18N.t("profile.requestsTab")}</button>` : ""}
+        ${isMe ? `<button class="tab-btn" data-tab="saved">${I18N.t("profile.savedTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="offers">${I18N.t("profile.myOffers")}</button>` : ""}
         ${isMe && state.token ? `<button class="tab-btn" data-tab="notifications">${I18N.t("notif.tabTitle")}</button>` : ""}
         ${isMe && state.user && state.user.isOwner ? `<button class="tab-btn" data-tab="ads">${I18N.t("ads.manageAds")}</button>` : ""}
@@ -2207,6 +2245,7 @@ async function renderProfile(userId) {
 
       ${isMe ? `<div id="tab-friends" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-requests" style="display:none;"></div>` : ""}
+      ${isMe ? `<div id="tab-saved" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-offers" style="display:none;"></div>` : ""}
       ${isMe && state.token ? `<div id="tab-notifications" style="display:none;"></div>` : ""}
       ${isMe && state.user && state.user.isOwner ? `<div id="tab-ads" style="display:none;"></div>` : ""}
@@ -2220,12 +2259,13 @@ async function renderProfile(userId) {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "photos", "reviews", "friends", "requests", "offers", "notifications", "ads"].forEach((t) => {
+      ["listings", "photos", "reviews", "friends", "requests", "saved", "offers", "notifications", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
       if (btn.dataset.tab === "friends" && isMe) await renderFriendsTab();
       if (btn.dataset.tab === "requests" && isMe) await renderRequestsTab();
+      if (btn.dataset.tab === "saved" && isMe) await renderSavedTab();
       if (btn.dataset.tab === "offers" && isMe) await renderMyOffers();
       if (btn.dataset.tab === "notifications" && isMe && state.token) await renderNotificationSettings();
       if (btn.dataset.tab === "ads" && isMe && state.user && state.user.isOwner) await renderAdsManager();
@@ -2468,6 +2508,47 @@ async function renderMyOffers() {
         )
         .join("")
     : `<div class="empty-state">${I18N.t("profile.noOffers")}</div>`;
+}
+
+// Pinterest-style "Guardado" tab: the user's saved products, grouped into
+// the collections they chose (default "Favoritos") when saving each item.
+async function renderSavedTab() {
+  const el = document.getElementById("tab-saved");
+  el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const items = await api("/api/saved", { auth: true });
+  if (!items.length) {
+    el.innerHTML = `<div class="empty-state">${I18N.t("saved.empty")}</div>`;
+    return;
+  }
+  const groups = {};
+  for (const it of items) {
+    const key = it.collection || "Favoritos";
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(it);
+  }
+  el.innerHTML = Object.keys(groups)
+    .map(
+      (collection) => `
+    <h3 class="section-subheading">${escapeHtml(collection)}</h3>
+    <div class="product-grid">
+      ${groups[collection]
+        .map(
+          (it) => `
+        <a class="product-card" href="#/product/${it.productId}">
+          <div class="product-thumb-wrap">
+            ${it.productPhoto ? `<img class="product-thumb" src="${it.productPhoto}" />` : `<div class="product-thumb-empty">\u{1F4E6}</div>`}
+            ${statusBadgeMarkup(it.productStatus)}
+          </div>
+          <div class="product-card-body">
+            <p class="product-title">${escapeHtml(it.productTitle)}</p>
+            ${it.productPrice !== null ? `<p class="product-price">${fmtPrice(it.productPrice)}</p>` : ""}
+          </div>
+        </a>`
+        )
+        .join("")}
+    </div>`
+    )
+    .join("");
 }
 
 async function renderAdsManager() {
