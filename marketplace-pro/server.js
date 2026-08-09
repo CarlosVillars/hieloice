@@ -974,10 +974,14 @@ async function handleApi(req, res, pathname, query) {
     const sellers = await db.select("mkt_users", { id: "eq." + enc(p.seller_id), select: "id,name,photo" });
     const seller = sellers && sellers[0];
     const rating = await userRatingSummary(p.seller_id);
+    const savedRows = await db.select("mkt_saved_items", { product_id: "eq." + enc(p.id), select: "user_id" });
     const out = productOut(p);
     out.sellerName = seller ? seller.name : "Unknown";
     out.sellerPhoto = seller ? seller.photo : null;
     out.sellerRating = rating;
+    out.saveCount = (savedRows || []).length;
+    const me = await getAuthUser(req);
+    out.saved = !!(me && savedRows.some((r) => r.user_id === me.id));
     return sendJson(res, 200, out);
   }
 
@@ -1057,6 +1061,78 @@ async function handleApi(req, res, pathname, query) {
     }
     const updated = await db.update("mkt_products", { id: "eq." + enc(p.id) }, patch);
     return sendJson(res, 200, productOut(updated[0]));
+  }
+
+  // ---- SAVED ITEMS (Pinterest-style "Guardar" - collections + demand signal for sellers) ----
+
+  function savedItemOut(s) {
+    const { user_id, product_id, created_at, ...rest } = s;
+    return { ...rest, userId: user_id, productId: product_id, createdAt: created_at };
+  }
+
+  const productSaveMatch = pathname.match(/^\/api\/products\/([a-zA-Z0-9]+)\/save$/);
+  if (method === "POST" && productSaveMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const products = await db.select("mkt_products", { id: "eq." + enc(productSaveMatch[1]), select: "id" });
+    if (!products || !products[0]) return sendJson(res, 404, { error: "Product not found" });
+    const body = await readBody(req);
+    const collection = String(body.collection || "Favoritos").trim().slice(0, 60) || "Favoritos";
+    const existing = await db.select("mkt_saved_items", {
+      user_id: "eq." + enc(me.id),
+      product_id: "eq." + enc(productSaveMatch[1]),
+      select: "*",
+    });
+    if (existing && existing[0]) {
+      const updated = await db.update(
+        "mkt_saved_items",
+        { id: "eq." + enc(existing[0].id) },
+        { collection }
+      );
+      return sendJson(res, 200, savedItemOut(updated[0]));
+    }
+    const saved = {
+      id: crypto.randomBytes(8).toString("hex"),
+      user_id: me.id,
+      product_id: productSaveMatch[1],
+      collection,
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_saved_items", saved);
+    return sendJson(res, 201, savedItemOut(saved));
+  }
+
+  if (method === "DELETE" && productSaveMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    await db.remove("mkt_saved_items", { user_id: "eq." + enc(me.id), product_id: "eq." + enc(productSaveMatch[1]) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // GET /api/saved - the logged-in user's saved products, grouped by
+  // collection on the client. Includes a live product summary so a sold or
+  // edited listing always shows current info instead of a stale snapshot.
+  if (method === "GET" && pathname === "/api/saved") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_saved_items", { user_id: "eq." + enc(me.id), select: "*", order: "created_at.desc" });
+    if (!rows.length) return sendJson(res, 200, []);
+    const productIds = [...new Set(rows.map((r) => r.product_id))];
+    const products = await db.select("mkt_products", {
+      id: "in.(" + productIds.map(enc).join(",") + ")",
+      select: "id,title,price,photos,status",
+    });
+    const out = rows.map((r) => {
+      const p = products.find((x) => x.id === r.product_id);
+      return {
+        ...savedItemOut(r),
+        productTitle: p ? p.title : "Deleted listing",
+        productPrice: p ? p.price : null,
+        productPhoto: p && p.photos && p.photos[0] ? p.photos[0] : null,
+        productStatus: p ? p.status : null,
+      };
+    });
+    return sendJson(res, 200, out);
   }
 
   // ---- OFFERS ----
