@@ -75,6 +75,13 @@ about even once that tooling is fixed:
    (`.html`/`.js`/`.css`) are served with `Cache-Control: no-cache,
    must-revalidate`, so browsers always revalidate against the server instead
    of serving a stale cached copy after a deploy.
+5. When verifying a deploy by fetching raw file content, be aware that
+   `raw.githubusercontent.com` sits behind a CDN that can serve a stale cached
+   copy for a few minutes after a fresh push, even with a cache-busting query
+   string. If a fetched file looks truncated or out of date right after a
+   push, check the GitHub blob page itself (`.../blob/main/...`, which shows
+   an authoritative line/byte count) or wait a couple minutes and re-fetch
+   before assuming the deploy is broken.
 
 If normal `git` access is available instead, that obviously works too — this
 workflow exists only because of a tooling limitation on the assistant's side,
@@ -121,47 +128,101 @@ one-directional Follow system (distinct from mutual Friends).
 "suggested" section (followed Pages first, then other Pages ranked by
 follower count). A dedicated full-screen vertical video feed ("Moments" in
 the UI, `shorts` internally in code/routes) showing all video Moments
-platform-wide, ranked by a v1 score: recency + friend bonus + followed-page
-bonus + page bonus.
+platform-wide, ranked by the **v2 algorithm** (see below).
+
+**Communities** (Reddit-style, `#/groups`): category/city-scoped groups with
+upvote/downvote-ranked posts (discussion, question, seller review, scam
+warning). Tables `mkt_groups`, `mkt_group_posts`, `mkt_group_post_votes`.
+Reachable from the Marketplace dropdown, not a new top-level nav icon.
+
+**Guardado / Saved** (Pinterest-style): a save toggle on every product
+detail page (with a live count), collected under a "Guardado" tab on the
+user's own Profile, grouped by collection (defaults to "Favoritos"). Table
+`mkt_saved_items`.
+
+**Moments v2 ranking** (TikTok-style behavior signals + Instagram-style
+visual restraint on the player): the video feed (`/api/moments/videos/feed`)
+now scores each video from recency + friend/follow/page bonuses (v1, kept)
+*plus* per-viewer author affinity and global popularity built from real
+watch behavior. The client reports a `complete` or `skip` event per video
+(based on watch time vs. video duration) to `POST /api/moments/:id/event`,
+and likes (double-tap on the video, or the heart button) go through
+`POST/DELETE /api/moments/:id/like`. Tables `mkt_moment_events` (event log,
+denormalizes the author id so affinity queries don't need the original
+moment to still exist) and `mkt_moment_likes` (toggle state). This is still
+JS-computed like v1 — same "simple now, upgradeable later" philosophy — but
+the signal set (completion, skip, like, per-author affinity) is the same
+shape a production ranker would use.
+
+**Seller trust profile** (LinkedIn-style): an auto-computed "Verified Seller"
+badge (phone on file + 3+ completed sales + 30+ days on the platform — no
+manual review queue, unlike the International section below) shown on the
+profile page and on the seller card of every product detail page. Profile
+also shows total sales count and a "Sales History" list of the 5 most
+recently sold listings. "Sold" (status set by the seller) is the completion
+signal used, since there's no escrow system yet to confirm payment.
+
+**Moments story-viewer action rail** (Reels/Shorts-style): the 24h ephemeral
+story viewer (distinct from the algorithmic Shorts video feed above) has a
+vertical action rail of 5 icons — like (flame), message/comments, share
+(winged foot/talaria), repost (recycling triangle + plus), save (arrow into
+tray) — sized to match Instagram's icon scale (38px button / 34px svg). The
+flame, wing, and repost icons are pixel-traced from reference images Carlos
+supplied (OpenCV contour extraction + Catmull-Rom curve smoothing, not
+hand-drawn) and render as solid filled shapes (`.icon-solid` CSS class)
+rather than the outline/fill toggle used by the simpler message and save
+icons. Like and save are persistent per-user toggle state
+(`mkt_moment_likes`, `mkt_moment_saves` tables, flame turns orange and save
+turns gold when active); share uses the Web Share API (clipboard-copy
+fallback); repost creates a new moment in the reposter's own story copying
+the original's media/caption (`mkt_moments.repost_of`, subject to the same
+3-active-moments cap as a normal post, flashes green on tap). Tapping the
+author's avatar/name in the top-left of the viewer navigates to their
+profile. Backend: `POST/DELETE /api/moments/:id/save`,
+`POST /api/moments/:id/repost`; `/api/moments/feed` and
+`/api/moments/user/:id` now also return `likeCount`/`liked`/`saved` per
+moment via a shared `attachMomentEngagement()` helper.
+
+**Moments public comments**: the message icon opens a bottom-sheet panel
+(`.moment-comments-panel`) over the currently-viewed moment instead of a
+private DM — anyone can read, posting requires auth. Flat storage with
+`parent_comment_id` for one level of threaded replies, resolved into
+threads client-side; each comment shows relative age ("2h", "3d", etc.) via
+`timeAgoStr()`. Opening the panel pauses the story's autoplay/video and
+resumes it on close. Backend: `GET/POST /api/moments/:id/comments`,
+`DELETE /api/moments/:id/comments/:commentId` (author-only delete), backed
+by the `mkt_moment_comments` table (`moment_id`, `user_id`,
+`parent_comment_id`, `text`, `created_at`).
 
 **International section**: company directory with registration, admin
 verification queue, public filtered directory, company detail pages, legal
 intermediary-disclaimer clause.
 
 **Navigation**: top icon-nav bar (Home / Friends / Moments / Marketplace
-dropdown [Marketplace + International] / Notifications), designed
-deliberately narrow in scope to avoid overwhelming a first-time user.
+dropdown [Marketplace + International + Communities] / Notifications),
+designed deliberately narrow in scope to avoid overwhelming a first-time
+user.
 
 **Not yet built**: escrow/held payment processing (task pending — needs a
-processor decision first) is the one open item from the original build.
+processor decision first).
 
 ## 6. Roadmap — the "what to borrow from each app" analysis
 
 This is the result of an explicit strategy discussion (see chat history for
 full reasoning), prioritized for a marketplace, not a general social network.
-Decided/in-progress items:
 
-1. **Reddit-style communities** (highest priority): category/city-based
-   groups (e.g. "Autos usados Santo Domingo") with upvote/downvote-ranked
-   posts — questions, seller reviews, scam warnings. This is the piece
-   Facebook Marketplace itself lacks (no community-driven trust signal),
-   so it's a genuine differentiator, not a copy.
-2. **Pinterest-style saved boards**: a "Guardar" action on product
-   cards/detail pages, collections under the user's Profile (e.g. "Favoritos",
-   "Para mi casa"), and a "N people saved this" demand signal surfaced to the
-   seller. Cheap to build on the existing schema — new `mkt_saved_items`
-   table + a handful of endpoints. Deliberately not a new top-level nav icon,
-   to keep the icon-nav bar simple.
-3. **Moments algorithm v2, TikTok mechanics + Instagram aesthetic**: evolve
-   the existing v1 recency/social-graph score toward real engagement signals
-   (watch time, replays, shares) — that's what makes TikTok's discovery feel
-   "sticky." Explicitly paired with Instagram's visual restraint (typography,
-   spacing, muted palette, card polish) rather than TikTok's denser visual
-   style — Carlos's call, agreed.
-4. **LinkedIn-style seller trust profile**: package the existing Pages +
-   ratings data into a formal "trust profile" (tenure, verified badge, visible
-   sales history) so evaluating a seller feels like reviewing a professional
-   profile, not a bare listing. Agreed, not yet built.
+1. ✅ **Reddit-style communities** — built (see section 5).
+2. ✅ **Pinterest-style saved boards** — built (see section 5).
+3. ✅ **Moments algorithm v2, TikTok mechanics + Instagram aesthetic** — built
+   (see section 5). The visual side is intentionally restrained: a slim
+   vertical action rail (like button + count) rather than TikTok's denser
+   icon stack, matching Carlos's call that Instagram's polish should win over
+   TikTok's density.
+4. ✅ **LinkedIn-style seller trust profile** — built (see section 5). This
+   was the last item on the original "borrow from each app" roadmap; all
+   four are now shipped. Next roadmap work should come from real usage data
+   once the platform has actual traffic, not from further speculative
+   feature-borrowing.
 
 Explicitly deprioritized (for now): Snapchat-style AR filters (expensive,
 low ROI for a marketplace) and an open Twitter/X-style public real-time feed
@@ -203,3 +264,8 @@ demands it — not before launch.
 - Sessions in `mkt_sessions` never expire server-side by design (only
   explicit logout removes them) — this was a deliberate simplicity choice,
   not an oversight, worth knowing if session-related bugs come up again.
+- `raw.githubusercontent.com` can serve a stale CDN-cached copy of a file for
+  a few minutes right after a push, even with a cache-busting query string —
+  don't conclude a deploy is broken/truncated from that alone; check the
+  GitHub blob page's line/byte count (authoritative) before assuming a real
+  problem.
