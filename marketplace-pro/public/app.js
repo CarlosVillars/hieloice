@@ -1667,6 +1667,118 @@ function renderProfileMomentsBar(userId, userName, userPhoto, moments, isMe) {
 let momentViewerState = null;
 let momentViewerTimer = null;
 
+// Reels/Shorts-style action rail icons for the Moments story viewer: white
+// outline by default, filled via the ".active" CSS class (persistent for
+// like/save, momentary for message/share/repost as a press-feedback flash).
+const MOMENT_ICON_HEART =
+  '<svg viewBox="0 0 24 24"><path d="M12 20.5s-7.2-4.4-9.6-8.9C.9 8.2 2.3 4.7 5.7 3.9c2-.5 3.9.4 6.3 2.6 2.4-2.2 4.3-3.1 6.3-2.6 3.4.8 4.8 4.3 3.3 7.7C19.2 16.1 12 20.5 12 20.5z"/></svg>';
+const MOMENT_ICON_MESSAGE =
+  '<svg viewBox="0 0 24 24"><path d="M3.5 4.5h17v12h-9.2L6.5 20v-3.5h-3v-12z"/></svg>';
+const MOMENT_ICON_SHARE =
+  '<svg viewBox="0 0 24 24"><path d="M3 12.5c3-6.3 8.2-9.2 13.2-9.2 1.9 0 3.7.9 4.8 2.7-2 0-4 .5-5.9 1.9 2.9-.1 4.9.9 5.9 2.8-2-.1-3.9 0-5.7 1 1.9 1 3 2.2 3.9 4-2.9 0-5.7-1-7.7-2.9-1 3-3.8 5-7.7 5.9.9-2.9.9-4.9-.4-7.2z"/></svg>';
+const MOMENT_ICON_REPOST =
+  '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M7 8h6l-2.2-2.2M13 8l-2.2 2.2" fill="none"/><path d="M17.5 10.5v5.5l2.2-2.2M17.5 16l-2.2-2.2" fill="none"/><path d="M13.5 19H7.5l2.2 2.2M7.5 19l2.2-2.2" fill="none"/><path d="M12 10v4M10 12h4" fill="none"/></svg>';
+const MOMENT_ICON_SAVE =
+  '<svg viewBox="0 0 24 24"><path d="M4 5.8C4 4.8 4.8 4 5.8 4H12v16H5.8A1.8 1.8 0 0 1 4 18.2V5.8z"/><path d="M20 5.8c0-1-.8-1.8-1.8-1.8H12v16h6.2c1 0 1.8-.8 1.8-1.8V5.8z"/><path d="M12 4v16" stroke-linecap="round"/></svg>';
+
+// Brief press-feedback: fills the icon for a moment even for actions
+// (message/share/repost) that aren't persistent toggle state, so every icon
+// visually reacts the same way the like/save ones do.
+function flashMomentAction(btn) {
+  if (!btn) return;
+  btn.classList.add("active");
+  setTimeout(() => btn.classList.remove("active"), 420);
+}
+
+function wireMomentViewerActions(m) {
+  const likeBtn = document.getElementById("moment-viewer-like");
+  if (likeBtn) {
+    likeBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      const nowLiked = !m.liked;
+      m.liked = nowLiked;
+      likeBtn.classList.toggle("active", nowLiked);
+      try {
+        await api("/api/moments/" + m.id + "/like", { method: nowLiked ? "POST" : "DELETE", auth: true });
+      } catch (e) {
+        m.liked = !nowLiked;
+        likeBtn.classList.toggle("active", m.liked);
+      }
+    });
+  }
+
+  const saveBtn = document.getElementById("moment-viewer-save");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      const nowSaved = !m.saved;
+      m.saved = nowSaved;
+      saveBtn.classList.toggle("active", nowSaved);
+      try {
+        await api("/api/moments/" + m.id + "/save", { method: nowSaved ? "POST" : "DELETE", auth: true });
+      } catch (e) {
+        m.saved = !nowSaved;
+        saveBtn.classList.toggle("active", m.saved);
+      }
+    });
+  }
+
+  const msgBtn = document.getElementById("moment-viewer-message");
+  if (msgBtn) {
+    msgBtn.addEventListener("click", () => {
+      flashMomentAction(msgBtn);
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      if (state.user && m.userId === state.user.id) return;
+      const targetId = m.userId;
+      closeMomentsViewer();
+      location.hash = "#/messages/" + targetId;
+    });
+  }
+
+  const shareBtn = document.getElementById("moment-viewer-share");
+  if (shareBtn) {
+    shareBtn.addEventListener("click", async () => {
+      flashMomentAction(shareBtn);
+      const url = location.origin + "/#/profile/" + m.userId;
+      try {
+        if (navigator.share) {
+          await navigator.share({ url, title: "HieloIce" });
+        } else if (navigator.clipboard) {
+          await navigator.clipboard.writeText(url);
+          alert(I18N.t("moments.linkCopied") || "Link copied");
+        }
+      } catch (e) {}
+    });
+  }
+
+  const repostBtn = document.getElementById("moment-viewer-repost");
+  if (repostBtn) {
+    repostBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      flashMomentAction(repostBtn);
+      try {
+        await api("/api/moments/" + m.id + "/repost", { method: "POST", auth: true });
+        repostBtn.classList.add("active");
+        setTimeout(() => repostBtn.classList.remove("active"), 1200);
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+}
+
 function openMomentsViewer(moments, startIndex, group) {
   if (!moments || !moments.length) return;
   momentViewerState = { moments: moments.slice(), index: startIndex || 0, group, following: null };
@@ -1719,8 +1831,10 @@ function drawMomentViewer() {
     <div class="moment-viewer-media-wrap">
       <div class="moment-viewer-progress">${bars}</div>
       <div class="moment-viewer-head">
-        ${group && group.userPhoto ? `<img src="${group.userPhoto}" />` : ""}
-        <span class="moment-viewer-head-name">${escapeHtml((group && group.userName) || "")}${group && group.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        <button class="moment-viewer-head-link" id="moment-viewer-head-link" ${group && group.userId ? "" : "disabled"}>
+          ${group && group.userPhoto ? `<img src="${group.userPhoto}" />` : ""}
+          <span class="moment-viewer-head-name">${escapeHtml((group && group.userName) || "")}${group && group.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        </button>
         ${
           canFollow && momentViewerState.following !== null
             ? `<button class="btn-follow-inline" id="moment-viewer-follow">${momentViewerState.following ? I18N.t("pages.following") : I18N.t("pages.follow")}</button>`
@@ -1737,12 +1851,29 @@ function drawMomentViewer() {
       ${isOwn ? `<button class="moment-viewer-delete" id="moment-viewer-delete">${I18N.t("moments.delete")}</button>` : ""}
       <button class="moment-viewer-nav prev" id="moment-viewer-prev"></button>
       <button class="moment-viewer-nav next" id="moment-viewer-next"></button>
+      <div class="moment-viewer-actions">
+        <button class="moment-viewer-action-btn like-btn ${m.liked ? "active" : ""}" id="moment-viewer-like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
+        <button class="moment-viewer-action-btn" id="moment-viewer-message" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
+        <button class="moment-viewer-action-btn" id="moment-viewer-share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
+        <button class="moment-viewer-action-btn" id="moment-viewer-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
+        <button class="moment-viewer-action-btn save-btn ${m.saved ? "active" : ""}" id="moment-viewer-save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
+      </div>
     </div>
   `;
 
   document.getElementById("moment-viewer-close").addEventListener("click", closeMomentsViewer);
   document.getElementById("moment-viewer-prev").addEventListener("click", () => stepMomentViewer(-1));
   document.getElementById("moment-viewer-next").addEventListener("click", () => stepMomentViewer(1));
+  const headLink = document.getElementById("moment-viewer-head-link");
+  if (headLink && !headLink.disabled) {
+    headLink.addEventListener("click", () => {
+      const uid = group && group.userId;
+      if (!uid) return;
+      closeMomentsViewer();
+      location.hash = "#/profile/" + uid;
+    });
+  }
+  wireMomentViewerActions(m);
   const delBtn = document.getElementById("moment-viewer-delete");
   if (delBtn) {
     delBtn.addEventListener("click", async () => {
