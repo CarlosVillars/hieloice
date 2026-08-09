@@ -2262,6 +2262,86 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 201, momentOut(moment));
   }
 
+  // Public comments on a moment (shown in the story viewer via the message
+  // icon, not a private DM) - flat list with parent_comment_id for one level
+  // of replies, resolved client-side into threads. Anyone can read; posting
+  // requires auth.
+  const momentCommentsMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)\/comments$/);
+  if (method === "GET" && momentCommentsMatch) {
+    const rows = await db.select("mkt_moment_comments", {
+      moment_id: "eq." + enc(momentCommentsMatch[1]),
+      order: "created_at.asc",
+      select: "*",
+    });
+    if (!rows.length) return sendJson(res, 200, []);
+    const authorIds = [...new Set(rows.map((r) => r.user_id))];
+    const authors = await db.select("mkt_users", {
+      id: "in.(" + authorIds.map(enc).join(",") + ")",
+      select: "id,name,photo",
+    });
+    const out = rows.map((r) => {
+      const a = authors.find((x) => x.id === r.user_id);
+      return {
+        id: r.id,
+        momentId: r.moment_id,
+        userId: r.user_id,
+        userName: a ? a.name : "Unknown",
+        userPhoto: a ? a.photo : null,
+        parentCommentId: r.parent_comment_id || null,
+        text: r.text,
+        createdAt: r.created_at,
+      };
+    });
+    return sendJson(res, 200, out);
+  }
+  if (method === "POST" && momentCommentsMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const text = String(body.text || "").trim().slice(0, 500);
+    if (!text) return sendJson(res, 400, { error: "Comment text is required" });
+    let parentCommentId = null;
+    if (body.parentCommentId) {
+      const parentRows = await db.select("mkt_moment_comments", {
+        id: "eq." + enc(body.parentCommentId),
+        moment_id: "eq." + enc(momentCommentsMatch[1]),
+        select: "id",
+      });
+      if (parentRows && parentRows[0]) parentCommentId = body.parentCommentId;
+    }
+    const comment = {
+      id: crypto.randomBytes(8).toString("hex"),
+      moment_id: momentCommentsMatch[1],
+      user_id: me.id,
+      parent_comment_id: parentCommentId,
+      text,
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_moment_comments", comment);
+    return sendJson(res, 201, {
+      id: comment.id,
+      momentId: comment.moment_id,
+      userId: me.id,
+      userName: me.name,
+      userPhoto: me.photo || null,
+      parentCommentId: comment.parent_comment_id,
+      text: comment.text,
+      createdAt: comment.created_at,
+    });
+  }
+
+  const momentCommentDeleteMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)\/comments\/([a-zA-Z0-9]+)$/);
+  if (method === "DELETE" && momentCommentDeleteMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_moment_comments", { id: "eq." + enc(momentCommentDeleteMatch[2]), select: "user_id" });
+    const c = rows && rows[0];
+    if (!c) return sendJson(res, 404, { error: "Comment not found" });
+    if (c.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this comment" });
+    await db.remove("mkt_moment_comments", { id: "eq." + enc(momentCommentDeleteMatch[2]) });
+    return sendJson(res, 200, { ok: true });
+  }
+
   const userMomentsMatch = pathname.match(/^\/api\/moments\/user\/([a-zA-Z0-9]+)$/);
   if (method === "GET" && userMomentsMatch) {
     const me = await getAuthUser(req);
