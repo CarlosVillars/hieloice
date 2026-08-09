@@ -1963,12 +1963,14 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { friends: friendsSection, suggested: suggestedSection });
   }
 
-  // "Shorts" feed: every active video moment on the platform, in a single
-  // scrollable stream (not grouped by author like the story bars). Works for
-  // guests too so the section has content to browse; personalized ranking
-  // (friends first, then followed Pages, then Pages, then recency) only
-  // kicks in when the request is authenticated. Simple v1 scoring in JS -
-  // fine at current scale, revisit once volume/infra justify a real ranker.
+  // "Shorts" feed v2: every active video moment on the platform, ranked by a
+  // blend of TikTok-style behavior signals and the same social graph bonuses
+  // from v1. Works for guests too (falls back to recency + global popularity)
+  // so the section always has content; personalization kicks in once
+  // authenticated. Still JS-computed like v1 - the "real ranker" upgrade
+  // path is to move this into a proper feature store once volume justifies
+  // it, but the signal set (completion, skip, like, per-author affinity) is
+  // now the same shape a production ranker would use, just simpler math.
   if (method === "GET" && pathname === "/api/moments/videos/feed") {
     const me = await getAuthUser(req);
     let friendIds = [];
@@ -1996,27 +1998,140 @@ async function handleApi(req, res, pathname, query) {
     if (!videos.length) return sendJson(res, 200, []);
 
     const authorIds = [...new Set(videos.map((v) => v.user_id))];
-    const authors = await db.select("mkt_users", {
-      id: "in.(" + authorIds.map(enc).join(",") + ")",
-      select: "id,name,photo,is_page",
-    });
+    const videoIds = videos.map((v) => v.id);
+    const [authors, likeRows, eventRows, myEventRows] = await Promise.all([
+      db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,photo,is_page" }),
+      db.select("mkt_moment_likes", { moment_id: "in.(" + videoIds.map(enc).join(",") + ")", select: "moment_id,user_id" }),
+      db.select("mkt_moment_events", {
+        moment_id: "in.(" + videoIds.map(enc).join(",") + ")",
+        type: "in.(complete,skip)",
+        select: "moment_id,type",
+      }),
+      me
+        ? db.select("mkt_moment_events", {
+            user_id: "eq." + enc(me.id),
+            type: "in.(complete,skip,like)",
+            order: "created_at.desc",
+            limit: "500",
+            select: "moment_author_id,type",
+          })
+        : Promise.resolve([]),
+    ]);
+
+    // Global popularity per video: how often people who see it watch it all
+    // the way through or skip it, plus raw like count.
+    const popByMoment = {};
+    for (const e of eventRows) {
+      if (!popByMoment[e.moment_id]) popByMoment[e.moment_id] = { complete: 0, skip: 0 };
+      popByMoment[e.moment_id][e.type]++;
+    }
+    const likesByMoment = {};
+    const myLikedSet = new Set();
+    for (const l of likeRows) {
+      likesByMoment[l.moment_id] = (likesByMoment[l.moment_id] || 0) + 1;
+      if (me && l.user_id === me.id) myLikedSet.add(l.moment_id);
+    }
+
+    // Per-author affinity for this viewer, built from their own recent watch
+    // history (independent of whether those older moments are still live) -
+    // this is the "you tend to finish/like this creator's videos" signal.
+    const affinityByAuthor = {};
+    for (const e of myEventRows) {
+      if (!e.moment_author_id) continue;
+      if (!affinityByAuthor[e.moment_author_id]) affinityByAuthor[e.moment_author_id] = { complete: 0, skip: 0, like: 0 };
+      affinityByAuthor[e.moment_author_id][e.type]++;
+    }
 
     const scored = videos.map((v) => {
       const author = authors.find((a) => a.id === v.user_id);
+      const pop = popByMoment[v.id] || { complete: 0, skip: 0 };
+      const affinity = affinityByAuthor[v.user_id] || { complete: 0, skip: 0, like: 0 };
+
       let score = v.created_at / 1e13; // small recency baseline, doesn't dominate the bonuses below
       if (friendIds.includes(v.user_id)) score += 300;
       if (followedIds.includes(v.user_id)) score += 200;
       if (author && author.is_page) score += 50;
+
+      // Author affinity: reward creators this viewer tends to finish/like,
+      // lightly penalize ones they tend to skip. Capped so one very-watched
+      // creator can't fully crowd out everything else.
+      score += Math.min(250, affinity.complete * 20 + affinity.like * 35);
+      score -= Math.min(150, affinity.skip * 15);
+
+      // Global popularity: completion rate and raw likes as a cold-start
+      // fallback signal for videos/creators this viewer has no history with.
+      score += Math.min(100, pop.complete * 3);
+      score -= Math.min(80, pop.skip * 2);
+      score += Math.min(80, (likesByMoment[v.id] || 0) * 5);
+
       return {
         ...momentOut(v),
         userName: author ? author.name : "Unknown",
         userPhoto: author ? author.photo : null,
         isPage: !!(author && author.is_page),
+        likeCount: likesByMoment[v.id] || 0,
+        liked: myLikedSet.has(v.id),
         score,
       };
     });
     scored.sort((a, b) => b.score - a.score);
     return sendJson(res, 200, scored.map(({ score, ...rest }) => rest));
+  }
+
+  // Behavior event: the client reports how a viewer engaged with a moment
+  // (watched it fully, skipped it early, or liked it via a plain event log
+  // in addition to the toggleable like below) so the ranking above can learn
+  // from it. Accepts anonymous/guest events (user_id null) so they still
+  // count toward the video's global popularity signal, just not toward any
+  // per-viewer affinity.
+  const momentEventMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)\/event$/);
+  if (method === "POST" && momentEventMatch) {
+    const me = await getAuthUser(req);
+    const body = await readBody(req);
+    const type = ["complete", "skip", "like"].includes(body.type) ? body.type : null;
+    if (!type) return sendJson(res, 400, { error: "Invalid event type" });
+    const momentRows = await db.select("mkt_moments", { id: "eq." + enc(momentEventMatch[1]), select: "user_id" });
+    const authorId = momentRows && momentRows[0] ? momentRows[0].user_id : null;
+    await db.insert("mkt_moment_events", {
+      id: crypto.randomBytes(8).toString("hex"),
+      moment_id: momentEventMatch[1],
+      user_id: me ? me.id : null,
+      moment_author_id: authorId,
+      type,
+      watch_ms: body.watchMs ? Number(body.watchMs) : null,
+      duration_ms: body.durationMs ? Number(body.durationMs) : null,
+      created_at: Date.now(),
+    });
+    return sendJson(res, 201, { ok: true });
+  }
+
+  // Like toggle (double-tap or button) - separate from the event log above so
+  // the UI has a simple current-state boolean to render, with a unique
+  // constraint preventing duplicate likes from the same viewer.
+  const momentLikeMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)\/like$/);
+  if (method === "POST" && momentLikeMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const existing = await db.select("mkt_moment_likes", {
+      moment_id: "eq." + enc(momentLikeMatch[1]),
+      user_id: "eq." + enc(me.id),
+      select: "id",
+    });
+    if (!existing || !existing[0]) {
+      await db.insert("mkt_moment_likes", {
+        id: crypto.randomBytes(8).toString("hex"),
+        moment_id: momentLikeMatch[1],
+        user_id: me.id,
+        created_at: Date.now(),
+      });
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+  if (method === "DELETE" && momentLikeMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    await db.remove("mkt_moment_likes", { moment_id: "eq." + enc(momentLikeMatch[1]), user_id: "eq." + enc(me.id) });
+    return sendJson(res, 200, { ok: true });
   }
 
   const userMomentsMatch = pathname.match(/^\/api\/moments\/user\/([a-zA-Z0-9]+)$/);
