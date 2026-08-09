@@ -198,6 +198,9 @@ function applyStaticI18n() {
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
+  setText("icon-nav-create-label", I18N.t("iconnav.create"));
+  setText("icon-nav-create-moment-label", I18N.t("iconnav.createMoment"));
+  setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
 }
 
 document.getElementById("lang-en").addEventListener("click", () => {
@@ -225,15 +228,46 @@ function doGlobalSearch() {
 (function wireIconNav() {
   const marketplaceBtn = document.getElementById("icon-nav-marketplace");
   const dropdown = document.getElementById("icon-nav-marketplace-dropdown");
-  if (!marketplaceBtn || !dropdown) return;
-  marketplaceBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    dropdown.style.display = dropdown.style.display === "block" ? "none" : "block";
-  });
+  const createBtn = document.getElementById("icon-nav-create");
+  const createDropdown = document.getElementById("icon-nav-create-dropdown");
+  if (marketplaceBtn && dropdown) {
+    marketplaceBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (createDropdown) createDropdown.style.display = "none";
+      dropdown.style.display = dropdown.style.display === "block" ? "none" : "block";
+    });
+    dropdown.addEventListener("click", (e) => e.stopPropagation());
+  }
+  if (createBtn && createDropdown) {
+    createBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      dropdown.style.display = "none";
+      createDropdown.style.display = createDropdown.style.display === "block" ? "none" : "block";
+    });
+    createDropdown.addEventListener("click", (e) => e.stopPropagation());
+    const momentLink = document.getElementById("icon-nav-create-moment");
+    if (momentLink) {
+      momentLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+      });
+    }
+    const productLink = document.getElementById("icon-nav-create-product");
+    if (productLink) {
+      productLink.addEventListener("click", () => {
+        createDropdown.style.display = "none";
+      });
+    }
+  }
   document.addEventListener("click", () => {
-    dropdown.style.display = "none";
+    if (dropdown) dropdown.style.display = "none";
+    if (createDropdown) createDropdown.style.display = "none";
   });
-  dropdown.addEventListener("click", (e) => e.stopPropagation());
 })();
 
 function setIconNavBadge(count) {
@@ -1046,12 +1080,55 @@ function friendActionMarkup(fs) {
 // one-directional, no acceptance required.
 function pageFollowMarkup(fs) {
   if (!state.token) {
-    return `<a class="btn btn-outline" href="#/login">${I18N.t("pages.follow")}</a>`;
+    return `<a class="btn btn-outline" href="#/login">${I18N.t("subs.subscribe")}</a>`;
   }
   if (fs && fs.following) {
-    return `<button class="btn btn-friend-status" id="btn-page-unfollow">${I18N.t("pages.following")}</button>`;
+    return `<button class="btn btn-friend-status" id="btn-page-unfollow">${I18N.t("subs.subscribed")}</button>`;
   }
-  return `<button class="btn btn-primary" id="btn-page-follow">${I18N.t("pages.follow")}</button>`;
+  if (fs && fs.pending) {
+    return `<button class="btn btn-friend-status" id="btn-page-unfollow">${I18N.t("subs.pending")}</button>`;
+  }
+  return `<button class="btn btn-primary" id="btn-page-follow">${I18N.t("subs.subscribe")}</button>`;
+}
+
+// Loads the pending-subscription-requests list on the current user's own
+// Page profile (only relevant when subscriptionMode is "manual", the
+// default) and wires the Accept/Reject buttons.
+async function loadSubsRequests() {
+  const card = document.getElementById("subs-requests-card");
+  const list = document.getElementById("subs-requests-list");
+  if (!card || !list) return;
+  try {
+    const reqs = await api("/api/follow/requests", { auth: true });
+    if (!reqs.length) {
+      card.style.display = "none";
+      return;
+    }
+    card.style.display = "block";
+    list.innerHTML = reqs
+      .map(
+        (r) => `
+      <div class="friend-request-row">
+        ${r.photo ? `<img class="mini-avatar" style="width:36px;height:36px;" src="${r.photo}" />` : `<div class="seller-avatar-placeholder" style="width:36px;height:36px;">${initials(r.name)}</div>`}
+        <span class="friend-request-name">${escapeHtml(r.name)}</span>
+        <button class="btn btn-primary" data-subs-accept="${r.id}">${I18N.t("friends.accept")}</button>
+        <button class="btn btn-secondary" data-subs-reject="${r.id}">${I18N.t("friends.decline")}</button>
+      </div>`
+      )
+      .join("");
+    list.querySelectorAll("[data-subs-accept]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await api("/api/follow/requests/" + btn.dataset.subsAccept + "/accept", { method: "POST", auth: true });
+        loadSubsRequests();
+      });
+    });
+    list.querySelectorAll("[data-subs-reject]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await api("/api/follow/requests/" + btn.dataset.subsReject + "/reject", { method: "POST", auth: true });
+        loadSubsRequests();
+      });
+    });
+  } catch (e) {}
 }
 
 function wirePageFollowButton(otherUserId) {
@@ -1205,12 +1282,92 @@ async function renderRequestsTab() {
 
 // ---------------- Friends page ("#/friends", reached from the icon nav) ----------------
 
+let friendsPageTab = "friends";
+
 async function renderFriendsPage() {
   if (!state.token) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
     return;
   }
-  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  viewEl.innerHTML = `
+    <h2 class="section-heading">${I18N.t("friendsPage.title")}</h2>
+    <div class="friends-search-tabs">
+      <button class="friends-search-tab ${friendsPageTab === "friends" ? "active" : ""}" data-tab="friends">${I18N.t("friendsPage.tabFriends")}</button>
+      <button class="friends-search-tab ${friendsPageTab === "products" ? "active" : ""}" data-tab="products">${I18N.t("friendsPage.tabProducts")}</button>
+    </div>
+    <input type="text" id="friends-search-input" class="friends-search-input" placeholder="${friendsPageTab === "friends" ? I18N.t("friendsPage.searchFriendsPlaceholder") : I18N.t("friendsPage.searchProductsPlaceholder")}" />
+    <div id="friends-page-body"><p>${I18N.t("common.loading")}</p></div>
+  `;
+
+  document.querySelectorAll(".friends-search-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      friendsPageTab = btn.dataset.tab;
+      renderFriendsPage();
+    });
+  });
+
+  const searchInput = document.getElementById("friends-search-input");
+  let debounceTimer = null;
+  searchInput.addEventListener("input", () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => runFriendsPageSearch(searchInput.value.trim()), 300);
+  });
+
+  await runFriendsPageSearch("");
+}
+
+async function runFriendsPageSearch(q) {
+  const body = document.getElementById("friends-page-body");
+  if (!body) return;
+
+  if (friendsPageTab === "products") {
+    if (!q) {
+      body.innerHTML = `<div class="empty-state">${I18N.t("friendsPage.searchProductsHint")}</div>`;
+      return;
+    }
+    body.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    const products = await api("/api/products?q=" + encodeURIComponent(q));
+    body.innerHTML = products.length
+      ? `<div class="product-grid">${products
+          .map(
+            (p) => `
+        <a class="product-card" href="#/product/${p.id}">
+          <div class="product-thumb-wrap">
+            ${p.photos && p.photos[0] ? `<img class="product-thumb" src="${p.photos[0]}" alt="" />` : `<div class="product-thumb-empty">\u{1F4E6}</div>`}
+          </div>
+          <div class="product-card-body">
+            <p class="product-title">${escapeHtml(p.title)}</p>
+            <p class="product-price">${fmtPrice(p.price)}</p>
+          </div>
+        </a>`
+          )
+          .join("")}</div>`
+      : `<div class="empty-state">${I18N.t("friendsPage.noProductResults")}</div>`;
+    return;
+  }
+
+  // "friends" tab
+  if (q) {
+    body.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    const users = await api("/api/users/search?q=" + encodeURIComponent(q), { auth: true });
+    body.innerHTML = users.length
+      ? `<div class="friends-grid">${users
+          .map(
+            (u) => `
+        <div class="friend-card">
+          <a href="#/profile/${u.userId}">
+            ${u.photo ? `<img class="friend-card-photo" src="${u.photo}" />` : `<div class="friend-card-photo-placeholder">${initials(u.name)}</div>`}
+          </a>
+          <div class="friend-card-body">
+            <p class="friend-card-name">${escapeHtml(u.name)}</p>
+            <a class="btn btn-outline" href="#/profile/${u.userId}">${I18N.t("friendsPage.viewProfile")}</a>
+          </div>
+        </div>`
+          )
+          .join("")}</div>`
+      : `<div class="empty-state">${I18N.t("friendsPage.noFriendResults")}</div>`;
+    return;
+  }
 
   const [requests, friends] = await Promise.all([
     api("/api/friends/requests", { auth: true }),
@@ -1248,32 +1405,31 @@ async function renderFriendsPage() {
         .join("")}</div>`
     : `<div class="empty-state">${I18N.t("friends.noFriends")}</div>`;
 
-  viewEl.innerHTML = `
-    <h2 class="section-heading">${I18N.t("friendsPage.title")}</h2>
+  body.innerHTML = `
     <h3 class="section-subheading">${I18N.t("friendsPage.requestsHeading")}</h3>
     <div id="friends-page-requests">${requestsHtml}</div>
     <h3 class="section-subheading">${I18N.t("friendsPage.friendsHeading")}</h3>
     <div id="friends-page-friends">${friendsHtml}</div>
   `;
 
-  document.querySelectorAll("[data-accept]").forEach((btn) => {
+  body.querySelectorAll("[data-accept]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       await api("/api/friends/" + btn.dataset.accept + "/accept", { method: "POST", auth: true });
-      renderFriendsPage();
+      runFriendsPageSearch("");
       pollUnread();
     });
   });
-  document.querySelectorAll("[data-decline]").forEach((btn) => {
+  body.querySelectorAll("[data-decline]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       await api("/api/friends/" + btn.dataset.decline + "/reject", { method: "POST", auth: true });
-      renderFriendsPage();
+      runFriendsPageSearch("");
     });
   });
-  document.querySelectorAll(".friend-card-remove").forEach((btn) => {
+  body.querySelectorAll(".friend-card-remove").forEach((btn) => {
     btn.addEventListener("click", async () => {
       if (!confirm(I18N.t("friends.confirmRemove"))) return;
       await api("/api/friends/user/" + btn.dataset.uid, { method: "DELETE", auth: true });
-      renderFriendsPage();
+      runFriendsPageSearch("");
     });
   });
 }
@@ -1608,7 +1764,7 @@ function renderMomentGroupsBar(containerEl, groups, opts) {
           <div class="moment-circle-inner">
             ${opts.ownPhoto ? `<img src="${opts.ownPhoto}" />` : `<div class="moment-circle-placeholder">${initials(opts.ownName || "")}</div>`}
           </div>
-          <span class="moment-circle-add-badge">+</span>
+          <span class="moment-circle-add-badge" id="moment-add-badge" title="${I18N.t("moments.add")}">+</span>
         </div>
         <span class="moment-circle-label">${I18N.t("moments.yourMoment")}</span>
       </div>`;
@@ -1640,6 +1796,16 @@ function renderMomentGroupsBar(containerEl, groups, opts) {
         } else {
           openMomentUploadModal();
         }
+      });
+    }
+    // The small "+" badge always opens the upload flow, even if the user
+    // already has active moments - tapping the rest of the circle views
+    // your current story, the badge is the dedicated "add another" target.
+    const addBadge = document.getElementById("moment-add-badge");
+    if (addBadge) {
+      addBadge.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openMomentUploadModal();
       });
     }
   }
@@ -1937,7 +2103,7 @@ function drawMomentComments() {
 
 function openMomentsViewer(moments, startIndex, group) {
   if (!moments || !moments.length) return;
-  momentViewerState = { moments: moments.slice(), index: startIndex || 0, group, following: null };
+  momentViewerState = { moments: moments.slice(), index: startIndex || 0, group, following: null, subStatus: null };
   const overlay = document.createElement("div");
   overlay.className = "moment-viewer-overlay";
   overlay.id = "moment-viewer-overlay";
@@ -1950,6 +2116,7 @@ function openMomentsViewer(moments, startIndex, group) {
       .then((st) => {
         if (momentViewerState) {
           momentViewerState.following = !!st.following;
+          momentViewerState.subStatus = st.status || (st.following ? "accepted" : "none");
           drawMomentViewer();
         }
       })
@@ -1993,8 +2160,10 @@ function drawMomentViewer() {
           <span class="moment-viewer-head-name">${escapeHtml((group && group.userName) || "")}${group && group.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
         </button>
         ${
-          canFollow && momentViewerState.following !== null
-            ? `<button class="btn-follow-inline" id="moment-viewer-follow">${momentViewerState.following ? I18N.t("pages.following") : I18N.t("pages.follow")}</button>`
+          canFollow && momentViewerState.subStatus !== null
+            ? `<button class="btn-follow-inline" id="moment-viewer-follow" ${momentViewerState.subStatus === "pending" ? "disabled" : ""}>${
+                momentViewerState.subStatus === "accepted" ? I18N.t("subs.subscribed") : momentViewerState.subStatus === "pending" ? I18N.t("subs.pending") : I18N.t("subs.subscribe")
+              }</button>`
             : ""
         }
         <button class="moment-viewer-close" id="moment-viewer-close">&times;</button>
@@ -2004,7 +2173,7 @@ function drawMomentViewer() {
           ? `<video class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>`
           : `<img class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" />`
       }
-      ${m.caption ? `<div class="moment-viewer-caption">${escapeHtml(m.caption)}</div>` : ""}
+      ${m.caption ? `<div class="moment-viewer-caption">${linkifyHashtags(escapeHtml(m.caption))}</div>` : ""}
       ${isOwn ? `<button class="moment-viewer-delete" id="moment-viewer-delete">${I18N.t("moments.delete")}</button>` : ""}
       <button class="moment-viewer-nav prev" id="moment-viewer-prev"></button>
       <button class="moment-viewer-nav next" id="moment-viewer-next"></button>
@@ -2055,12 +2224,14 @@ function drawMomentViewer() {
     followBtn.addEventListener("click", async () => {
       followBtn.disabled = true;
       try {
-        if (momentViewerState.following) {
+        if (momentViewerState.subStatus === "accepted") {
           await api("/api/follow/" + group.userId, { method: "DELETE", auth: true });
+          momentViewerState.subStatus = "none";
           momentViewerState.following = false;
         } else {
-          await api("/api/follow/" + group.userId, { method: "POST", auth: true });
-          momentViewerState.following = true;
+          const r = await api("/api/follow/" + group.userId, { method: "POST", auth: true });
+          momentViewerState.subStatus = r.status || "pending";
+          momentViewerState.following = momentViewerState.subStatus === "accepted";
         }
         drawMomentViewer();
       } catch (e) {
@@ -2256,8 +2427,8 @@ function drawShorts() {
           ${v.userPhoto ? `<img class="shorts-avatar" src="${v.userPhoto}" />` : `<div class="shorts-avatar-placeholder">${initials(v.userName)}</div>`}
           <span class="shorts-author">${escapeHtml(v.userName)}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
         </a>
-        ${v.caption ? `<p class="shorts-caption">${escapeHtml(v.caption)}</p>` : ""}
-        ${showFollow ? `<button class="btn-follow-inline shorts-follow" id="shorts-follow">${I18N.t("pages.follow")}</button>` : ""}
+        ${v.caption ? `<p class="shorts-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
+        ${showFollow ? `<button class="btn-follow-inline shorts-follow" id="shorts-follow">${I18N.t("subs.subscribe")}</button>` : ""}
       </div>
       <div class="shorts-actions-col">
         <div class="shorts-action">
@@ -2301,28 +2472,27 @@ function drawShorts() {
 
   const followBtn = document.getElementById("shorts-follow");
   if (followBtn) {
+    const applyStatus = (status) => {
+      followBtn.dataset.status = status;
+      followBtn.disabled = status === "pending";
+      followBtn.textContent = status === "accepted" ? I18N.t("subs.subscribed") : status === "pending" ? I18N.t("subs.pending") : I18N.t("subs.subscribe");
+    };
     api("/api/follow/status/" + v.userId, { auth: true })
-      .then((st) => {
-        followBtn.dataset.following = st.following ? "1" : "0";
-        followBtn.textContent = st.following ? I18N.t("pages.following") : I18N.t("pages.follow");
-      })
+      .then((st) => applyStatus(st.status || (st.following ? "accepted" : "none")))
       .catch(() => {});
     followBtn.addEventListener("click", async () => {
-      const following = followBtn.dataset.following === "1";
+      const status = followBtn.dataset.status;
       followBtn.disabled = true;
       try {
-        if (following) {
+        if (status === "accepted") {
           await api("/api/follow/" + v.userId, { method: "DELETE", auth: true });
-          followBtn.dataset.following = "0";
-          followBtn.textContent = I18N.t("pages.follow");
+          applyStatus("none");
         } else {
-          await api("/api/follow/" + v.userId, { method: "POST", auth: true });
-          followBtn.dataset.following = "1";
-          followBtn.textContent = I18N.t("pages.following");
+          const r = await api("/api/follow/" + v.userId, { method: "POST", auth: true });
+          applyStatus(r.status || "pending");
         }
       } catch (e) {
         alert(e.message);
-      } finally {
         followBtn.disabled = false;
       }
     });
@@ -2466,6 +2636,383 @@ function openMomentUploadModal() {
   });
 }
 
+// ---------------- Create wizard (nav "+" button: camera capture -> edit/filters -> caption+hashtags -> publish) ----------------
+// A 3-step flow reached from the "+" icon in the nav bar, distinct from the
+// simpler openMomentUploadModal() (file-picker only) used by the "add" badge
+// on the stories bar. Captures live from the device camera when available
+// (falls back to a file picker on desktops/denied permissions), lets the
+// user preview one of a handful of CSS filters, then write a short caption
+// (130 chars) plus hashtags before publishing through the same
+// POST /api/moments endpoint the simpler modal uses.
+
+const CREATE_WIZARD_FILTERS = [
+  { id: "none", css: "" },
+  { id: "bw", css: "grayscale(1)" },
+  { id: "vivid", css: "saturate(1.6) contrast(1.15)" },
+  { id: "warm", css: "sepia(0.35) saturate(1.2) hue-rotate(-8deg)" },
+  { id: "cool", css: "saturate(1.05) contrast(1.05) hue-rotate(8deg) brightness(1.02)" },
+  { id: "vintage", css: "sepia(0.4) contrast(0.9) brightness(1.05) saturate(0.85)" },
+];
+
+function createWizardFilterCss(id) {
+  const f = CREATE_WIZARD_FILTERS.find((x) => x.id === id);
+  return f ? f.css : "";
+}
+
+let createWizard = null;
+
+function stopCreateWizardCamera() {
+  if (createWizard && createWizard.stream) {
+    createWizard.stream.getTracks().forEach((t) => t.stop());
+    createWizard.stream = null;
+  }
+  if (createWizard && createWizard.recorder && createWizard.recorder.state !== "inactive") {
+    try {
+      createWizard.recorder.stop();
+    } catch (e) {}
+  }
+}
+
+function closeCreateWizard() {
+  stopCreateWizardCamera();
+  const overlay = document.getElementById("create-wizard-overlay");
+  if (overlay) overlay.remove();
+  createWizard = null;
+}
+
+function openCreateWizard() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  createWizard = { step: 1, filter: "none", mediaType: null, rawDataUrl: null, recording: false, stream: null, recorder: null, chunks: [], durationSeconds: null };
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay create-wizard-overlay";
+  overlay.id = "create-wizard-overlay";
+  document.body.appendChild(overlay);
+  drawCreateWizard();
+}
+
+function createWizardFilterRow() {
+  return `<div class="wizard-filter-row">${CREATE_WIZARD_FILTERS.map(
+    (f) => `<button class="wizard-filter-swatch ${createWizard.filter === f.id ? "active" : ""}" data-filter="${f.id}" style="filter:${f.css};" title="${I18N.t("create.filter_" + f.id)}"></button>`
+  ).join("")}</div>`;
+}
+
+function wireCreateWizardFilterRow(onChange) {
+  document.querySelectorAll(".wizard-filter-swatch").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard.filter = btn.dataset.filter;
+      onChange();
+    });
+  });
+}
+
+function drawCreateWizard() {
+  const overlay = document.getElementById("create-wizard-overlay");
+  if (!overlay || !createWizard) return;
+
+  if (createWizard.step === 1) {
+    overlay.innerHTML = `
+      <div class="modal-box wizard-box">
+        <h2 class="section-heading">${I18N.t("create.step1Title")}</h2>
+        <div class="wizard-camera-wrap">
+          <video id="wizard-camera-video" autoplay playsinline muted style="filter:${createWizardFilterCss(createWizard.filter)};"></video>
+          <div class="wizard-camera-fallback" id="wizard-camera-fallback" style="display:none;">
+            <p>${I18N.t("create.cameraUnavailable")}</p>
+          </div>
+        </div>
+        ${createWizardFilterRow()}
+        <div class="wizard-capture-row">
+          <button class="btn btn-secondary" id="wizard-upload-photo-btn">${I18N.t("moments.uploadPhoto")}</button>
+          <button class="btn wizard-capture-btn" id="wizard-capture-btn">${I18N.t("create.capturePhoto")}</button>
+          <button class="btn btn-secondary" id="wizard-record-btn">${I18N.t("create.startVideo")}</button>
+        </div>
+        <p class="field-hint" id="wizard-record-hint"></p>
+        <input type="file" id="wizard-file-photo" accept="image/*" style="display:none;" />
+        <input type="file" id="wizard-file-video" accept="video/*" style="display:none;" />
+        <div class="action-row">
+          <button class="btn btn-secondary" id="wizard-cancel">${I18N.t("common.cancel")}</button>
+        </div>
+      </div>
+    `;
+
+    const video = document.getElementById("wizard-camera-video");
+    const fallback = document.getElementById("wizard-camera-fallback");
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices
+        .getUserMedia({ video: true, audio: true })
+        .then((stream) => {
+          createWizard.stream = stream;
+          video.srcObject = stream;
+        })
+        .catch(() => {
+          video.style.display = "none";
+          fallback.style.display = "block";
+        });
+    } else {
+      video.style.display = "none";
+      fallback.style.display = "block";
+    }
+
+    wireCreateWizardFilterRow(() => {
+      if (video) video.style.filter = createWizardFilterCss(createWizard.filter);
+    });
+
+    document.getElementById("wizard-capture-btn").addEventListener("click", () => {
+      if (!video || !video.srcObject) return;
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth || 720;
+      canvas.height = video.videoHeight || 720;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      createWizard.rawDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+      createWizard.mediaType = "image";
+      createWizard.step = 2;
+      stopCreateWizardCamera();
+      drawCreateWizard();
+    });
+
+    const recordBtn = document.getElementById("wizard-record-btn");
+    const recordHint = document.getElementById("wizard-record-hint");
+    recordBtn.addEventListener("click", () => {
+      if (!createWizard.stream) return;
+      if (!createWizard.recording) {
+        createWizard.chunks = [];
+        try {
+          createWizard.recorder = new MediaRecorder(createWizard.stream);
+        } catch (e) {
+          alert(I18N.t("create.cameraUnavailable"));
+          return;
+        }
+        createWizard.recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size) createWizard.chunks.push(e.data);
+        };
+        createWizard.recordStart = Date.now();
+        createWizard.recorder.onstop = () => {
+          const blob = new Blob(createWizard.chunks, { type: "video/webm" });
+          createWizard.durationSeconds = (Date.now() - createWizard.recordStart) / 1000;
+          const reader = new FileReader();
+          reader.onload = () => {
+            createWizard.rawDataUrl = reader.result;
+            createWizard.mediaType = "video";
+            createWizard.step = 2;
+            stopCreateWizardCamera();
+            drawCreateWizard();
+          };
+          reader.readAsDataURL(blob);
+        };
+        createWizard.recorder.start();
+        createWizard.recording = true;
+        recordBtn.textContent = I18N.t("create.stopVideo");
+        recordHint.textContent = I18N.t("create.recordingHint");
+      } else {
+        createWizard.recording = false;
+        if (createWizard.recorder) createWizard.recorder.stop();
+      }
+    });
+
+    document.getElementById("wizard-upload-photo-btn").addEventListener("click", () => document.getElementById("wizard-file-photo").click());
+    document.getElementById("wizard-file-photo").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        createWizard.rawDataUrl = reader.result;
+        createWizard.mediaType = "image";
+        createWizard.step = 2;
+        stopCreateWizardCamera();
+        drawCreateWizard();
+      };
+      reader.readAsDataURL(file);
+    });
+    document.getElementById("wizard-file-video").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const probe = document.createElement("video");
+      probe.preload = "metadata";
+      const objectUrl = URL.createObjectURL(file);
+      probe.onloadedmetadata = () => {
+        URL.revokeObjectURL(objectUrl);
+        if (probe.duration && probe.duration > MAX_MOMENT_VIDEO_SECONDS) {
+          alert(I18N.t("moments.videoTooLong"));
+          return;
+        }
+        createWizard.durationSeconds = probe.duration || null;
+        const reader = new FileReader();
+        reader.onload = () => {
+          createWizard.rawDataUrl = reader.result;
+          createWizard.mediaType = "video";
+          createWizard.step = 2;
+          drawCreateWizard();
+        };
+        reader.readAsDataURL(file);
+      };
+      probe.src = objectUrl;
+    });
+
+    document.getElementById("wizard-cancel").addEventListener("click", closeCreateWizard);
+    return;
+  }
+
+  if (createWizard.step === 2) {
+    overlay.innerHTML = `
+      <div class="modal-box wizard-box">
+        <h2 class="section-heading">${I18N.t("create.step2Title")}</h2>
+        <div class="wizard-preview-wrap">
+          ${
+            createWizard.mediaType === "video"
+              ? `<video class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" controls></video>`
+              : `<img class="wizard-preview-media" id="wizard-preview-img" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" />`
+          }
+        </div>
+        ${createWizardFilterRow()}
+        ${createWizard.mediaType === "video" ? `<p class="field-hint">${I18N.t("create.videoFilterHint")}</p>` : ""}
+        <div class="action-row">
+          <button class="btn btn-secondary" id="wizard-back">${I18N.t("create.back")}</button>
+          <button class="btn btn-primary" id="wizard-next">${I18N.t("create.next")}</button>
+        </div>
+        <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel2">${I18N.t("common.cancel")}</a></p>
+      </div>
+    `;
+    document.getElementById("wizard-cancel2").addEventListener("click", (e) => {
+      e.preventDefault();
+      closeCreateWizard();
+    });
+    wireCreateWizardFilterRow(() => {
+      const img = document.getElementById("wizard-preview-img");
+      const vid = overlay.querySelector(".wizard-preview-media");
+      if (img) img.style.filter = createWizardFilterCss(createWizard.filter);
+      else if (vid) vid.style.filter = createWizardFilterCss(createWizard.filter);
+    });
+    document.getElementById("wizard-back").addEventListener("click", () => {
+      createWizard.step = 1;
+      createWizard.rawDataUrl = null;
+      createWizard.mediaType = null;
+      drawCreateWizard();
+    });
+    document.getElementById("wizard-next").addEventListener("click", () => {
+      createWizard.step = 3;
+      drawCreateWizard();
+    });
+    return;
+  }
+
+  // step 3: caption + hashtags + publish
+  overlay.innerHTML = `
+    <div class="modal-box wizard-box">
+      <h2 class="section-heading">${I18N.t("create.step3Title")}</h2>
+      <div class="wizard-preview-wrap wizard-preview-small">
+        ${
+          createWizard.mediaType === "video"
+            ? `<video class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" muted></video>`
+            : `<img class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" />`
+        }
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("create.captionLabel")}</label>
+        <textarea id="wizard-caption" rows="2" maxlength="130" placeholder="${I18N.t("create.captionPlaceholder")}"></textarea>
+        <p class="field-hint"><span id="wizard-caption-count">0</span>/130</p>
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("create.hashtagsLabel")}</label>
+        <input type="text" id="wizard-hashtags" placeholder="${I18N.t("create.hashtagsPlaceholder")}" />
+      </div>
+      <div class="action-row">
+        <button class="btn btn-secondary" id="wizard-back2">${I18N.t("create.back")}</button>
+        <button class="btn btn-primary" id="wizard-publish">${I18N.t("create.publish")}</button>
+      </div>
+      <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel3">${I18N.t("common.cancel")}</a></p>
+      <p class="form-msg" id="wizard-publish-msg"></p>
+    </div>
+  `;
+  document.getElementById("wizard-cancel3").addEventListener("click", (e) => {
+    e.preventDefault();
+    closeCreateWizard();
+  });
+
+  const captionEl = document.getElementById("wizard-caption");
+  const countEl = document.getElementById("wizard-caption-count");
+  captionEl.addEventListener("input", () => {
+    countEl.textContent = String(captionEl.value.length);
+  });
+
+  document.getElementById("wizard-back2").addEventListener("click", () => {
+    createWizard.step = 2;
+    drawCreateWizard();
+  });
+
+  document.getElementById("wizard-publish").addEventListener("click", async () => {
+    const publishBtn = document.getElementById("wizard-publish");
+    const msgEl = document.getElementById("wizard-publish-msg");
+    publishBtn.disabled = true;
+    msgEl.textContent = I18N.t("moments.uploading");
+    msgEl.className = "form-msg";
+    try {
+      let finalMedia = createWizard.rawDataUrl;
+      if (createWizard.mediaType === "image" && createWizard.filter !== "none") {
+        finalMedia = await bakeImageFilter(createWizard.rawDataUrl, createWizardFilterCss(createWizard.filter));
+      }
+      const hashtagsRaw = document.getElementById("wizard-hashtags").value.trim();
+      const hashtags = hashtagsRaw
+        .split(/[\s,]+/)
+        .filter(Boolean)
+        .map((h) => (h.startsWith("#") ? h : "#" + h))
+        .join(" ");
+      const captionText = captionEl.value.trim();
+      const fullCaption = hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText;
+
+      await api("/api/moments", {
+        method: "POST",
+        auth: true,
+        body: {
+          mediaType: createWizard.mediaType,
+          media: finalMedia,
+          caption: fullCaption,
+          durationSeconds: createWizard.durationSeconds,
+        },
+      });
+      msgEl.textContent = I18N.t("moments.posted");
+      msgEl.className = "form-msg ok";
+      setTimeout(() => {
+        closeCreateWizard();
+        router();
+      }, 700);
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+      publishBtn.disabled = false;
+    }
+  });
+}
+
+// Bakes a CSS filter string into an actual image (canvas 2D context supports
+// .filter the same way CSS does), so the published photo really carries the
+// chosen look instead of only looking filtered in the browser preview.
+function bakeImageFilter(dataUrl, cssFilter) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.filter = cssFilter;
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/jpeg", 0.92));
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+// Wraps #hashtag tokens in a highlighted span for display. Call on
+// already-escaped text (escapeHtml first) since this only touches plain
+// #word runs, which is safe post-escaping.
+function linkifyHashtags(escapedText) {
+  return escapedText.replace(/(^|\s)(#[\w]+)/g, '$1<span class="hashtag-token">$2</span>');
+}
+
 // ---------------- Profile ----------------
 
 async function renderProfile(userId) {
@@ -2538,6 +3085,8 @@ async function renderProfile(userId) {
         </div>
       </div>
     </div>
+
+    ${isMe && profile.isPage ? `<div class="profile-about-card" id="subs-requests-card" style="display:none;"><h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("subs.requestsHeading")}</h2><div id="subs-requests-list"></div></div>` : ""}
 
     ${aboutRows ? `<div class="profile-about-card"><h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("profile.about")}</h2>${aboutRows}</div>` : ""}
 
@@ -2688,6 +3237,7 @@ async function renderProfile(userId) {
         reader.readAsDataURL(file);
       });
     }
+    if (profile.isPage) loadSubsRequests();
   }
 
   if (!isMe) {
@@ -3086,6 +3636,14 @@ function openEditProfileModal(profile) {
         <label>${I18N.t("pages.categoryLabel")}</label>
         <input type="text" id="edit-page-category" placeholder="${I18N.t("pages.categoryPlaceholder")}" value="${escapeHtml(profile.pageCategory || "")}" />
       </div>
+      <div class="form-group" id="edit-subscription-mode-wrap" style="display:${profile.isPage ? "block" : "none"};">
+        <label>${I18N.t("subs.modeLabel")}</label>
+        <select id="edit-subscription-mode">
+          <option value="manual" ${profile.subscriptionMode !== "auto" ? "selected" : ""}>${I18N.t("subs.modeManual")}</option>
+          <option value="auto" ${profile.subscriptionMode === "auto" ? "selected" : ""}>${I18N.t("subs.modeAuto")}</option>
+        </select>
+        <p class="field-hint">${I18N.t("subs.modeHint")}</p>
+      </div>
       <div class="action-row">
         <button class="btn btn-primary" id="edit-save">${I18N.t("profile.save")}</button>
         <button class="btn btn-secondary" id="edit-cancel">${I18N.t("common.cancel")}</button>
@@ -3110,6 +3668,7 @@ function openEditProfileModal(profile) {
 
   document.getElementById("edit-is-page").addEventListener("change", (e) => {
     document.getElementById("edit-page-category-wrap").style.display = e.target.checked ? "block" : "none";
+    document.getElementById("edit-subscription-mode-wrap").style.display = e.target.checked ? "block" : "none";
   });
 
   document.getElementById("edit-cancel").addEventListener("click", () => overlay.remove());
@@ -3132,6 +3691,7 @@ function openEditProfileModal(profile) {
           chatPrivacy: document.getElementById("edit-chat-privacy").value,
           isPage: document.getElementById("edit-is-page").checked,
           pageCategory: document.getElementById("edit-page-category").value,
+          subscriptionMode: document.getElementById("edit-subscription-mode").value,
         },
       });
       state.user = { ...state.user, ...data.user };
