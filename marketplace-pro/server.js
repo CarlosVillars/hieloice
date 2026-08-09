@@ -38,6 +38,8 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 }
 
 const MAX_PHOTOS = 12;
+const MAX_ACTIVE_MOMENTS = 3;
+const MAX_MOMENT_VIDEO_SECONDS = 180; // 3 minutes - enforced client-side (no server-side video parsing)
 
 // ---------- Supabase REST helpers ----------
 
@@ -249,8 +251,15 @@ function ownUser(u) {
 
 function toCamelUser(u) {
   if (!u) return u;
-  const { created_at, cover_photo, chat_privacy, ...rest } = u;
-  return { ...rest, createdAt: created_at, coverPhoto: cover_photo, chatPrivacy: chat_privacy };
+  const { created_at, cover_photo, chat_privacy, is_page, page_category, ...rest } = u;
+  return {
+    ...rest,
+    createdAt: created_at,
+    coverPhoto: cover_photo,
+    chatPrivacy: chat_privacy,
+    isPage: !!is_page,
+    pageCategory: page_category || "",
+  };
 }
 
 function isOwner(user) {
@@ -418,7 +427,7 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     let chunks = [];
     let size = 0;
-    const LIMIT = 120 * 1024 * 1024; // 120MB - enough for photos and short moment videos as base64
+    const LIMIT = 320 * 1024 * 1024; // 320MB - enough for photos and up to ~3min moment videos as base64
     req.on("data", (chunk) => {
       size += chunk.length;
       if (size > LIMIT) {
@@ -703,6 +712,8 @@ async function handleApi(req, res, pathname, query) {
     if (body.chatPrivacy !== undefined && ["everyone", "friends"].includes(body.chatPrivacy)) {
       patch.chat_privacy = body.chatPrivacy;
     }
+    if (body.isPage !== undefined) patch.is_page = !!body.isPage;
+    if (body.pageCategory !== undefined) patch.page_category = String(body.pageCategory).slice(0, 80);
     const updated = await db.update("mkt_users", { id: "eq." + enc(me.id) }, patch);
     const u = updated && updated[0];
     const rating = await userRatingSummary(u.id);
@@ -1487,6 +1498,65 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { status: "pending_received", friendshipId: f.id });
   }
 
+  // ---- FOLLOW (one-directional, only for "Public Page" accounts - separate from friends) ----
+
+  const followMatch = pathname.match(/^\/api\/follow\/([a-zA-Z0-9]+)$/);
+  if (method === "POST" && followMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const targetId = followMatch[1];
+    if (targetId === me.id) return sendJson(res, 400, { error: "You cannot follow yourself" });
+    const targets = await db.select("mkt_users", { id: "eq." + enc(targetId), select: "id,is_page" });
+    const target = targets && targets[0];
+    if (!target) return sendJson(res, 404, { error: "User not found" });
+    if (!target.is_page) return sendJson(res, 400, { error: "Only public pages can be followed" });
+    const existing = await db.select("mkt_follows", {
+      follower_id: "eq." + enc(me.id),
+      followed_id: "eq." + enc(targetId),
+      select: "id",
+    });
+    if (existing && existing[0]) return sendJson(res, 200, { ok: true, following: true });
+    await db.insert("mkt_follows", {
+      id: crypto.randomBytes(8).toString("hex"),
+      follower_id: me.id,
+      followed_id: targetId,
+      created_at: Date.now(),
+    });
+    return sendJson(res, 201, { ok: true, following: true });
+  }
+
+  if (method === "DELETE" && followMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    await db.remove("mkt_follows", { follower_id: "eq." + enc(me.id), followed_id: "eq." + enc(followMatch[1]) });
+    return sendJson(res, 200, { ok: true, following: false });
+  }
+
+  const followStatusMatch = pathname.match(/^\/api\/follow\/status\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && followStatusMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const targetId = followStatusMatch[1];
+    const rows = await db.select("mkt_follows", {
+      follower_id: "eq." + enc(me.id),
+      followed_id: "eq." + enc(targetId),
+      select: "id",
+    });
+    const followerCount = await db.select("mkt_follows", { followed_id: "eq." + enc(targetId), select: "id" });
+    return sendJson(res, 200, { following: !!(rows && rows[0]), followerCount: (followerCount || []).length });
+  }
+
+  if (method === "GET" && pathname === "/api/pages/suggested") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const following = await db.select("mkt_follows", { follower_id: "eq." + enc(me.id), select: "followed_id" });
+    const followingIds = following.map((f) => f.followed_id);
+    const params = { is_page: "eq.true", select: "id,name,photo,page_category", order: "created_at.desc", limit: "20" };
+    const pages = await db.select("mkt_users", params);
+    const candidates = pages.filter((p) => p.id !== me.id && !followingIds.includes(p.id));
+    return sendJson(res, 200, candidates.map((p) => ({ userId: p.id, name: p.name, photo: p.photo, pageCategory: p.page_category || "" })));
+  }
+
   // ---- MOMENTS (photo/video stories, visible 24h) ----
 
   function momentOut(m) {
@@ -1501,11 +1571,27 @@ async function handleApi(req, res, pathname, query) {
     if (!checkRateLimit("moment:" + ip, 20, 60 * 60 * 1000)) {
       return sendJson(res, 429, { error: "Too many moments posted. Please try again later." });
     }
+    const activeMoments = await db.select("mkt_moments", {
+      user_id: "eq." + enc(me.id),
+      expires_at: "gt." + Date.now(),
+      select: "id",
+    });
+    if (activeMoments && activeMoments.length >= MAX_ACTIVE_MOMENTS) {
+      return sendJson(res, 400, {
+        error: "You already have " + MAX_ACTIVE_MOMENTS + " active moments. Delete one or wait for it to expire before posting a new one.",
+      });
+    }
     const body = await readBody(req);
     const mediaType = body.mediaType === "video" ? "video" : "image";
     const prefix = mediaType === "video" ? "data:video/" : "data:image/";
     if (!body.media || typeof body.media !== "string" || !body.media.startsWith(prefix)) {
       return sendJson(res, 400, { error: "Valid media is required" });
+    }
+    if (mediaType === "video" && body.durationSeconds !== undefined) {
+      const dur = Number(body.durationSeconds);
+      if (dur && dur > MAX_MOMENT_VIDEO_SECONDS) {
+        return sendJson(res, 400, { error: "Videos can be at most " + MAX_MOMENT_VIDEO_SECONDS / 60 + " minutes long." });
+      }
     }
     const ext = mediaType === "video" ? ".mp4" : ".jpg";
     let mediaUrl;
@@ -1528,37 +1614,81 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 201, momentOut(moment));
   }
 
+  // Feed algorithm v1: your own moments, then friends' moments (recency), then
+  // moments from Pages you follow, then a small set of suggested Pages you
+  // don't follow yet (ranked by follower count as a simple popularity proxy).
+  // This is intentionally simple while the community is small - upgradeable
+  // to a real ranking model once we have the data volume/infra to justify it.
   if (method === "GET" && pathname === "/api/moments/feed") {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
-    const friendRows = await db.select("mkt_friendships", {
-      status: "eq.accepted",
-      or: "(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(me.id) + ")",
-      select: "requester_id,addressee_id",
-    });
+
+    const [friendRows, followRows] = await Promise.all([
+      db.select("mkt_friendships", {
+        status: "eq.accepted",
+        or: "(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(me.id) + ")",
+        select: "requester_id,addressee_id",
+      }),
+      db.select("mkt_follows", { follower_id: "eq." + enc(me.id), select: "followed_id" }),
+    ]);
     const friendIds = friendRows.map((f) => (f.requester_id === me.id ? f.addressee_id : f.requester_id));
-    const userIds = [me.id, ...friendIds];
+    const followedPageIds = followRows.map((f) => f.followed_id);
+
+    // Suggested pages: public pages not already followed, ranked by follower count.
+    const allPages = await db.select("mkt_users", { is_page: "eq.true", select: "id,name,photo,page_category" });
+    const suggestedCandidates = allPages.filter((p) => p.id !== me.id && !followedPageIds.includes(p.id));
+    let suggestedPageIds = [];
+    if (suggestedCandidates.length) {
+      const allFollows = await db.select("mkt_follows", {
+        followed_id: "in.(" + suggestedCandidates.map((p) => enc(p.id)).join(",") + ")",
+        select: "followed_id",
+      });
+      const counts = {};
+      for (const f of allFollows) counts[f.followed_id] = (counts[f.followed_id] || 0) + 1;
+      suggestedPageIds = suggestedCandidates
+        .sort((a, b) => (counts[b.id] || 0) - (counts[a.id] || 0))
+        .slice(0, 10)
+        .map((p) => p.id);
+    }
+
+    const userIds = [...new Set([me.id, ...friendIds, ...followedPageIds, ...suggestedPageIds])];
+    if (!userIds.length) return sendJson(res, 200, { friends: [], suggested: [] });
+
     const moments = await db.select("mkt_moments", {
       user_id: "in.(" + userIds.map(enc).join(",") + ")",
       expires_at: "gt." + Date.now(),
       order: "created_at.asc",
       select: "*",
     });
-    const authors = await db.select("mkt_users", { id: "in.(" + userIds.map(enc).join(",") + ")", select: "id,name,photo" });
+    const authors = await db.select("mkt_users", {
+      id: "in.(" + userIds.map(enc).join(",") + ")",
+      select: "id,name,photo,is_page,page_category",
+    });
     const grouped = {};
     for (const m of moments) {
       if (!grouped[m.user_id]) {
         const u = authors.find((x) => x.id === m.user_id);
-        grouped[m.user_id] = { userId: m.user_id, userName: u ? u.name : "Unknown", userPhoto: u ? u.photo : null, moments: [] };
+        grouped[m.user_id] = {
+          userId: m.user_id,
+          userName: u ? u.name : "Unknown",
+          userPhoto: u ? u.photo : null,
+          isPage: !!(u && u.is_page),
+          pageCategory: (u && u.page_category) || "",
+          moments: [],
+        };
       }
       grouped[m.user_id].moments.push(momentOut(m));
     }
-    const result = [];
-    if (grouped[me.id]) result.push(grouped[me.id]);
-    for (const uid of friendIds) {
-      if (grouped[uid]) result.push(grouped[uid]);
-    }
-    return sendJson(res, 200, result);
+
+    const friendsSection = [];
+    if (grouped[me.id]) friendsSection.push(grouped[me.id]);
+    for (const uid of friendIds) if (grouped[uid]) friendsSection.push(grouped[uid]);
+
+    const suggestedSection = [];
+    for (const uid of followedPageIds) if (grouped[uid]) suggestedSection.push(grouped[uid]);
+    for (const uid of suggestedPageIds) if (grouped[uid]) suggestedSection.push(grouped[uid]);
+
+    return sendJson(res, 200, { friends: friendsSection, suggested: suggestedSection });
   }
 
   const userMomentsMatch = pathname.match(/^\/api\/moments\/user\/([a-zA-Z0-9]+)$/);
