@@ -1567,6 +1567,192 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, candidates.map((p) => ({ userId: p.id, name: p.name, photo: p.photo, pageCategory: p.page_category || "" })));
   }
 
+  // ---- GROUPS / COMMUNITIES (category/city groups, Reddit-style posts + votes) ----
+  // v1 is deliberately open: no join/membership step, anyone can post or vote
+  // in any group. This is the trust-layer differentiator a plain marketplace
+  // (like Facebook Marketplace) lacks - questions, seller reviews, and scam
+  // warnings ranked by community vote instead of a corporate algorithm.
+
+  function slugify(s) {
+    return (
+      String(s || "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9\s-]/g, "")
+        .replace(/\s+/g, "-")
+        .slice(0, 60) || "group"
+    );
+  }
+
+  function groupOut(g) {
+    const { created_by, created_at, ...rest } = g;
+    return { ...rest, createdBy: created_by, createdAt: created_at };
+  }
+
+  function groupPostOut(p) {
+    const { group_id, author_id, post_type, created_at, ...rest } = p;
+    return { ...rest, groupId: group_id, authorId: author_id, postType: post_type, createdAt: created_at };
+  }
+
+  const GROUP_POST_TYPES = ["discussion", "question", "review", "warning"];
+
+  if (method === "POST" && pathname === "/api/groups") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    if (!body.name || !String(body.name).trim()) return sendJson(res, 400, { error: "Group name is required" });
+    let slug = slugify(body.name);
+    const existing = await db.select("mkt_groups", { slug: "eq." + enc(slug), select: "id" });
+    if (existing && existing[0]) slug = slug + "-" + crypto.randomBytes(3).toString("hex");
+    const group = {
+      id: crypto.randomBytes(8).toString("hex"),
+      slug,
+      name: String(body.name).trim().slice(0, 100),
+      category: body.category && CATEGORIES.includes(body.category) ? body.category : null,
+      city: String(body.city || "").trim().slice(0, 80) || null,
+      description: String(body.description || "").slice(0, 1000),
+      created_by: me.id,
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_groups", group);
+    return sendJson(res, 201, groupOut(group));
+  }
+
+  if (method === "GET" && pathname === "/api/groups") {
+    const { category, city, q } = query;
+    const params = { select: "*", order: "created_at.desc" };
+    if (category) params.category = "eq." + enc(category);
+    if (city) params.city = "ilike.*" + enc(city) + "*";
+    if (q) params.name = "ilike.*" + enc(q) + "*";
+    const groups = await db.select("mkt_groups", params);
+    return sendJson(res, 200, groups.map(groupOut));
+  }
+
+  const groupMatch = pathname.match(/^\/api\/groups\/([a-zA-Z0-9-]+)$/);
+  if (method === "GET" && groupMatch) {
+    const rows = await db.select("mkt_groups", { slug: "eq." + enc(groupMatch[1]), select: "*" });
+    const g = rows && rows[0];
+    if (!g) return sendJson(res, 404, { error: "Group not found" });
+    return sendJson(res, 200, groupOut(g));
+  }
+
+  const groupPostsMatch = pathname.match(/^\/api\/groups\/([a-zA-Z0-9-]+)\/posts$/);
+  if (method === "GET" && groupPostsMatch) {
+    const groups = await db.select("mkt_groups", { slug: "eq." + enc(groupPostsMatch[1]), select: "id" });
+    const g = groups && groups[0];
+    if (!g) return sendJson(res, 404, { error: "Group not found" });
+    const sort = query.sort === "new" ? "created_at.desc" : "score.desc,created_at.desc";
+    const posts = await db.select("mkt_group_posts", { group_id: "eq." + enc(g.id), select: "*", order: sort });
+    const authorIds = [...new Set(posts.map((p) => p.author_id))];
+    let authors = [];
+    if (authorIds.length) {
+      authors = await db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,photo" });
+    }
+    let myVotes = {};
+    const me = await getAuthUser(req);
+    if (me && posts.length) {
+      const votes = await db.select("mkt_group_post_votes", {
+        user_id: "eq." + enc(me.id),
+        post_id: "in.(" + posts.map((p) => enc(p.id)).join(",") + ")",
+        select: "post_id,value",
+      });
+      for (const v of votes) myVotes[v.post_id] = v.value;
+    }
+    const out = posts.map((p) => {
+      const author = authors.find((u) => u.id === p.author_id);
+      return {
+        ...groupPostOut(p),
+        authorName: author ? author.name : "Unknown",
+        authorPhoto: author ? author.photo : null,
+        myVote: myVotes[p.id] || 0,
+      };
+    });
+    return sendJson(res, 200, out);
+  }
+
+  if (method === "POST" && groupPostsMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const groups = await db.select("mkt_groups", { slug: "eq." + enc(groupPostsMatch[1]), select: "id" });
+    const g = groups && groups[0];
+    if (!g) return sendJson(res, 404, { error: "Group not found" });
+    const ip = getClientIp(req);
+    if (!checkRateLimit("grouppost:" + ip, 20, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many posts. Please try again later." });
+    }
+    const body = await readBody(req);
+    if (!body.title || !String(body.title).trim()) return sendJson(res, 400, { error: "Title is required" });
+    const postType = GROUP_POST_TYPES.includes(body.postType) ? body.postType : "discussion";
+    const post = {
+      id: crypto.randomBytes(8).toString("hex"),
+      group_id: g.id,
+      author_id: me.id,
+      title: String(body.title).trim().slice(0, 200),
+      body: String(body.body || "").slice(0, 5000),
+      post_type: postType,
+      score: 0,
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_group_posts", post);
+    return sendJson(res, 201, { ...groupPostOut(post), authorName: me.name, authorPhoto: me.photo, myVote: 0 });
+  }
+
+  // POST /api/posts/:id/vote  body: { value: 1 | -1 }  - upsert the caller's
+  // vote and recompute the post's denormalized score (PostgREST has no
+  // simple GROUP BY via REST, so we keep a running total instead of
+  // aggregating on every read). Voting the same way again toggles the vote off.
+  const postVoteMatch = pathname.match(/^\/api\/posts\/([a-zA-Z0-9]+)\/vote$/);
+  if (method === "POST" && postVoteMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const posts = await db.select("mkt_group_posts", { id: "eq." + enc(postVoteMatch[1]), select: "*" });
+    const post = posts && posts[0];
+    if (!post) return sendJson(res, 404, { error: "Post not found" });
+    const body = await readBody(req);
+    const value = Number(body.value);
+    if (![1, -1].includes(value)) return sendJson(res, 400, { error: "Vote value must be 1 or -1" });
+
+    const existing = await db.select("mkt_group_post_votes", {
+      post_id: "eq." + enc(post.id),
+      user_id: "eq." + enc(me.id),
+      select: "*",
+    });
+    const prev = existing && existing[0];
+    let delta;
+    if (prev && prev.value === value) {
+      await db.remove("mkt_group_post_votes", { id: "eq." + enc(prev.id) });
+      delta = -value;
+    } else if (prev) {
+      await db.update("mkt_group_post_votes", { id: "eq." + enc(prev.id) }, { value });
+      delta = value - prev.value;
+    } else {
+      await db.insert("mkt_group_post_votes", {
+        id: crypto.randomBytes(8).toString("hex"),
+        post_id: post.id,
+        user_id: me.id,
+        value,
+        created_at: Date.now(),
+      });
+      delta = value;
+    }
+    const newScore = post.score + delta;
+    await db.update("mkt_group_posts", { id: "eq." + enc(post.id) }, { score: newScore });
+    const myVote = prev && prev.value === value ? 0 : value;
+    return sendJson(res, 200, { score: newScore, myVote });
+  }
+
+  const postDeleteMatch = pathname.match(/^\/api\/posts\/([a-zA-Z0-9]+)$/);
+  if (method === "DELETE" && postDeleteMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const posts = await db.select("mkt_group_posts", { id: "eq." + enc(postDeleteMatch[1]), select: "*" });
+    const post = posts && posts[0];
+    if (!post) return sendJson(res, 404, { error: "Post not found" });
+    if (post.author_id !== me.id) return sendJson(res, 403, { error: "You do not own this post" });
+    await db.remove("mkt_group_posts", { id: "eq." + enc(post.id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
   // ---- MOMENTS (photo/video stories, visible 24h) ----
 
   function momentOut(m) {
