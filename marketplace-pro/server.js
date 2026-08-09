@@ -478,7 +478,17 @@ function serveStatic(req, res, pathname) {
       return res.end("Not found");
     }
     const ext = path.extname(fullPath).toLowerCase();
-    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream" });
+    const headers = { "Content-Type": MIME[ext] || "application/octet-stream" };
+    // The app is under active development and pushes frequent fixes. Without
+    // explicit headers, mobile browsers apply heuristic caching to app.js/
+    // style.css/index.html and can keep serving a stale (pre-fix) copy for a
+    // while after a deploy - including across a pull-to-refresh reload. Force
+    // revalidation on every load for the core app files so fixes always land
+    // immediately; static assets (icons, images) stay cacheable as before.
+    if ([".html", ".js", ".css"].includes(ext)) {
+      headers["Cache-Control"] = "no-cache, must-revalidate";
+    }
+    res.writeHead(200, headers);
     res.end(data);
   });
 }
