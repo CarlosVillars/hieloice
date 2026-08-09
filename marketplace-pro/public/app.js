@@ -107,7 +107,12 @@ function updateNavUI() {
   document.getElementById("nav-logout").style.display = loggedIn ? "inline" : "none";
   document.getElementById("nav-profile").style.display = loggedIn ? "inline" : "none";
   document.getElementById("nav-messages").style.display = loggedIn ? "inline" : "none";
-  if (!loggedIn) setUnreadBadge(0);
+  const iconNav = document.getElementById("icon-nav");
+  if (iconNav) iconNav.style.display = loggedIn ? "flex" : "none";
+  if (!loggedIn) {
+    setUnreadBadge(0);
+    setIconNavBadge(0);
+  }
 }
 
 document.getElementById("nav-logout").addEventListener("click", async () => {
@@ -136,12 +141,19 @@ function setUnreadBadge(count) {
 async function pollUnread() {
   if (!state.token) {
     setUnreadBadge(0);
+    setIconNavBadge(0);
     return;
   }
   try {
     const convos = await api("/api/conversations", { auth: true });
     const count = convos.filter((c) => c.unread).length;
     setUnreadBadge(count);
+    let requestCount = 0;
+    try {
+      const requests = await api("/api/friends/requests", { auth: true });
+      requestCount = requests.length;
+    } catch (e) {}
+    setIconNavBadge(count + requestCount);
   } catch (e) {
     // best-effort; ignore failures silently
   }
@@ -161,6 +173,12 @@ function applyStaticI18n() {
   document.getElementById("nav-logout").textContent = I18N.t("nav.logout");
   document.getElementById("lang-en").classList.toggle("active", I18N.lang === "en");
   document.getElementById("lang-es").classList.toggle("active", I18N.lang === "es");
+  document.getElementById("icon-nav-home-label").textContent = I18N.t("iconnav.home");
+  document.getElementById("icon-nav-friends-label").textContent = I18N.t("iconnav.friends");
+  document.getElementById("icon-nav-marketplace-label").textContent = I18N.t("iconnav.marketplace");
+  document.getElementById("icon-nav-notifications-label").textContent = I18N.t("iconnav.notifications");
+  document.getElementById("icon-nav-dropdown-marketplace").textContent = "🛒 " + I18N.t("iconnav.dropdownMarketplace");
+  document.getElementById("icon-nav-dropdown-intl").textContent = "🌎 " + I18N.t("iconnav.dropdownIntl");
 }
 
 document.getElementById("lang-en").addEventListener("click", () => {
@@ -181,6 +199,33 @@ document.getElementById("global-search").addEventListener("keydown", (e) => {
 function doGlobalSearch() {
   const q = document.getElementById("global-search").value.trim();
   location.hash = "#/category/all" + (q ? "?q=" + encodeURIComponent(q) : "");
+}
+
+// ---------------- Icon nav (Home / Friends / Marketplace / Notifications) ----------------
+
+(function wireIconNav() {
+  const marketplaceBtn = document.getElementById("icon-nav-marketplace");
+  const dropdown = document.getElementById("icon-nav-marketplace-dropdown");
+  if (!marketplaceBtn || !dropdown) return;
+  marketplaceBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    dropdown.style.display = dropdown.style.display === "block" ? "none" : "block";
+  });
+  document.addEventListener("click", () => {
+    dropdown.style.display = "none";
+  });
+  dropdown.addEventListener("click", (e) => e.stopPropagation());
+})();
+
+function setIconNavBadge(count) {
+  const badge = document.getElementById("icon-nav-badge");
+  if (!badge) return;
+  if (count > 0) {
+    badge.textContent = count > 9 ? "9+" : String(count);
+    badge.style.display = "inline-flex";
+  } else {
+    badge.style.display = "none";
+  }
 }
 
 // ---------------- Router ----------------
@@ -205,6 +250,9 @@ async function router() {
 
   try {
     if (parts.length === 0) return renderHome();
+    if (parts[0] === "marketplace") return renderMarketplaceHome();
+    if (parts[0] === "friends") return renderFriendsPage();
+    if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
     if (parts[0] === "login") return renderLogin();
@@ -232,27 +280,78 @@ window.addEventListener("hashchange", router);
 
 // ---------------- Home ----------------
 
-function renderHome() {
-  const cards = CATEGORY_LIST.map(
+function categoryCardsHtml() {
+  return CATEGORY_LIST.map(
     (c) => `
     <a class="category-card" href="#/category/${c.slug}">
       ${c.img ? `<img class="category-icon category-icon-img" src="${c.img}" alt="" />` : `<span class="category-icon">${c.icon}</span>`}
       <span class="category-label">${I18N.lang === "es" ? c.es : c.en}</span>
     </a>`
   ).join("");
+}
+
+// Home ("#/"): the moments feed for logged-in users (Facebook-style focus on
+// sharing), falling back to the marketplace grid for guests who have nothing
+// to see in a feed yet.
+function renderHome() {
+  if (!state.token) return renderMarketplaceHome();
 
   viewEl.innerHTML = `
+    <div class="feed-section" id="feed-section-friends">
+      <h2 class="section-heading">${I18N.t("feed.friendsHeading")}</h2>
+      <div class="moments-bar" id="home-moments-bar-friends" style="display:none;"></div>
+    </div>
+    <div class="feed-section" id="feed-section-suggested" style="display:none;">
+      <h2 class="section-heading">${I18N.t("feed.suggestedHeading")}</h2>
+      <div class="moments-bar" id="home-moments-bar-suggested" style="display:none;"></div>
+    </div>
     <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
-    <div class="moments-bar" id="home-moments-bar" style="display:none;"></div>
+    <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
+    <div class="category-grid">${categoryCardsHtml()}</div>
+  `;
+  loadAdCarousel();
+  loadHomeFeed();
+}
+
+// "#/marketplace": the classic category-grid landing page, also reachable by
+// guests at "#/" and by logged-in users via the Marketplace icon-nav button.
+function renderMarketplaceHome() {
+  viewEl.innerHTML = `
+    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
     <div class="hero">
       <h1>${escapeHtml(I18N.t("site.name"))}</h1>
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
     </div>
     <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
-    <div class="category-grid">${cards}</div>
+    <div class="category-grid">${categoryCardsHtml()}</div>
   `;
   loadAdCarousel();
-  loadHomeMomentsBar();
+}
+
+async function loadHomeFeed() {
+  const elFriends = document.getElementById("home-moments-bar-friends");
+  const suggestedSection = document.getElementById("feed-section-suggested");
+  const elSuggested = document.getElementById("home-moments-bar-suggested");
+  if (!elFriends) return;
+  try {
+    const data = await api("/api/moments/feed", { auth: true });
+    elFriends.style.display = "flex";
+    renderMomentGroupsBar(elFriends, data.friends || [], {
+      showAddForUserId: state.user.id,
+      ownPhoto: state.user.photo,
+      ownName: state.user.name,
+    });
+    if (data.suggested && data.suggested.length) {
+      suggestedSection.style.display = "block";
+      elSuggested.style.display = "flex";
+      renderMomentGroupsBar(elSuggested, data.suggested, {});
+    } else {
+      suggestedSection.style.display = "none";
+    }
+  } catch (e) {
+    elFriends.style.display = "none";
+    suggestedSection.style.display = "none";
+  }
 }
 
 let adRotateTimer = null;
@@ -883,6 +982,43 @@ function friendActionMarkup(fs) {
   return "";
 }
 
+// Follow button for "Public Page" profiles - separate from the friend system,
+// one-directional, no acceptance required.
+function pageFollowMarkup(fs) {
+  if (!state.token) {
+    return `<a class="btn btn-outline" href="#/login">${I18N.t("pages.follow")}</a>`;
+  }
+  if (fs && fs.following) {
+    return `<button class="btn btn-friend-status" id="btn-page-unfollow">${I18N.t("pages.following")}</button>`;
+  }
+  return `<button class="btn btn-primary" id="btn-page-follow">${I18N.t("pages.follow")}</button>`;
+}
+
+function wirePageFollowButton(otherUserId) {
+  const followBtn = document.getElementById("btn-page-follow");
+  if (followBtn) {
+    followBtn.addEventListener("click", async () => {
+      try {
+        await api("/api/follow/" + otherUserId, { method: "POST", auth: true });
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+  const unfollowBtn = document.getElementById("btn-page-unfollow");
+  if (unfollowBtn) {
+    unfollowBtn.addEventListener("click", async () => {
+      try {
+        await api("/api/follow/" + otherUserId, { method: "DELETE", auth: true });
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+}
+
 function wireFriendActionButtons(otherUserId) {
   const addBtn = document.getElementById("btn-friend-add");
   if (addBtn) {
@@ -1007,6 +1143,145 @@ async function renderRequestsTab() {
   });
 }
 
+// ---------------- Friends page ("#/friends", reached from the icon nav) ----------------
+
+async function renderFriendsPage() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  const [requests, friends] = await Promise.all([
+    api("/api/friends/requests", { auth: true }),
+    api("/api/friends", { auth: true }),
+  ]);
+
+  const requestsHtml = requests.length
+    ? requests
+        .map(
+          (r) => `
+      <div class="friend-request-row">
+        ${r.photo ? `<img class="mini-avatar" style="width:36px;height:36px;" src="${r.photo}" />` : `<div class="seller-avatar-placeholder" style="width:36px;height:36px;">${initials(r.name)}</div>`}
+        <span class="friend-request-name">${escapeHtml(r.name)}</span>
+        <button class="btn btn-primary" data-accept="${r.friendshipId}">${I18N.t("friends.accept")}</button>
+        <button class="btn btn-secondary" data-decline="${r.friendshipId}">${I18N.t("friends.decline")}</button>
+      </div>`
+        )
+        .join("")
+    : `<div class="empty-state">${I18N.t("friends.noRequests")}</div>`;
+
+  const friendsHtml = friends.length
+    ? `<div class="friends-grid">${friends
+        .map(
+          (f) => `
+      <div class="friend-card">
+        <a href="#/profile/${f.userId}">
+          ${f.photo ? `<img class="friend-card-photo" src="${f.photo}" />` : `<div class="friend-card-photo-placeholder">${initials(f.name)}</div>`}
+        </a>
+        <div class="friend-card-body">
+          <p class="friend-card-name">${escapeHtml(f.name)}</p>
+          <button class="friend-card-remove" data-uid="${f.userId}">${I18N.t("friends.removeFriend")}</button>
+        </div>
+      </div>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("friends.noFriends")}</div>`;
+
+  viewEl.innerHTML = `
+    <h2 class="section-heading">${I18N.t("friendsPage.title")}</h2>
+    <h3 class="section-subheading">${I18N.t("friendsPage.requestsHeading")}</h3>
+    <div id="friends-page-requests">${requestsHtml}</div>
+    <h3 class="section-subheading">${I18N.t("friendsPage.friendsHeading")}</h3>
+    <div id="friends-page-friends">${friendsHtml}</div>
+  `;
+
+  document.querySelectorAll("[data-accept]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api("/api/friends/" + btn.dataset.accept + "/accept", { method: "POST", auth: true });
+      renderFriendsPage();
+      pollUnread();
+    });
+  });
+  document.querySelectorAll("[data-decline]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api("/api/friends/" + btn.dataset.decline + "/reject", { method: "POST", auth: true });
+      renderFriendsPage();
+    });
+  });
+  document.querySelectorAll(".friend-card-remove").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("friends.confirmRemove"))) return;
+      await api("/api/friends/user/" + btn.dataset.uid, { method: "DELETE", auth: true });
+      renderFriendsPage();
+    });
+  });
+}
+
+// ---------------- Notifications page ("#/notifications", reached from the icon nav) ----------------
+
+async function renderNotificationsPage() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  const [requests, convos] = await Promise.all([
+    api("/api/friends/requests", { auth: true }),
+    api("/api/conversations", { auth: true }),
+  ]);
+  const unreadConvos = convos.filter((c) => c.unread);
+
+  const requestsHtml = requests.length
+    ? requests
+        .map(
+          (r) => `
+      <div class="friend-request-row">
+        ${r.photo ? `<img class="mini-avatar" style="width:36px;height:36px;" src="${r.photo}" />` : `<div class="seller-avatar-placeholder" style="width:36px;height:36px;">${initials(r.name)}</div>`}
+        <span class="friend-request-name">${escapeHtml(r.name)}</span>
+        <button class="btn btn-primary" data-accept="${r.friendshipId}">${I18N.t("friends.accept")}</button>
+        <button class="btn btn-secondary" data-decline="${r.friendshipId}">${I18N.t("friends.decline")}</button>
+      </div>`
+        )
+        .join("")
+    : "";
+
+  const convosHtml = unreadConvos.length
+    ? unreadConvos
+        .map(
+          (c) => `
+      <a class="friend-request-row" href="#/messages/${c.userId}">
+        ${c.userPhoto ? `<img class="mini-avatar" style="width:36px;height:36px;" src="${c.userPhoto}" />` : `<div class="seller-avatar-placeholder" style="width:36px;height:36px;">${initials(c.userName)}</div>`}
+        <span class="friend-request-name">${escapeHtml(c.userName)}</span>
+        <span style="color:#888;font-size:13px;">${escapeHtml(c.lastMessage || "")}</span>
+      </a>`
+        )
+        .join("")
+    : "";
+
+  viewEl.innerHTML = `
+    <h2 class="section-heading">${I18N.t("notifPage.title")}</h2>
+    ${requests.length ? `<h3 class="section-subheading">${I18N.t("notifPage.requestsHeading")}</h3><div>${requestsHtml}</div>` : ""}
+    ${unreadConvos.length ? `<h3 class="section-subheading">${I18N.t("notifPage.messagesHeading")}</h3><div>${convosHtml}</div>` : ""}
+    ${!requests.length && !unreadConvos.length ? `<div class="empty-state">${I18N.t("notifPage.empty")}</div>` : ""}
+  `;
+
+  document.querySelectorAll("[data-accept]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api("/api/friends/" + btn.dataset.accept + "/accept", { method: "POST", auth: true });
+      renderNotificationsPage();
+      pollUnread();
+    });
+  });
+  document.querySelectorAll("[data-decline]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await api("/api/friends/" + btn.dataset.decline + "/reject", { method: "POST", auth: true });
+      renderNotificationsPage();
+    });
+  });
+}
+
 // ---------------- Photo gallery (profile Photos tab) ----------------
 
 function renderPhotosGalleryTab(photos, isMe) {
@@ -1114,25 +1389,6 @@ function renderMomentGroupsBar(containerEl, groups, opts) {
   });
 }
 
-async function loadHomeMomentsBar() {
-  const el = document.getElementById("home-moments-bar");
-  if (!el) return;
-  if (!state.token) {
-    el.style.display = "none";
-    return;
-  }
-  try {
-    const groups = await api("/api/moments/feed", { auth: true });
-    el.style.display = "flex";
-    renderMomentGroupsBar(el, groups, {
-      showAddForUserId: state.user.id,
-      ownPhoto: state.user.photo,
-      ownName: state.user.name,
-    });
-  } catch (e) {
-    el.style.display = "none";
-  }
-}
 
 function renderProfileMomentsBar(userId, userName, userPhoto, moments, isMe) {
   const el = document.getElementById("profile-moments-bar");
@@ -1151,12 +1407,24 @@ let momentViewerTimer = null;
 
 function openMomentsViewer(moments, startIndex, group) {
   if (!moments || !moments.length) return;
-  momentViewerState = { moments: moments.slice(), index: startIndex || 0, group };
+  momentViewerState = { moments: moments.slice(), index: startIndex || 0, group, following: null };
   const overlay = document.createElement("div");
   overlay.className = "moment-viewer-overlay";
   overlay.id = "moment-viewer-overlay";
   document.body.appendChild(overlay);
   drawMomentViewer();
+
+  const canFollow = group && group.isPage && state.token && !(state.user && group.userId === state.user.id);
+  if (canFollow) {
+    api("/api/follow/status/" + group.userId, { auth: true })
+      .then((st) => {
+        if (momentViewerState) {
+          momentViewerState.following = !!st.following;
+          drawMomentViewer();
+        }
+      })
+      .catch(() => {});
+  }
 }
 
 function closeMomentsViewer() {
@@ -1179,6 +1447,7 @@ function drawMomentViewer() {
   const { moments, index, group } = momentViewerState;
   const m = moments[index];
   const isOwn = state.user && m.userId === state.user.id;
+  const canFollow = group && group.isPage && state.token && !isOwn;
 
   const bars = moments
     .map((_, i) => `<div class="moment-viewer-progress-bar ${i < index ? "done" : ""}"><div class="moment-viewer-progress-fill" id="progress-fill-${i}"></div></div>`)
@@ -1189,7 +1458,12 @@ function drawMomentViewer() {
       <div class="moment-viewer-progress">${bars}</div>
       <div class="moment-viewer-head">
         ${group && group.userPhoto ? `<img src="${group.userPhoto}" />` : ""}
-        <span class="moment-viewer-head-name">${escapeHtml((group && group.userName) || "")}</span>
+        <span class="moment-viewer-head-name">${escapeHtml((group && group.userName) || "")}${group && group.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        ${
+          canFollow && momentViewerState.following !== null
+            ? `<button class="btn-follow-inline" id="moment-viewer-follow">${momentViewerState.following ? I18N.t("pages.following") : I18N.t("pages.follow")}</button>`
+            : ""
+        }
         <button class="moment-viewer-close" id="moment-viewer-close">&times;</button>
       </div>
       ${
@@ -1226,16 +1500,52 @@ function drawMomentViewer() {
       }
     });
   }
-
-  const duration = m.mediaType === "video" ? 15000 : 5000;
-  const fill = document.getElementById("progress-fill-" + index);
-  if (fill) {
-    requestAnimationFrame(() => {
-      fill.style.transition = "width " + duration + "ms linear";
-      fill.style.width = "100%";
+  const followBtn = document.getElementById("moment-viewer-follow");
+  if (followBtn) {
+    followBtn.addEventListener("click", async () => {
+      followBtn.disabled = true;
+      try {
+        if (momentViewerState.following) {
+          await api("/api/follow/" + group.userId, { method: "DELETE", auth: true });
+          momentViewerState.following = false;
+        } else {
+          await api("/api/follow/" + group.userId, { method: "POST", auth: true });
+          momentViewerState.following = true;
+        }
+        drawMomentViewer();
+      } catch (e) {
+        followBtn.disabled = false;
+        alert(e.message);
+      }
     });
   }
-  momentViewerTimer = setTimeout(() => stepMomentViewer(1), duration);
+
+  const fill = document.getElementById("progress-fill-" + index);
+  if (m.mediaType === "video") {
+    const videoEl = document.getElementById("moment-viewer-media");
+    if (videoEl) {
+      videoEl.muted = false;
+      videoEl.volume = 1;
+      videoEl.addEventListener("loadedmetadata", () => {
+        if (fill && videoEl.duration && isFinite(videoEl.duration)) {
+          requestAnimationFrame(() => {
+            fill.style.transition = "width " + videoEl.duration * 1000 + "ms linear";
+            fill.style.width = "100%";
+          });
+        }
+      });
+      videoEl.addEventListener("ended", () => stepMomentViewer(1));
+    }
+  } else {
+    const duration = 5000;
+    if (fill) {
+      requestAnimationFrame(() => {
+        fill.style.transition = "width " + duration + "ms linear";
+        fill.style.width = "100%";
+      });
+    }
+    momentViewerTimer = setTimeout(() => stepMomentViewer(1), duration);
+  }
 }
 
 function stepMomentViewer(dir) {
@@ -1250,6 +1560,9 @@ function stepMomentViewer(dir) {
   drawMomentViewer();
 }
 
+const MAX_ACTIVE_MOMENTS = 3;
+const MAX_MOMENT_VIDEO_SECONDS = 180;
+
 function openMomentUploadModal() {
   if (!state.token) {
     location.hash = "#/login";
@@ -1257,11 +1570,13 @@ function openMomentUploadModal() {
   }
   let mediaDataUrl = null;
   let mediaType = null;
+  let durationSeconds = null;
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   overlay.innerHTML = `
     <div class="modal-box">
       <h2 class="section-heading">${I18N.t("moments.add")}</h2>
+      <p class="moment-upload-hint">${I18N.t("moments.uploadHint")}</p>
       <div id="moment-upload-preview-wrap"></div>
       <div class="moment-upload-choices" id="moment-upload-choices">
         <label>${I18N.t("moments.uploadPhoto")}<input type="file" id="moment-photo-input" accept="image/*" /></label>
@@ -1281,8 +1596,23 @@ function openMomentUploadModal() {
 
   const previewWrap = document.getElementById("moment-upload-preview-wrap");
   const submitBtn = document.getElementById("moment-submit");
+  const photoInput = document.getElementById("moment-photo-input");
+  const videoInput = document.getElementById("moment-video-input");
+  const msgEl = document.getElementById("moment-upload-msg");
 
-  function handleFile(file, type) {
+  // Block uploads up front if the user already has 3 active moments.
+  api("/api/moments/user/" + state.user.id)
+    .then((moments) => {
+      if (moments.length >= MAX_ACTIVE_MOMENTS) {
+        msgEl.textContent = I18N.t("moments.limitReached");
+        msgEl.className = "form-msg error";
+        photoInput.disabled = true;
+        videoInput.disabled = true;
+      }
+    })
+    .catch(() => {});
+
+  function readAsDataUrl(file, type) {
     const reader = new FileReader();
     reader.onload = () => {
       mediaDataUrl = reader.result;
@@ -1292,19 +1622,43 @@ function openMomentUploadModal() {
           ? `<video class="moment-upload-preview" src="${mediaDataUrl}" controls></video>`
           : `<img class="moment-upload-preview" src="${mediaDataUrl}" />`;
       submitBtn.disabled = false;
+      msgEl.textContent = "";
+      msgEl.className = "form-msg";
     };
     reader.readAsDataURL(file);
   }
 
-  document.getElementById("moment-photo-input").addEventListener("change", (e) => {
+  function handleFile(file, type) {
+    if (type !== "video") {
+      readAsDataUrl(file, type);
+      return;
+    }
+    // Check the video's real duration client-side before reading it into memory.
+    const probe = document.createElement("video");
+    probe.preload = "metadata";
+    const objectUrl = URL.createObjectURL(file);
+    probe.onloadedmetadata = () => {
+      URL.revokeObjectURL(objectUrl);
+      if (probe.duration && probe.duration > MAX_MOMENT_VIDEO_SECONDS) {
+        msgEl.textContent = I18N.t("moments.videoTooLong");
+        msgEl.className = "form-msg error";
+        videoInput.value = "";
+        return;
+      }
+      durationSeconds = probe.duration || null;
+      readAsDataUrl(file, type);
+    };
+    probe.src = objectUrl;
+  }
+
+  photoInput.addEventListener("change", (e) => {
     if (e.target.files[0]) handleFile(e.target.files[0], "image");
   });
-  document.getElementById("moment-video-input").addEventListener("change", (e) => {
+  videoInput.addEventListener("change", (e) => {
     if (e.target.files[0]) handleFile(e.target.files[0], "video");
   });
   document.getElementById("moment-cancel").addEventListener("click", () => overlay.remove());
   submitBtn.addEventListener("click", async () => {
-    const msgEl = document.getElementById("moment-upload-msg");
     if (!mediaDataUrl) return;
     submitBtn.disabled = true;
     msgEl.textContent = I18N.t("moments.uploading");
@@ -1313,7 +1667,12 @@ function openMomentUploadModal() {
       await api("/api/moments", {
         method: "POST",
         auth: true,
-        body: { mediaType, media: mediaDataUrl, caption: document.getElementById("moment-caption").value },
+        body: {
+          mediaType,
+          media: mediaDataUrl,
+          caption: document.getElementById("moment-caption").value,
+          durationSeconds,
+        },
       });
       msgEl.textContent = I18N.t("moments.posted");
       msgEl.className = "form-msg ok";
@@ -1349,10 +1708,16 @@ async function renderProfile(userId) {
   ]);
 
   let friendStatus = null;
+  let followStatus = null;
   if (state.token && !isMe) {
     try {
       friendStatus = await api("/api/friends/status/" + userId, { auth: true });
     } catch (e) {}
+    if (profile.isPage) {
+      try {
+        followStatus = await api("/api/follow/status/" + userId, { auth: true });
+      } catch (e) {}
+    }
   }
 
   const aboutRows = [
@@ -1378,7 +1743,8 @@ async function renderProfile(userId) {
           }
         </div>
         <div>
-          <p class="profile-name">${escapeHtml(profile.name)}</p>
+          <p class="profile-name">${escapeHtml(profile.name)}${profile.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</p>
+          ${profile.isPage && profile.pageCategory ? `<p class="profile-sub">${escapeHtml(profile.pageCategory)}</p>` : ""}
           <div class="stars">${starsMarkup(profile.ratingAvg)} <span style="color:#888;font-size:12px;">(${profile.ratingCount})</span></div>
           <p class="profile-sub">${I18N.t("profile.memberSince")} ${fmtDate(profile.createdAt)}</p>
           ${profile.location ? `<p class="profile-sub">\u{1F4CD} ${escapeHtml(profile.location)}</p>` : ""}
@@ -1387,6 +1753,7 @@ async function renderProfile(userId) {
         <div class="profile-actions" id="profile-actions">
           ${isMe ? `<button class="btn btn-outline" id="btn-edit-profile">${I18N.t("profile.editProfile")}</button>` : ""}
           ${isMe ? `<a class="btn btn-gold" href="#/post">${I18N.t("profile.postNewListing")}</a>` : ""}
+          ${!isMe && profile.isPage ? pageFollowMarkup(followStatus) : ""}
           ${!isMe ? friendActionMarkup(friendStatus) : ""}
           ${!isMe && state.token ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}
         </div>
@@ -1524,6 +1891,7 @@ async function renderProfile(userId) {
 
   if (!isMe) {
     wireFriendActionButtons(userId);
+    if (profile.isPage) wirePageFollowButton(userId);
 
     const reportUserLink = document.getElementById("report-user-link");
     if (reportUserLink) {
@@ -1868,6 +2236,14 @@ function openEditProfileModal(profile) {
           <option value="friends" ${profile.chatPrivacy === "friends" ? "selected" : ""}>${I18N.t("settings.chatPrivacyFriends")}</option>
         </select>
       </div>
+      <div class="form-group">
+        <label class="checkbox-label"><input type="checkbox" id="edit-is-page" ${profile.isPage ? "checked" : ""} /> ${I18N.t("pages.isPageLabel")}</label>
+        <p class="field-hint">${I18N.t("pages.isPageHint")}</p>
+      </div>
+      <div class="form-group" id="edit-page-category-wrap" style="display:${profile.isPage ? "block" : "none"};">
+        <label>${I18N.t("pages.categoryLabel")}</label>
+        <input type="text" id="edit-page-category" placeholder="${I18N.t("pages.categoryPlaceholder")}" value="${escapeHtml(profile.pageCategory || "")}" />
+      </div>
       <div class="action-row">
         <button class="btn btn-primary" id="edit-save">${I18N.t("profile.save")}</button>
         <button class="btn btn-secondary" id="edit-cancel">${I18N.t("common.cancel")}</button>
@@ -1890,6 +2266,10 @@ function openEditProfileModal(profile) {
     reader.readAsDataURL(file);
   });
 
+  document.getElementById("edit-is-page").addEventListener("change", (e) => {
+    document.getElementById("edit-page-category-wrap").style.display = e.target.checked ? "block" : "none";
+  });
+
   document.getElementById("edit-cancel").addEventListener("click", () => overlay.remove());
   document.getElementById("edit-save").addEventListener("click", async () => {
     const msgEl = document.getElementById("edit-msg");
@@ -1908,6 +2288,8 @@ function openEditProfileModal(profile) {
           education: document.getElementById("edit-education").value,
           interests: document.getElementById("edit-interests").value,
           chatPrivacy: document.getElementById("edit-chat-privacy").value,
+          isPage: document.getElementById("edit-is-page").checked,
+          pageCategory: document.getElementById("edit-page-category").value,
         },
       });
       state.user = { ...state.user, ...data.user };

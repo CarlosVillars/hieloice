@@ -133,9 +133,63 @@ button { cursor: pointer; font-family: inherit; }
   .topbar-nav { order: 4; width: 100%; margin-left: 0; justify-content: flex-start; }
 }
 
+/* ---- Icon nav (Home / Friends / Marketplace / Notifications) ---- */
+.icon-nav {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  background: #fff;
+  border-bottom: 1px solid #e3e0d8;
+  position: sticky;
+  top: 0;
+  z-index: 45;
+  padding: 2px 10px;
+}
+.icon-nav-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 18px 6px;
+  border: none;
+  background: none;
+  color: #6b6b6b;
+  font-size: 11px;
+  font-weight: 700;
+  border-bottom: 3px solid transparent;
+}
+.icon-nav-btn-plain { cursor: pointer; }
+.icon-nav-btn:hover { color: #0f3d2e; border-bottom-color: #d4a017; }
+.icon-nav-emoji { font-size: 21px; line-height: 1; }
+.icon-nav-label { white-space: nowrap; }
+.icon-nav-badge { position: absolute; top: 3px; right: 8px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: #c0392b; color: #fff; font-size: 10px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; }
+.icon-nav-dropdown-wrap { position: relative; }
+.icon-nav-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  border: 1px solid #e3e0d8;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  padding: 6px;
+  min-width: 170px;
+  z-index: 60;
+}
+.icon-nav-dropdown a { display: block; padding: 9px 12px; border-radius: 6px; font-size: 14px; font-weight: 600; color: #1a1a1a; }
+.icon-nav-dropdown a:hover { background: #eef5ef; color: #0f3d2e; }
+@media (max-width: 640px) {
+  .icon-nav { justify-content: space-between; }
+  .icon-nav-btn { padding: 8px 6px 6px; flex: 1; }
+  .icon-nav-label { font-size: 10px; }
+}
+
 /* ---- Layout ---- */
 .view { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
 .section-heading { font-size: 20px; margin: 0 0 16px; color: #0f3d2e; }
+.section-subheading { font-size: 15px; margin: 22px 0 10px; color: #0f3d2e; }
 .back-link { display: inline-block; margin-bottom: 16px; font-size: 14px; font-weight: 600; color: #0f3d2e; }
 .back-link:hover { text-decoration: underline; }
 
@@ -403,7 +457,18 @@ button { cursor: pointer; font-family: inherit; }
 
 .btn-friend-status { background: #eef5ef; color: #0f3d2e; border: 1px solid #cfe8dd; }
 
-/* ---- Moments (stories: photo/video, 24h) ---- */
+/* ---- Public Pages / Follow ---- */
+.page-badge-inline { display: inline-block; background: #0f3d2e; color: #fff; font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 8px; vertical-align: middle; margin-left: 4px; }
+.btn-follow-inline { margin-left: auto; background: #d4a017; color: #1a1a1a; border: none; border-radius: 16px; padding: 6px 14px; font-size: 12px; font-weight: 800; }
+.field-hint { font-size: 12px; color: #777; margin: 4px 0 0; }
+.checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.checkbox-label input { width: auto; }
+
+/* ---- Home feed ---- */
+.feed-section { margin-bottom: 8px; }
+.moment-upload-hint { font-size: 12px; color: #777; margin: -6px 0 12px; }
+
+/* ---- Moments (stories: photo/video, up to 3 min, 24h) ---- */
 .moments-bar { display: flex; gap: 12px; overflow-x: auto; padding: 4px 2px 14px; margin-bottom: 6px; }
 .moment-circle-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; width: 68px; cursor: pointer; }
 .moment-circle { width: 60px; height: 60px; border-radius: 50%; padding: 2px; background: linear-gradient(135deg, #d4a017, #0f3d2e); display: flex; align-items: center; justify-content: center; position: relative; }
