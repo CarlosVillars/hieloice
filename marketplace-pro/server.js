@@ -1858,8 +1858,42 @@ async function handleApi(req, res, pathname, query) {
   // ---- MOMENTS (photo/video stories, visible 24h) ----
 
   function momentOut(m) {
-    const { user_id, media_url, media_type, created_at, expires_at, ...rest } = m;
-    return { ...rest, userId: user_id, mediaUrl: media_url, mediaType: media_type, createdAt: created_at, expiresAt: expires_at };
+    const { user_id, media_url, media_type, created_at, expires_at, repost_of, ...rest } = m;
+    return {
+      ...rest,
+      userId: user_id,
+      mediaUrl: media_url,
+      mediaType: media_type,
+      createdAt: created_at,
+      expiresAt: expires_at,
+      repostOf: repost_of || null,
+    };
+  }
+
+  // Decorates a list of already-momentOut()'d moments in place with
+  // likeCount/liked/saved, sharing one batched query per list instead of
+  // N+1 per-moment lookups. `liked`/`saved` are false/omitted-meaningful
+  // when meId is null (guest viewer).
+  async function attachMomentEngagement(momentList, meId) {
+    if (!momentList || !momentList.length) return momentList;
+    const idsIn = "in.(" + momentList.map((m) => enc(m.id)).join(",") + ")";
+    const [likeRows, saveRows] = await Promise.all([
+      db.select("mkt_moment_likes", { moment_id: idsIn, select: "moment_id,user_id" }),
+      meId ? db.select("mkt_moment_saves", { moment_id: idsIn, user_id: "eq." + enc(meId), select: "moment_id" }) : Promise.resolve([]),
+    ]);
+    const likeCounts = {};
+    const likedSet = new Set();
+    for (const l of likeRows) {
+      likeCounts[l.moment_id] = (likeCounts[l.moment_id] || 0) + 1;
+      if (meId && l.user_id === meId) likedSet.add(l.moment_id);
+    }
+    const savedSet = new Set(saveRows.map((s) => s.moment_id));
+    for (const m of momentList) {
+      m.likeCount = likeCounts[m.id] || 0;
+      m.liked = likedSet.has(m.id);
+      m.saved = savedSet.has(m.id);
+    }
+    return momentList;
   }
 
   if (method === "POST" && pathname === "/api/moments") {
@@ -1977,6 +2011,10 @@ async function handleApi(req, res, pathname, query) {
       }
       grouped[m.user_id].moments.push(momentOut(m));
     }
+    await attachMomentEngagement(
+      Object.values(grouped).flatMap((g) => g.moments),
+      me.id
+    );
 
     const friendsSection = [];
     if (grouped[me.id]) friendsSection.push(grouped[me.id]);
@@ -2160,15 +2198,82 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { ok: true });
   }
 
+  // Save toggle (bookmark icon in the story viewer) - separate table from
+  // mkt_saved_items, which is specifically for marketplace products.
+  const momentSaveMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)\/save$/);
+  if (method === "POST" && momentSaveMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const existing = await db.select("mkt_moment_saves", {
+      moment_id: "eq." + enc(momentSaveMatch[1]),
+      user_id: "eq." + enc(me.id),
+      select: "id",
+    });
+    if (!existing || !existing[0]) {
+      await db.insert("mkt_moment_saves", {
+        id: crypto.randomBytes(8).toString("hex"),
+        moment_id: momentSaveMatch[1],
+        user_id: me.id,
+        created_at: Date.now(),
+      });
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+  if (method === "DELETE" && momentSaveMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    await db.remove("mkt_moment_saves", { moment_id: "eq." + enc(momentSaveMatch[1]), user_id: "eq." + enc(me.id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Repost: creates a brand-new moment in the reposter's own 24h story,
+  // copying the original media/caption and tagging repost_of so the client
+  // can show "Reposted from X" if desired. Subject to the same
+  // MAX_ACTIVE_MOMENTS cap as a normal post.
+  const momentRepostMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)\/repost$/);
+  if (method === "POST" && momentRepostMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const origRows = await db.select("mkt_moments", { id: "eq." + enc(momentRepostMatch[1]), select: "*" });
+    const orig = origRows && origRows[0];
+    if (!orig) return sendJson(res, 404, { error: "Moment not found" });
+    const activeMoments = await db.select("mkt_moments", {
+      user_id: "eq." + enc(me.id),
+      expires_at: "gt." + Date.now(),
+      select: "id",
+    });
+    if (activeMoments && activeMoments.length >= MAX_ACTIVE_MOMENTS) {
+      return sendJson(res, 400, {
+        error: "You already have " + MAX_ACTIVE_MOMENTS + " active moments. Delete one or wait for it to expire before reposting.",
+      });
+    }
+    const now = Date.now();
+    const moment = {
+      id: crypto.randomBytes(8).toString("hex"),
+      user_id: me.id,
+      media_url: orig.media_url,
+      media_type: orig.media_type,
+      caption: orig.caption || "",
+      created_at: now,
+      expires_at: now + 24 * 60 * 60 * 1000,
+      repost_of: orig.id,
+    };
+    await db.insert("mkt_moments", moment);
+    return sendJson(res, 201, momentOut(moment));
+  }
+
   const userMomentsMatch = pathname.match(/^\/api\/moments\/user\/([a-zA-Z0-9]+)$/);
   if (method === "GET" && userMomentsMatch) {
+    const me = await getAuthUser(req);
     const moments = await db.select("mkt_moments", {
       user_id: "eq." + enc(userMomentsMatch[1]),
       expires_at: "gt." + Date.now(),
       order: "created_at.asc",
       select: "*",
     });
-    return sendJson(res, 200, moments.map(momentOut));
+    const out = moments.map(momentOut);
+    await attachMomentEngagement(out, me ? me.id : null);
+    return sendJson(res, 200, out);
   }
 
   const momentMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)$/);
