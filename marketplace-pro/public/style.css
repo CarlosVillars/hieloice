@@ -334,6 +334,15 @@ button { cursor: pointer; font-family: inherit; }
 .seller-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: #ddd; }
 .seller-avatar-placeholder { width: 44px; height: 44px; border-radius: 50%; background: #0f3d2e; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; }
 .seller-name { font-weight: 700; font-size: 14px; }
+.seller-sales-count { font-size: 12px; color: #666; margin-top: 2px; }
+
+/* ---- LinkedIn-style trust signals: verified badge + sales history ---- */
+.verified-badge-inline { display: inline-flex; align-items: center; gap: 3px; background: #eaf2fb; color: #1a5a9e; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 10px; vertical-align: middle; }
+.sales-history-list { display: flex; flex-direction: column; gap: 8px; }
+.sales-history-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+.sales-history-row:last-child { border-bottom: none; }
+.sales-history-title { color: #333; }
+.sales-history-price { font-weight: 700; color: #0f3d2e; white-space: nowrap; }
 
 .action-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
 .btn { border: none; border-radius: 6px; padding: 10px 16px; font-weight: 700; font-size: 14px; }

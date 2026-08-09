@@ -562,8 +562,9 @@ async function renderProductDetail(id) {
               : `<div class="seller-avatar-placeholder">${initials(p.sellerName)}</div>`
           }
           <div>
-            <div class="seller-name">${escapeHtml(p.sellerName)}</div>
+            <div class="seller-name">${escapeHtml(p.sellerName)}${p.sellerVerified ? ` <span class="verified-badge-inline" title="${I18N.t("profile.verifiedBadge")}">\u{2713}</span>` : ""}</div>
             <div class="stars">${starsMarkup(p.sellerRating.ratingAvg)} <span style="color:#888;font-size:12px;">(${p.sellerRating.ratingCount})</span></div>
+            <div class="seller-sales-count">\u{1F91D} ${I18N.t("profile.salesCountLabel").replace("{n}", p.sellerSalesCount || 0)}</div>
           </div>
         </a>
 
@@ -2232,10 +2233,11 @@ async function renderProfile(userId) {
           }
         </div>
         <div>
-          <p class="profile-name">${escapeHtml(profile.name)}${profile.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</p>
+          <p class="profile-name">${escapeHtml(profile.name)}${profile.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}${profile.verified ? ` <span class="verified-badge-inline" title="${I18N.t("profile.verifiedBadge")}">\u{2713} ${I18N.t("profile.verifiedBadge")}</span>` : ""}</p>
           ${profile.isPage && profile.pageCategory ? `<p class="profile-sub">${escapeHtml(profile.pageCategory)}</p>` : ""}
           <div class="stars">${starsMarkup(profile.ratingAvg)} <span style="color:#888;font-size:12px;">(${profile.ratingCount})</span></div>
           <p class="profile-sub">${I18N.t("profile.memberSince")} ${fmtDate(profile.createdAt)}</p>
+          <p class="profile-sub">\u{1F91D} ${I18N.t("profile.salesCountLabel").replace("{n}", profile.salesCount || 0)}</p>
           ${profile.location ? `<p class="profile-sub">\u{1F4CD} ${escapeHtml(profile.location)}</p>` : ""}
           ${profile.bio ? `<p class="profile-bio">${escapeHtml(profile.bio)}</p>` : ""}
         </div>
@@ -2250,6 +2252,25 @@ async function renderProfile(userId) {
     </div>
 
     ${aboutRows ? `<div class="profile-about-card"><h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("profile.about")}</h2>${aboutRows}</div>` : ""}
+
+    ${
+      profile.recentSales && profile.recentSales.length
+        ? `<div class="profile-about-card">
+            <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("profile.salesHistory")}</h2>
+            <div class="sales-history-list">
+              ${profile.recentSales
+                .map(
+                  (s) => `
+                <div class="sales-history-row">
+                  <span class="sales-history-title">${escapeHtml(s.title)}</span>
+                  <span class="sales-history-price">${fmtPrice(s.price)}</span>
+                </div>`
+                )
+                .join("")}
+            </div>
+          </div>`
+        : ""
+    }
 
     <div style="margin:0 16px 20px;">
       <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("moments.title")}</h2>
