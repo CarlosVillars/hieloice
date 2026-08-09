@@ -1691,6 +1691,62 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { friends: friendsSection, suggested: suggestedSection });
   }
 
+  // "Shorts" feed: every active video moment on the platform, in a single
+  // scrollable stream (not grouped by author like the story bars). Works for
+  // guests too so the section has content to browse; personalized ranking
+  // (friends first, then followed Pages, then Pages, then recency) only
+  // kicks in when the request is authenticated. Simple v1 scoring in JS -
+  // fine at current scale, revisit once volume/infra justify a real ranker.
+  if (method === "GET" && pathname === "/api/moments/videos/feed") {
+    const me = await getAuthUser(req);
+    let friendIds = [];
+    let followedIds = [];
+    if (me) {
+      const [friendRows, followRows] = await Promise.all([
+        db.select("mkt_friendships", {
+          status: "eq.accepted",
+          or: "(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(me.id) + ")",
+          select: "requester_id,addressee_id",
+        }),
+        db.select("mkt_follows", { follower_id: "eq." + enc(me.id), select: "followed_id" }),
+      ]);
+      friendIds = friendRows.map((f) => (f.requester_id === me.id ? f.addressee_id : f.requester_id));
+      followedIds = followRows.map((f) => f.followed_id);
+    }
+
+    const videos = await db.select("mkt_moments", {
+      media_type: "eq.video",
+      expires_at: "gt." + Date.now(),
+      order: "created_at.desc",
+      select: "*",
+      limit: "200",
+    });
+    if (!videos.length) return sendJson(res, 200, []);
+
+    const authorIds = [...new Set(videos.map((v) => v.user_id))];
+    const authors = await db.select("mkt_users", {
+      id: "in.(" + authorIds.map(enc).join(",") + ")",
+      select: "id,name,photo,is_page",
+    });
+
+    const scored = videos.map((v) => {
+      const author = authors.find((a) => a.id === v.user_id);
+      let score = v.created_at / 1e13; // small recency baseline, doesn't dominate the bonuses below
+      if (friendIds.includes(v.user_id)) score += 300;
+      if (followedIds.includes(v.user_id)) score += 200;
+      if (author && author.is_page) score += 50;
+      return {
+        ...momentOut(v),
+        userName: author ? author.name : "Unknown",
+        userPhoto: author ? author.photo : null,
+        isPage: !!(author && author.is_page),
+        score,
+      };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    return sendJson(res, 200, scored.map(({ score, ...rest }) => rest));
+  }
+
   const userMomentsMatch = pathname.match(/^\/api\/moments\/user\/([a-zA-Z0-9]+)$/);
   if (method === "GET" && userMomentsMatch) {
     const moments = await db.select("mkt_moments", {
