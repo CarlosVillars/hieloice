@@ -1671,15 +1671,15 @@ let momentViewerTimer = null;
 // outline by default, filled via the ".active" CSS class (persistent for
 // like/save, momentary for message/share/repost as a press-feedback flash).
 const MOMENT_ICON_HEART =
-  '<svg viewBox="0 0 24 24"><path d="M12 20.5s-7.2-4.4-9.6-8.9C.9 8.2 2.3 4.7 5.7 3.9c2-.5 3.9.4 6.3 2.6 2.4-2.2 4.3-3.1 6.3-2.6 3.4.8 4.8 4.3 3.3 7.7C19.2 16.1 12 20.5 12 20.5z"/></svg>';
+  '<svg viewBox="0 0 24 24" class="icon-solid"><path fill-rule="evenodd" d="M 11.00,0.00 C 10.63,-0.08 10.65,0.10 10.62,0.29 C 10.59,0.48 10.81,0.56 10.81,1.14 C 10.81,1.73 11.17,2.65 10.62,3.81 C 10.06,4.97 8.10,7.14 7.48,8.10 C 6.86,9.05 7.02,9.11 6.90,9.52 C 6.79,9.94 6.87,10.35 6.81,10.57 C 6.75,10.79 6.68,11.00 6.52,10.86 C 6.37,10.71 5.95,10.30 5.86,9.71 C 5.76,9.13 5.97,7.76 5.95,7.33 C 5.94,6.90 5.90,7.16 5.76,7.14 C 5.62,7.13 5.56,6.81 5.10,7.24 C 4.63,7.67 3.54,8.89 3.00,9.71 C 2.46,10.54 2.08,11.16 1.86,12.19 C 1.63,13.22 1.56,14.81 1.67,15.90 C 1.78,17.00 2.25,18.08 2.52,18.76 C 2.79,19.44 2.87,19.49 3.29,20.00 C 3.70,20.51 4.37,21.29 5.00,21.81 C 5.63,22.33 6.44,22.81 7.10,23.14 C 7.75,23.48 8.38,23.68 8.90,23.81 C 9.43,23.94 9.98,23.98 10.24,23.90 C 10.49,23.83 10.65,23.59 10.43,23.33 C 10.21,23.08 9.29,22.70 8.90,22.38 C 8.52,22.06 8.35,21.81 8.14,21.43 C 7.94,21.05 7.75,20.49 7.67,20.10 C 7.59,19.70 7.57,19.48 7.67,19.05 C 7.76,18.62 7.97,17.63 8.24,17.52 C 8.51,17.41 8.94,18.24 9.29,18.38 C 9.63,18.52 10.03,18.48 10.33,18.38 C 10.63,18.29 10.90,18.03 11.10,17.81 C 11.29,17.59 11.48,17.65 11.48,17.05 C 11.48,16.44 11.13,14.78 11.10,14.19 C 11.06,13.60 11.14,13.71 11.29,13.52 C 11.43,13.33 11.75,12.90 11.95,13.05 C 12.16,13.19 11.92,13.68 12.52,14.38 C 13.13,15.08 14.95,16.52 15.57,17.24 C 16.19,17.95 16.13,18.16 16.24,18.67 C 16.35,19.17 16.32,19.84 16.24,20.29 C 16.16,20.73 16.03,20.94 15.76,21.33 C 15.49,21.73 14.90,22.41 14.62,22.67 C 14.33,22.92 14.22,22.73 14.05,22.86 C 13.87,22.98 13.59,23.25 13.57,23.43 C 13.56,23.60 13.73,23.84 13.95,23.90 C 14.17,23.97 14.25,24.03 14.90,23.81 C 15.56,23.59 16.94,23.17 17.86,22.57 C 18.78,21.97 19.81,20.90 20.43,20.19 C 21.05,19.48 21.30,18.84 21.57,18.29 C 21.84,17.73 21.94,17.65 22.05,16.86 C 22.16,16.06 22.29,14.41 22.24,13.52 C 22.19,12.63 21.98,12.16 21.76,11.52 C 21.54,10.89 21.22,10.27 20.90,9.71 C 20.59,9.16 20.33,8.73 19.86,8.19 C 19.38,7.65 18.48,6.75 18.05,6.48 C 17.62,6.21 17.40,6.27 17.29,6.57 C 17.17,6.87 17.49,7.76 17.38,8.29 C 17.27,8.81 16.87,9.46 16.62,9.71 C 16.37,9.97 16.10,9.89 15.86,9.81 C 15.62,9.73 15.33,9.57 15.19,9.24 C 15.05,8.90 14.97,8.51 15.00,7.81 C 15.03,7.11 15.38,5.76 15.38,5.05 C 15.38,4.33 15.21,4.02 15.00,3.52 C 14.79,3.03 14.51,2.56 14.14,2.10 C 13.78,1.63 13.33,1.11 12.81,0.76 C 12.29,0.41 11.37,0.08 11.00,0.00 Z M 12.24,1.62 C 12.51,1.79 13.13,2.33 13.48,2.86 C 13.83,3.38 14.19,4.16 14.33,4.76 C 14.48,5.37 14.40,5.89 14.33,6.48 C 14.27,7.06 13.95,7.73 13.95,8.29 C 13.95,8.84 14.14,9.43 14.33,9.81 C 14.52,10.19 14.87,10.41 15.10,10.57 C 15.32,10.73 15.32,10.76 15.67,10.76 C 16.02,10.76 16.81,10.73 17.19,10.57 C 17.57,10.41 17.76,10.16 17.95,9.81 C 18.14,9.46 18.22,8.73 18.33,8.48 C 18.44,8.22 18.35,8.03 18.62,8.29 C 18.89,8.54 19.60,9.46 19.95,10.00 C 20.30,10.54 20.51,11.00 20.71,11.52 C 20.92,12.05 21.13,12.32 21.19,13.14 C 21.25,13.97 21.17,15.71 21.10,16.48 C 21.02,17.24 21.00,17.14 20.71,17.71 C 20.43,18.29 19.78,19.37 19.38,19.90 C 18.98,20.44 18.78,20.62 18.33,20.95 C 17.89,21.29 16.90,22.00 16.71,21.90 C 16.52,21.81 17.11,20.92 17.19,20.38 C 17.27,19.84 17.25,19.16 17.19,18.67 C 17.13,18.17 17.02,17.84 16.81,17.43 C 16.60,17.02 16.52,16.79 15.95,16.19 C 15.38,15.59 13.87,14.33 13.38,13.81 C 12.89,13.29 13.06,13.43 13.00,13.05 C 12.94,12.67 13.11,11.81 13.00,11.52 C 12.89,11.24 12.68,11.19 12.33,11.33 C 11.98,11.48 11.27,11.98 10.90,12.38 C 10.54,12.78 10.24,12.92 10.14,13.71 C 10.05,14.51 10.41,16.51 10.33,17.14 C 10.25,17.78 9.84,17.52 9.67,17.52 C 9.49,17.52 9.40,17.41 9.29,17.14 C 9.17,16.87 9.14,16.14 9.00,15.90 C 8.86,15.67 8.73,15.49 8.43,15.71 C 8.13,15.94 7.46,16.81 7.19,17.24 C 6.92,17.67 6.87,17.71 6.81,18.29 C 6.75,18.86 6.75,20.11 6.81,20.67 C 6.87,21.22 7.17,21.41 7.19,21.62 C 7.21,21.83 7.29,22.11 6.90,21.90 C 6.52,21.70 5.44,20.90 4.90,20.38 C 4.37,19.86 3.98,19.27 3.67,18.76 C 3.35,18.25 3.17,17.90 3.00,17.33 C 2.83,16.76 2.63,16.19 2.62,15.33 C 2.60,14.48 2.71,13.02 2.90,12.19 C 3.10,11.37 3.44,10.90 3.76,10.38 C 4.08,9.86 4.60,9.05 4.81,9.05 C 5.02,9.05 4.84,9.98 5.00,10.38 C 5.16,10.78 5.48,11.16 5.76,11.43 C 6.05,11.70 6.46,11.90 6.71,12.00 C 6.97,12.10 7.14,12.05 7.29,12.00 C 7.43,11.95 7.44,12.17 7.57,11.71 C 7.70,11.25 7.89,9.81 8.05,9.24 C 8.21,8.67 7.98,9.05 8.52,8.29 C 9.06,7.52 10.75,5.48 11.29,4.67 C 11.83,3.86 11.67,3.90 11.76,3.43 C 11.86,2.95 11.78,2.11 11.86,1.81 C 11.94,1.51 11.97,1.44 12.24,1.62 Z"/></svg>';
 const MOMENT_ICON_MESSAGE =
   '<svg viewBox="0 0 24 24"><path d="M3.5 4.5h17v12h-9.2L6.5 20v-3.5h-3v-12z"/></svg>';
 const MOMENT_ICON_SHARE =
-  '<svg viewBox="0 0 24 24"><path d="M3 12.5c3-6.3 8.2-9.2 13.2-9.2 1.9 0 3.7.9 4.8 2.7-2 0-4 .5-5.9 1.9 2.9-.1 4.9.9 5.9 2.8-2-.1-3.9 0-5.7 1 1.9 1 3 2.2 3.9 4-2.9 0-5.7-1-7.7-2.9-1 3-3.8 5-7.7 5.9.9-2.9.9-4.9-.4-7.2z"/></svg>';
+  '<svg viewBox="0 0 24 24" class="icon-solid"><path fill-rule="evenodd" d="M 23.73,1.55 C 23.60,1.14 23.55,1.08 23.13,1.39 C 22.71,1.70 21.99,2.80 21.22,3.41 C 20.45,4.02 18.90,5.07 18.49,5.05 C 18.08,5.02 18.75,3.59 18.76,3.25 C 18.78,2.90 18.71,3.03 18.60,2.97 C 18.49,2.92 18.30,2.51 18.11,2.92 C 17.92,3.33 17.96,4.84 17.45,5.43 C 16.95,6.02 15.66,6.14 15.05,6.46 C 14.45,6.79 14.12,7.10 13.80,7.39 C 13.48,7.68 13.36,7.79 13.15,8.21 C 12.93,8.63 12.61,9.12 12.49,9.90 C 12.37,10.68 12.53,12.26 12.44,12.90 C 12.35,13.54 12.14,13.54 11.95,13.72 C 11.75,13.90 11.50,13.95 11.29,13.99 C 11.08,14.03 10.92,14.03 10.69,13.94 C 10.46,13.85 9.89,13.91 9.93,13.45 C 9.96,12.98 10.65,12.15 10.91,11.15 C 11.16,10.15 11.35,8.75 11.45,7.45 C 11.56,6.14 11.58,4.05 11.56,3.30 C 11.55,2.55 11.46,2.98 11.35,2.92 C 11.23,2.85 11.01,1.89 10.85,2.92 C 10.70,3.95 10.55,7.76 10.42,9.08 C 10.29,10.40 10.25,10.25 10.09,10.83 C 9.93,11.41 10.44,11.32 9.44,12.57 C 8.44,13.83 5.13,17.31 4.09,18.35 C 3.05,19.40 3.77,18.65 3.22,18.85 C 2.66,19.04 1.25,19.32 0.76,19.50 C 0.27,19.68 0.40,19.69 0.27,19.94 C 0.15,20.18 -0.01,20.65 0.00,20.97 C 0.01,21.29 0.18,21.62 0.33,21.85 C 0.47,22.07 0.62,22.21 0.87,22.34 C 1.13,22.46 0.85,22.58 1.85,22.61 C 2.86,22.64 5.25,22.89 6.93,22.50 C 8.60,22.11 10.48,20.69 11.89,20.26 C 13.30,19.84 14.52,20.10 15.38,19.94 C 16.25,19.77 16.71,19.48 17.07,19.28 C 17.44,19.08 17.42,19.03 17.56,18.74 C 17.71,18.45 17.90,17.95 17.95,17.54 C 17.99,17.13 17.98,16.86 17.84,16.28 C 17.69,15.70 16.87,14.50 17.07,14.05 C 17.27,13.59 18.56,13.72 19.04,13.55 C 19.51,13.39 19.60,13.36 19.91,13.06 C 20.22,12.76 20.68,12.19 20.89,11.75 C 21.10,11.32 20.89,10.89 21.16,10.45 C 21.44,10.00 22.21,9.58 22.53,9.08 C 22.85,8.58 23.00,7.95 23.07,7.45 C 23.15,6.95 22.83,6.67 22.96,6.08 C 23.10,5.49 23.76,4.65 23.89,3.90 C 24.02,3.15 23.85,1.97 23.73,1.55 Z M 16.20,14.26 C 16.29,14.30 16.36,14.44 16.42,14.75 C 16.48,15.08 16.42,15.20 16.58,15.35 C 16.75,15.52 17.00,15.55 17.02,16.55 C 17.05,17.42 16.90,18.14 16.42,18.68 C 15.98,19.10 15.55,19.02 14.18,19.12 C 13.86,19.16 13.85,18.88 13.85,17.75 C 13.90,17.10 14.02,16.99 14.29,16.28 C 14.35,16.10 14.40,16.12 14.51,15.85 C 14.71,15.60 14.85,15.35 14.95,15.25 C 15.30,14.90 15.85,14.44 16.20,14.26 Z M 23.07,2.92 C 23.39,2.92 22.92,4.27 22.75,4.77 C 22.34,5.55 21.75,6.34 21.27,6.68 C 20.42,7.15 18.34,7.90 17.73,8.15 C 17.20,8.44 16.43,8.79 16.58,8.86 C 16.81,9.24 17.00,9.62 17.07,9.57 C 17.55,9.15 17.90,8.92 18.11,8.92 C 18.90,8.55 19.85,8.31 20.40,8.21 C 21.20,7.75 21.96,7.05 22.20,7.12 C 22.44,7.32 21.82,8.59 21.82,8.59 C 21.35,9.20 20.52,9.85 19.58,10.23 C 18.65,10.65 17.40,10.72 17.40,10.72 C 16.55,11.02 16.15,11.20 16.15,11.32 C 15.92,11.53 16.03,11.70 16.20,11.97 C 16.39,12.10 16.64,12.03 16.64,12.03 C 17.20,11.71 17.85,11.36 20.24,10.99 C 20.62,11.20 20.10,11.55 19.96,11.70 C 19.75,12.05 19.25,12.46 19.25,12.46 C 18.50,12.85 17.30,12.85 15.93,13.45 C 15.24,13.74 14.61,14.36 14.35,14.59 C 13.95,14.97 13.53,15.53 13.15,16.88 C 12.93,18.02 13.33,18.75 12.93,19.23 C 12.53,19.70 11.75,19.32 10.75,19.72 C 9.75,20.12 8.43,21.29 6.93,21.63 C 5.43,21.96 2.74,21.80 1.75,21.74 C 0.98,21.55 0.98,21.25 0.98,21.25 C 0.85,20.90 1.20,20.26 1.20,20.26 C 1.65,20.10 3.10,19.80 3.65,19.61 C 4.03,19.42 3.58,20.03 4.53,19.12 C 5.47,18.21 8.37,14.89 9.33,14.15 C 10.28,13.42 9.96,14.58 10.25,14.70 C 10.72,14.86 11.07,14.86 11.07,14.86 C 11.63,14.63 12.08,14.63 12.38,14.48 C 12.68,14.34 12.87,13.99 12.87,13.99 C 13.30,13.30 13.16,10.97 13.31,10.17 C 13.45,9.37 13.72,8.84 14.13,8.32 C 14.54,7.80 14.95,7.49 15.76,7.06 C 16.58,6.64 18.19,6.14 19.04,5.75 C 19.88,5.37 20.16,5.25 20.84,4.77 C 21.51,4.30 22.75,2.92 23.07,2.92 Z"/></svg>';
 const MOMENT_ICON_REPOST =
-  '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M7 8h6l-2.2-2.2M13 8l-2.2 2.2" fill="none"/><path d="M17.5 10.5v5.5l2.2-2.2M17.5 16l-2.2-2.2" fill="none"/><path d="M13.5 19H7.5l2.2 2.2M7.5 19l2.2-2.2" fill="none"/><path d="M12 10v4M10 12h4" fill="none"/></svg>';
+  '<svg viewBox="0 0 24 24" class="icon-solid"><path fill-rule="evenodd" d="M 20.20,9.80 L 16.67,11.82 L 19.97,17.91 L 16.31,17.95 L 16.21,16.85 L 15.66,16.53 L 11.68,19.97 L 12.00,20.61 L 15.66,23.59 L 16.21,23.27 L 16.26,22.21 L 20.24,22.21 L 21.11,21.94 L 21.85,21.16 L 23.91,17.45 L 23.82,16.03 Z M 12.41,20.06 L 15.53,17.45 L 15.62,18.41 L 15.89,18.60 L 22.58,18.55 L 21.25,20.89 L 20.75,21.39 L 20.20,21.57 L 15.76,21.57 L 15.57,21.80 L 15.57,22.67 Z M 17.54,11.95 L 19.74,10.67 L 20.02,10.63 L 23.27,16.40 L 23.31,17.13 L 22.95,17.63 L 22.21,17.91 L 20.79,17.95 L 17.50,12.23 Z M 1.24,11.40 L 1.10,12.09 L 2.02,12.78 L 0.18,15.94 L 0.00,17.18 L 2.47,21.62 L 3.71,22.21 L 10.76,22.12 L 10.72,17.95 L 3.98,17.86 L 5.77,14.79 L 6.64,15.30 L 7.28,15.02 L 6.37,9.89 L 5.73,9.66 Z M 2.75,20.34 L 2.98,19.60 L 3.66,18.55 L 10.26,18.64 L 10.21,21.57 L 3.76,21.57 L 3.21,21.39 L 2.93,21.11 Z M 5.77,10.35 L 6.60,14.43 L 5.73,14.02 L 5.31,14.20 L 2.15,19.83 L 0.64,17.08 L 0.73,16.31 L 2.84,12.60 L 2.75,12.32 L 1.97,11.86 Z M 11.50,9.34 L 11.13,9.48 L 10.81,9.94 L 10.81,11.73 L 8.70,11.91 L 8.38,12.37 L 8.38,13.60 L 8.61,13.97 L 9.02,14.15 L 10.76,14.15 L 10.81,15.98 L 10.99,16.35 L 11.40,16.58 L 12.60,16.58 L 12.96,16.35 L 13.15,15.98 L 13.15,14.20 L 14.93,14.15 L 15.34,13.97 L 15.57,13.60 L 15.57,12.37 L 15.07,11.82 L 13.24,11.82 L 13.15,9.94 L 13.01,9.66 L 12.64,9.39 Z M 11.59,9.98 L 12.50,10.08 L 12.50,12.23 L 12.64,12.41 L 14.93,12.50 L 14.89,13.47 L 12.55,13.60 L 12.41,15.94 L 11.54,15.94 L 11.45,15.80 L 11.45,13.69 L 11.31,13.51 L 9.02,13.42 L 9.07,12.46 L 11.22,12.46 L 11.45,12.27 L 11.45,10.12 Z M 4.81,7.88 L 8.43,9.98 L 12.00,3.80 L 13.88,7.10 L 13.01,7.69 L 12.92,8.29 L 17.95,10.17 L 18.37,9.48 L 19.15,4.90 L 18.64,4.49 L 17.59,5.04 L 15.44,1.24 L 14.70,0.55 L 9.66,0.41 L 8.56,1.19 Z M 10.03,1.05 L 10.67,1.47 L 11.59,3.16 L 8.29,9.02 L 8.06,9.21 L 5.59,7.74 L 9.11,1.56 L 9.48,1.19 Z M 11.27,1.01 L 14.20,1.05 L 14.56,1.24 L 17.22,5.73 L 17.54,5.82 L 18.41,5.40 L 17.68,9.48 L 13.83,8.02 L 14.66,7.42 L 14.66,7.15 L 11.18,1.10 Z"/></svg>';
 const MOMENT_ICON_SAVE =
-  '<svg viewBox="0 0 24 24"><path d="M4 5.8C4 4.8 4.8 4 5.8 4H12v16H5.8A1.8 1.8 0 0 1 4 18.2V5.8z"/><path d="M20 5.8c0-1-.8-1.8-1.8-1.8H12v16h6.2c1 0 1.8-.8 1.8-1.8V5.8z"/><path d="M12 4v16" stroke-linecap="round"/></svg>';
+  '<svg viewBox="0 0 24 24"><path fill="none" d="M4,17 L4,20.5 L20,20.5 L20,17"/><path d="M11,3 L13,3 L13,9.5 L16.5,9.5 L12,15 L7.5,9.5 L11,9.5 Z"/></svg>';
 
 // Brief press-feedback: fills the icon for a moment even for actions
 // (message/share/repost) that aren't persistent toggle state, so every icon
@@ -1733,14 +1733,7 @@ function wireMomentViewerActions(m) {
   if (msgBtn) {
     msgBtn.addEventListener("click", () => {
       flashMomentAction(msgBtn);
-      if (!state.token) {
-        location.hash = "#/login";
-        return;
-      }
-      if (state.user && m.userId === state.user.id) return;
-      const targetId = m.userId;
-      closeMomentsViewer();
-      location.hash = "#/messages/" + targetId;
+      openMomentComments(m);
     });
   }
 
@@ -1779,6 +1772,169 @@ function wireMomentViewerActions(m) {
   }
 }
 
+// ---- Moments story-viewer comments (public, threaded one level, like/reply
+// pattern from Instagram/YouTube comments - opened via the message icon) ----
+let momentCommentsState = null;
+
+function timeAgoStr(ts) {
+  const diffMs = Date.now() - ts;
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return I18N.lang === "es" ? "ahora" : "now";
+  if (min < 60) return min + (I18N.lang === "es" ? "m" : "m");
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return hr + "h";
+  const day = Math.floor(hr / 24);
+  if (day < 7) return day + "d";
+  const wk = Math.floor(day / 7);
+  if (wk < 5) return wk + "w";
+  return new Date(ts).toLocaleDateString();
+}
+
+function pauseMomentViewerPlayback() {
+  if (momentViewerTimer) {
+    clearTimeout(momentViewerTimer);
+    momentViewerTimer = null;
+  }
+  const videoEl = document.getElementById("moment-viewer-media");
+  if (videoEl && videoEl.tagName === "VIDEO") videoEl.pause();
+}
+
+function resumeMomentViewerPlayback() {
+  const videoEl = document.getElementById("moment-viewer-media");
+  if (videoEl && videoEl.tagName === "VIDEO") {
+    videoEl.play().catch(() => {});
+  } else {
+    const duration = 5000;
+    const fill = document.getElementById("progress-fill-" + (momentViewerState ? momentViewerState.index : 0));
+    if (fill) {
+      fill.style.transition = "width " + duration + "ms linear";
+      fill.style.width = "100%";
+    }
+    momentViewerTimer = setTimeout(() => stepMomentViewer(1), duration);
+  }
+}
+
+async function openMomentComments(m) {
+  pauseMomentViewerPlayback();
+  momentCommentsState = { momentId: m.id, comments: [], replyTo: null, loading: true };
+  const overlay = document.getElementById("moment-viewer-overlay");
+  if (!overlay) return;
+  const panel = document.createElement("div");
+  panel.className = "moment-comments-panel";
+  panel.id = "moment-comments-panel";
+  overlay.appendChild(panel);
+  drawMomentComments();
+  try {
+    const rows = await api("/api/moments/" + m.id + "/comments");
+    if (!momentCommentsState || momentCommentsState.momentId !== m.id) return;
+    momentCommentsState.comments = rows;
+    momentCommentsState.loading = false;
+    drawMomentComments();
+  } catch (e) {
+    if (momentCommentsState) {
+      momentCommentsState.loading = false;
+      drawMomentComments();
+    }
+  }
+}
+
+function closeMomentComments() {
+  const panel = document.getElementById("moment-comments-panel");
+  if (panel) panel.remove();
+  momentCommentsState = null;
+  resumeMomentViewerPlayback();
+}
+
+function drawMomentComments() {
+  const panel = document.getElementById("moment-comments-panel");
+  if (!panel || !momentCommentsState) return;
+  const { comments, loading, replyTo } = momentCommentsState;
+  const topLevel = comments.filter((c) => !c.parentCommentId);
+  const repliesOf = (id) => comments.filter((c) => c.parentCommentId === id);
+
+  const commentRowHtml = (c, isReply) => `
+    <div class="moment-comment-row ${isReply ? "is-reply" : ""}" data-cid="${c.id}">
+      ${c.userPhoto ? `<img class="moment-comment-avatar" src="${c.userPhoto}" />` : `<div class="moment-comment-avatar moment-comment-avatar-placeholder">${initials(c.userName || "")}</div>`}
+      <div class="moment-comment-body">
+        <div class="moment-comment-meta"><span class="moment-comment-name">${escapeHtml(c.userName || "")}</span><span class="moment-comment-age">${timeAgoStr(c.createdAt)}</span></div>
+        <div class="moment-comment-text">${escapeHtml(c.text)}</div>
+        ${!isReply ? `<button class="moment-comment-reply-btn" data-reply-to="${c.id}" data-reply-name="${escapeHtml(c.userName || "")}">${I18N.t("moments.commentReply") || "Reply"}</button>` : ""}
+      </div>
+    </div>`;
+
+  const listHtml = topLevel.length
+    ? topLevel.map((c) => commentRowHtml(c, false) + repliesOf(c.id).map((r) => commentRowHtml(r, true)).join("")).join("")
+    : loading
+    ? `<div class="moment-comments-empty">${I18N.t("common.loading")}</div>`
+    : `<div class="moment-comments-empty">${I18N.t("moments.commentsEmpty") || "No comments yet."}</div>`;
+
+  panel.innerHTML = `
+    <div class="moment-comments-backdrop" id="moment-comments-backdrop"></div>
+    <div class="moment-comments-sheet">
+      <div class="moment-comments-head">
+        <span>${I18N.t("moments.commentsTitle") || "Comments"}</span>
+        <button class="moment-comments-close" id="moment-comments-close">&times;</button>
+      </div>
+      <div class="moment-comments-list">${listHtml}</div>
+      ${
+        replyTo
+          ? `<div class="moment-comment-replying-chip">${(I18N.t("moments.replyingTo") || "Replying to")} @${escapeHtml(replyTo.name)} <button id="moment-comment-cancel-reply">&times;</button></div>`
+          : ""
+      }
+      <form class="moment-comments-input-row" id="moment-comments-form">
+        <input type="text" id="moment-comments-input" maxlength="500" placeholder="${I18N.t("moments.commentPlaceholder") || "Add a comment..."}" ${state.token ? "" : "disabled"} />
+        <button type="submit" ${state.token ? "" : "disabled"}>${I18N.t("messages.send")}</button>
+      </form>
+    </div>`;
+
+  document.getElementById("moment-comments-backdrop").addEventListener("click", closeMomentComments);
+  document.getElementById("moment-comments-close").addEventListener("click", closeMomentComments);
+  panel.querySelectorAll(".moment-comment-reply-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      momentCommentsState.replyTo = { id: btn.dataset.replyTo, name: btn.dataset.replyName };
+      drawMomentComments();
+      const input = document.getElementById("moment-comments-input");
+      if (input) input.focus();
+    });
+  });
+  const cancelReplyBtn = document.getElementById("moment-comment-cancel-reply");
+  if (cancelReplyBtn) {
+    cancelReplyBtn.addEventListener("click", () => {
+      momentCommentsState.replyTo = null;
+      drawMomentComments();
+    });
+  }
+  const form = document.getElementById("moment-comments-form");
+  if (form) {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      const input = document.getElementById("moment-comments-input");
+      const text = (input.value || "").trim();
+      if (!text) return;
+      input.disabled = true;
+      try {
+        const created = await api("/api/moments/" + momentCommentsState.momentId + "/comments", {
+          method: "POST",
+          auth: true,
+          body: { text, parentCommentId: momentCommentsState.replyTo ? momentCommentsState.replyTo.id : undefined },
+        });
+        momentCommentsState.comments.push(created);
+        momentCommentsState.replyTo = null;
+        drawMomentComments();
+        const freshInput = document.getElementById("moment-comments-input");
+        if (freshInput) freshInput.focus();
+      } catch (err) {
+        input.disabled = false;
+        alert(err.message);
+      }
+    });
+  }
+}
+
 function openMomentsViewer(moments, startIndex, group) {
   if (!moments || !moments.length) return;
   momentViewerState = { moments: moments.slice(), index: startIndex || 0, group, following: null };
@@ -1806,6 +1962,7 @@ function closeMomentsViewer() {
     clearTimeout(momentViewerTimer);
     momentViewerTimer = null;
   }
+  momentCommentsState = null;
   const overlay = document.getElementById("moment-viewer-overlay");
   if (overlay) overlay.remove();
   momentViewerState = null;
@@ -1855,7 +2012,7 @@ function drawMomentViewer() {
         <button class="moment-viewer-action-btn like-btn ${m.liked ? "active" : ""}" id="moment-viewer-like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
         <button class="moment-viewer-action-btn" id="moment-viewer-message" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
         <button class="moment-viewer-action-btn" id="moment-viewer-share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
-        <button class="moment-viewer-action-btn" id="moment-viewer-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
+        <button class="moment-viewer-action-btn repost-btn" id="moment-viewer-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
         <button class="moment-viewer-action-btn save-btn ${m.saved ? "active" : ""}" id="moment-viewer-save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
       </div>
     </div>

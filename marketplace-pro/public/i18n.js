@@ -256,6 +256,11 @@ const STRINGS = {
     "moments.actionSave": "Save",
     "moments.linkCopied": "Link copied",
     "moments.reposted": "Reposted to your story!",
+    "moments.commentsTitle": "Comments",
+    "moments.commentReply": "Reply",
+    "moments.commentsEmpty": "No comments yet. Be the first!",
+    "moments.replyingTo": "Replying to",
+    "moments.commentPlaceholder": "Add a comment...",
     "moments.limitReached": "You already have 3 active moments. Delete one to post a new one.",
 
     "settings.chatPrivacyLabel": "Who can message me",
@@ -607,6 +612,11 @@ const STRINGS = {
     "moments.actionSave": "Guardar",
     "moments.linkCopied": "Enlace copiado",
     "moments.reposted": "Reposteado a tu historia!",
+    "moments.commentsTitle": "Comentarios",
+    "moments.commentReply": "Responder",
+    "moments.commentsEmpty": "Todavia no hay comentarios. Se el primero!",
+    "moments.replyingTo": "Respondiendo a",
+    "moments.commentPlaceholder": "Escribe un comentario...",
 
     "settings.chatPrivacyLabel": "Quien puede escribirme",
     "settings.chatPrivacyEveryone": "Todos",
