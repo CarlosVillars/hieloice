@@ -643,7 +643,7 @@ button { cursor: pointer; font-family: inherit; }
 .shorts-nav:disabled { opacity: 0.3; }
 
 /* ---- Shorts side actions (like) - Instagram-style vertical action rail ---- */
-.shorts-actions-col { position: absolute; right: 14px; bottom: 230px; z-index: 2; display: flex; flex-direction: column; align-items: center; }
+.shorts-actions-col { position: absolute; right: 14px; bottom: 230px; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 16px; }
 .shorts-action { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .shorts-action-btn { width: 46px; height: 46px; border-radius: 50%; background: rgba(255,255,255,0.12); backdrop-filter: blur(2px); border: none; color: #fff; font-size: 22px; display: flex; align-items: center; justify-content: center; transition: transform 0.15s ease; }
 .shorts-action-btn:active { transform: scale(0.88); }
@@ -715,6 +715,22 @@ button { cursor: pointer; font-family: inherit; }
 .ad-dots { position: absolute; bottom: 10px; right: 12px; display: flex; gap: 6px; }
 .ad-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.6); }
 .ad-dot.active { background: #fff; }
+
+/* ---- Home feed: friends' moments rendered as inline playable cards, below
+   the "stories" circle bar (not just the circle - the actual moment content,
+   Instagram/TikTok-feed hybrid) ---- */
+.home-feed-posts { display: flex; flex-direction: column; gap: 16px; margin: 4px 0 20px; }
+.feed-moment-card { background: #fff; border: 1px solid #e7e2d8; border-radius: 12px; overflow: hidden; }
+.feed-moment-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; }
+.feed-moment-author-link { display: flex; align-items: center; gap: 8px; text-decoration: none; color: inherit; min-width: 0; }
+.feed-moment-avatar, .feed-moment-avatar-placeholder { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.feed-moment-avatar-placeholder { background: #0f3d2e; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.feed-moment-author-name { font-weight: 600; font-size: 14px; color: #1a1a1a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-moment-age { font-size: 12px; color: #8a8471; flex-shrink: 0; }
+.feed-moment-media-wrap { position: relative; width: 100%; max-height: 560px; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; cursor: pointer; }
+.feed-moment-media { width: 100%; max-height: 560px; object-fit: contain; display: block; }
+.feed-moment-caption { padding: 8px 12px 12px; font-size: 14px; color: #333; line-height: 1.4; }
+.feed-moment-actions { position: absolute; right: 10px; bottom: 14px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
 
 /* ---- Disabled buttons (e.g. register submit before accepting terms) ---- */
 .btn:disabled, button:disabled { opacity: 0.5; cursor: not-allowed; }
