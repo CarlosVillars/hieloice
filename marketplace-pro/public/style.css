@@ -182,7 +182,7 @@ button { cursor: pointer; font-family: inherit; }
 }
 .icon-nav-dropdown a { display: block; padding: 9px 12px; border-radius: 6px; font-size: 14px; font-weight: 600; color: #1a1a1a; }
 .icon-nav-dropdown a:hover { background: #eef5ef; color: #0f3d2e; }
-.icon-nav-create-plus { font-size: 24px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; font-weight: 800; color: #0f3d2e; }
+.icon-nav-create-plus { font-size: 34px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; font-weight: 800; color: #0f3d2e; }
 
 /* ---- Create wizard (nav "+": camera capture -> edit/filters -> caption+hashtags) ---- */
 .wizard-box { max-width: 420px; }
@@ -531,6 +531,8 @@ button { cursor: pointer; font-family: inherit; }
 .friend-card-body { padding: 8px; }
 .friend-card-name { font-size: 13px; font-weight: 700; margin: 0 0 6px; }
 .friend-card-remove { background: none; border: none; color: #a83232; font-size: 11px; text-decoration: underline; padding: 0; }
+.friend-card-actions { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.friend-card-actions .btn { font-size: 11px; padding: 6px 8px; width: 100%; }
 
 .friend-request-row { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #e3e0d8; border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
 .friend-request-name { font-weight: 700; font-size: 14px; flex: 1; }
