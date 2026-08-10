@@ -355,16 +355,25 @@ function renderHome() {
   viewEl.innerHTML = `
     <div class="feed-section" id="feed-section-friends">
       <h2 class="section-heading">${I18N.t("feed.friendsHeading")}</h2>
-      <div class="moments-bar" id="home-moments-bar-friends" style="display:none;"></div>
+      <div class="moments-bar" id="home-moments-bar-friends"></div>
     </div>
     <div class="feed-section" id="feed-section-suggested" style="display:none;">
       <h2 class="section-heading">${I18N.t("feed.suggestedHeading")}</h2>
       <div class="moments-bar" id="home-moments-bar-suggested" style="display:none;"></div>
     </div>
     <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
-    <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
-    <div class="category-grid">${categoryCardsHtml()}</div>
   `;
+  // Draw the "your moment" circle (yellow ring if you already posted one today,
+  // plain "+" to add one otherwise) immediately, from data already in memory -
+  // don't wait on the /api/moments/feed round trip for it, and don't let a
+  // failed/slow fetch hide it later (see loadHomeFeed()'s catch below). This
+  // was previously only drawn after the feed loaded, so on a slow connection
+  // or a feed error it silently never appeared at all.
+  renderMomentGroupsBar(document.getElementById("home-moments-bar-friends"), [], {
+    showAddForUserId: state.user.id,
+    ownPhoto: state.user.photo,
+    ownName: state.user.name,
+  });
   loadAdCarousel();
   loadHomeFeed();
 }
@@ -405,7 +414,9 @@ async function loadHomeFeed() {
       suggestedSection.style.display = "none";
     }
   } catch (e) {
-    elFriends.style.display = "none";
+    // Best-effort: leave the "your moment" circle drawn by renderHome() as-is
+    // rather than wiping the whole section - a failed feed fetch shouldn't
+    // make the add-a-moment entry point disappear too.
     suggestedSection.style.display = "none";
   }
 }
@@ -1076,6 +1087,63 @@ function friendActionMarkup(fs) {
   return "";
 }
 
+// List-safe variant of friendActionMarkup()/wireFriendActionButtons(): those
+// two use element IDs (btn-friend-add, etc.), which only works for a single
+// instance per page (a profile page). Search results render one action block
+// per row, so duplicate IDs would collide and only the first row's buttons
+// would ever respond - this variant uses data-attributes + event delegation
+// instead so any number of rows can coexist safely.
+function friendActionMarkupList(fs) {
+  if (!fs || fs.status === "none") {
+    return `<button class="btn btn-outline" data-friend-action="add">${I18N.t("friends.addFriend")}</button>`;
+  }
+  if (fs.status === "pending_sent") {
+    return `<button class="btn btn-friend-status" data-friend-action="cancel" data-fid="${fs.friendshipId}">${I18N.t("friends.requestSent")}</button>`;
+  }
+  if (fs.status === "pending_received") {
+    return `
+      <button class="btn btn-primary" data-friend-action="accept" data-fid="${fs.friendshipId}">${I18N.t("friends.accept")}</button>
+      <button class="btn btn-secondary" data-friend-action="decline" data-fid="${fs.friendshipId}">${I18N.t("friends.decline")}</button>
+    `;
+  }
+  if (fs.status === "friends") {
+    return `<button class="btn btn-friend-status" data-friend-action="remove">${I18N.t("friends.friendsBadge")}</button>`;
+  }
+  return "";
+}
+
+// Wires every [data-friend-action] button inside containerEl via a single
+// delegated listener (safe with any number of friend-card rows), then calls
+// onDone() to let the caller refresh/re-render after a successful action.
+function wireFriendActionButtonsList(containerEl, onDone) {
+  containerEl.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-friend-action]");
+    if (!btn || !containerEl.contains(btn)) return;
+    const wrap = btn.closest(".friend-card-actions");
+    const otherUserId = wrap ? wrap.dataset.uid : null;
+    const action = btn.dataset.friendAction;
+    const fid = btn.dataset.fid;
+    try {
+      if (action === "add") {
+        await api("/api/friends/request", { method: "POST", auth: true, body: { userId: otherUserId } });
+      } else if (action === "cancel" || action === "decline") {
+        await api("/api/friends/" + fid + "/reject", { method: "POST", auth: true });
+      } else if (action === "accept") {
+        await api("/api/friends/" + fid + "/accept", { method: "POST", auth: true });
+      } else if (action === "remove") {
+        if (!confirm(I18N.t("friends.confirmRemove"))) return;
+        await api("/api/friends/user/" + otherUserId, { method: "DELETE", auth: true });
+      } else {
+        return;
+      }
+      pollUnread();
+      if (onDone) onDone();
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+}
+
 // Follow button for "Public Page" profiles - separate from the friend system,
 // one-directional, no acceptance required.
 function pageFollowMarkup(fs) {
@@ -1360,12 +1428,25 @@ async function runFriendsPageSearch(q) {
           </a>
           <div class="friend-card-body">
             <p class="friend-card-name">${escapeHtml(u.name)}</p>
+            <div class="friend-card-actions" data-uid="${u.userId}">${friendActionMarkupList(u.friendStatus)}</div>
             <a class="btn btn-outline" href="#/profile/${u.userId}">${I18N.t("friendsPage.viewProfile")}</a>
           </div>
         </div>`
           )
           .join("")}</div>`
       : `<div class="empty-state">${I18N.t("friendsPage.noFriendResults")}</div>`;
+    // Wire the delegated click listener at most once per render of
+    // #friends-page-body - runFriendsPageSearch() only replaces its
+    // innerHTML on subsequent searches, so re-wiring here would otherwise
+    // stack up a fresh listener (and a fresh handled click) on every
+    // keystroke of the debounced search box.
+    if (!body.dataset.friendActionsWired) {
+      wireFriendActionButtonsList(body, () => {
+        const input = document.getElementById("friends-search-input");
+        runFriendsPageSearch(input ? input.value.trim() : "");
+      });
+      body.dataset.friendActionsWired = "1";
+    }
     return;
   }
 
@@ -2727,6 +2808,7 @@ function drawCreateWizard() {
           <button class="btn btn-secondary" id="wizard-upload-photo-btn">${I18N.t("moments.uploadPhoto")}</button>
           <button class="btn wizard-capture-btn" id="wizard-capture-btn">${I18N.t("create.capturePhoto")}</button>
           <button class="btn btn-secondary" id="wizard-record-btn">${I18N.t("create.startVideo")}</button>
+          <button class="btn btn-secondary" id="wizard-upload-video-btn">${I18N.t("create.uploadVideo")}</button>
         </div>
         <p class="field-hint" id="wizard-record-hint"></p>
         <input type="file" id="wizard-file-photo" accept="image/*" style="display:none;" />
@@ -2813,6 +2895,7 @@ function drawCreateWizard() {
     });
 
     document.getElementById("wizard-upload-photo-btn").addEventListener("click", () => document.getElementById("wizard-file-photo").click());
+    document.getElementById("wizard-upload-video-btn").addEventListener("click", () => document.getElementById("wizard-file-video").click());
     document.getElementById("wizard-file-photo").addEventListener("change", (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -2844,6 +2927,7 @@ function drawCreateWizard() {
           createWizard.rawDataUrl = reader.result;
           createWizard.mediaType = "video";
           createWizard.step = 2;
+          stopCreateWizardCamera();
           drawCreateWizard();
         };
         reader.readAsDataURL(file);
