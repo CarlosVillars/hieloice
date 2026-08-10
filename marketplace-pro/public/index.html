@@ -10,10 +10,22 @@
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a href="#/" class="brand" id="brand-link">
-        <img src="icon.png" alt="HieloIce" class="brand-logo-img" />
-        <span id="brand-name">HieloIce</span>
-      </a>
+      <div class="topbar-top-row">
+        <a href="#/" class="brand" id="brand-link">
+          <img src="icon.png" alt="HieloIce" class="brand-logo-img" />
+          <span id="brand-name">HieloIce</span>
+        </a>
+        <div class="topbar-menu-wrap" id="topbar-menu-wrap">
+          <button id="topbar-menu-btn" class="topbar-menu-btn" aria-label="More options" aria-expanded="false">&#8943;</button>
+          <div class="topbar-menu-dropdown" id="topbar-menu-dropdown" style="display:none;">
+            <div class="lang-toggle">
+              <button id="lang-en" class="lang-btn active">EN</button>
+              <button id="lang-es" class="lang-btn">ES</button>
+            </div>
+            <button id="nav-logout" class="topbar-menu-logout" style="display:none;">Log Out</button>
+          </div>
+        </div>
+      </div>
 
       <div class="topbar-search">
         <input type="text" id="global-search" placeholder="Search products..." />
@@ -21,16 +33,11 @@
       </div>
 
       <nav class="topbar-nav">
-        <a href="#/messages" id="nav-messages" class="nav-link">Messages</a>
         <a href="#/profile" id="nav-profile" class="nav-link">Profile</a>
+        <a href="#/messages" id="nav-messages" class="nav-link">Messages</a>
         <a href="#/post" id="nav-post" class="nav-link nav-post-btn">Post an Ad</a>
         <a href="#/login" id="nav-login" class="nav-link">Log In</a>
         <a href="#/register" id="nav-register" class="nav-link">Sign Up</a>
-        <button id="nav-logout" class="nav-link nav-link-btn" style="display:none;">Log Out</button>
-        <div class="lang-toggle">
-          <button id="lang-en" class="lang-btn active">EN</button>
-          <button id="lang-es" class="lang-btn">ES</button>
-        </div>
       </nav>
     </div>
   </header>

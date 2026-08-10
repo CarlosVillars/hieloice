@@ -297,7 +297,7 @@ const STRINGS = {
     "groups.postType.review": "Seller review",
     "groups.postType.warning": "Scam warning",
 
-    "feed.friendsHeading": "Friends' Moments",
+    "feed.friendsHeading": "Moments",
     "feed.suggestedHeading": "Suggested for you",
     "feed.emptyFriends": "Post your first moment or add friends to see theirs here.",
 
@@ -696,7 +696,7 @@ const STRINGS = {
     "groups.postType.review": "Reseña de vendedor",
     "groups.postType.warning": "Alerta de estafa",
 
-    "feed.friendsHeading": "Moments de tus amigos",
+    "feed.friendsHeading": "Moments",
     "feed.suggestedHeading": "Sugerido para ti",
     "feed.emptyFriends": "Publica tu primer moment o agrega amigos para ver los suyos aqui.",
 

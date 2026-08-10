@@ -214,6 +214,25 @@ document.getElementById("lang-es").addEventListener("click", () => {
   router();
 });
 
+// ---------------- Topbar "..." menu (language + logout) ----------------
+// Same open/close-on-outside-click pattern as the icon-nav dropdowns below.
+(function wireTopbarMenu() {
+  const btn = document.getElementById("topbar-menu-btn");
+  const dropdown = document.getElementById("topbar-menu-dropdown");
+  if (!btn || !dropdown) return;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = dropdown.style.display === "block";
+    dropdown.style.display = open ? "none" : "block";
+    btn.setAttribute("aria-expanded", open ? "false" : "true");
+  });
+  dropdown.addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", () => {
+    dropdown.style.display = "none";
+    btn.setAttribute("aria-expanded", "false");
+  });
+})();
+
 document.getElementById("global-search-btn").addEventListener("click", doGlobalSearch);
 document.getElementById("global-search").addEventListener("keydown", (e) => {
   if (e.key === "Enter") doGlobalSearch();
@@ -353,6 +372,7 @@ function renderHome() {
   if (!state.token) return renderMarketplaceHome();
 
   viewEl.innerHTML = `
+    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
     <div class="feed-section" id="feed-section-friends">
       <h2 class="section-heading">${I18N.t("feed.friendsHeading")}</h2>
       <div class="moments-bar" id="home-moments-bar-friends"></div>
@@ -362,7 +382,6 @@ function renderHome() {
       <h2 class="section-heading">${I18N.t("feed.suggestedHeading")}</h2>
       <div class="moments-bar" id="home-moments-bar-suggested" style="display:none;"></div>
     </div>
-    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
   `;
   // Draw the "your moment" circle (yellow ring if you already posted one today,
   // plain "+" to add one otherwise) immediately, from data already in memory -
@@ -374,6 +393,7 @@ function renderHome() {
     showAddForUserId: state.user.id,
     ownPhoto: state.user.photo,
     ownName: state.user.name,
+    layout: "rect",
   });
   loadAdCarousel();
   loadHomeFeed();
@@ -418,6 +438,7 @@ async function loadHomeFeed() {
       showAddForUserId: state.user.id,
       ownPhoto: state.user.photo,
       ownName: state.user.name,
+      layout: "rect",
     });
     // Friends' actual moments also play inline in the main feed, below the
     // "stories" circle bar - not just as a circle you have to tap. Own
@@ -427,7 +448,7 @@ async function loadHomeFeed() {
     if (data.suggested && data.suggested.length) {
       suggestedSection.style.display = "block";
       elSuggested.style.display = "flex";
-      renderMomentGroupsBar(elSuggested, data.suggested, {});
+      renderMomentGroupsBar(elSuggested, data.suggested, { layout: "rect" });
     } else {
       suggestedSection.style.display = "none";
     }
@@ -2028,35 +2049,65 @@ function renderPhotosGalleryTab(photos, isMe) {
 // ---------------- Moments (stories: photo/video, visible 24h) ----------------
 
 function renderMomentGroupsBar(containerEl, groups, opts) {
+  // "rect" layout renders small Facebook-style rectangular preview cards
+  // (actual moment thumbnail as the card background) instead of the
+  // Instagram-style circle avatars - used on Home so the strip reads as a
+  // wall of content that scales as the community grows, rather than a row
+  // of profile pictures. Profile page keeps the classic circle layout.
+  const rectLayout = !!(opts && opts.layout === "rect");
   let html = "";
   if (opts && opts.showAddForUserId) {
     const mine = groups.find((g) => g.userId === opts.showAddForUserId);
     const hasOwn = !!(mine && mine.moments.length);
-    html += `
-      <div class="moment-circle-wrap" id="moment-add-circle">
-        <div class="moment-circle">
-          <div class="moment-circle-inner">
-            ${opts.ownPhoto ? `<img src="${opts.ownPhoto}" />` : `<div class="moment-circle-placeholder">${initials(opts.ownName || "")}</div>`}
+    if (rectLayout) {
+      const thumb = hasOwn && mine.moments[0].mediaType === "image" ? mine.moments[0].mediaUrl : opts.ownPhoto;
+      html += `
+        <div class="moment-rect-wrap moment-rect-add" id="moment-add-circle" style="${thumb ? `background-image:url('${thumb}')` : ""}">
+          ${!thumb ? `<div class="moment-rect-placeholder">${initials(opts.ownName || "")}</div>` : ""}
+          <span class="moment-rect-shade"></span>
+          <span class="moment-rect-add-badge" id="moment-add-badge" title="${I18N.t("moments.add")}">+</span>
+          <span class="moment-rect-name">${I18N.t("moments.yourMoment")}</span>
+        </div>`;
+    } else {
+      html += `
+        <div class="moment-circle-wrap" id="moment-add-circle">
+          <div class="moment-circle">
+            <div class="moment-circle-inner">
+              ${opts.ownPhoto ? `<img src="${opts.ownPhoto}" />` : `<div class="moment-circle-placeholder">${initials(opts.ownName || "")}</div>`}
+            </div>
+            <span class="moment-circle-add-badge" id="moment-add-badge" title="${I18N.t("moments.add")}">+</span>
           </div>
-          <span class="moment-circle-add-badge" id="moment-add-badge" title="${I18N.t("moments.add")}">+</span>
-        </div>
-        <span class="moment-circle-label">${I18N.t("moments.yourMoment")}</span>
-      </div>`;
+          <span class="moment-circle-label">${I18N.t("moments.yourMoment")}</span>
+        </div>`;
+    }
     if (!hasOwn) {
       // nothing else to add here; handled by click handler below
     }
   }
   const others = opts && opts.showAddForUserId ? groups.filter((g) => g.userId !== opts.showAddForUserId) : groups;
   others.forEach((g) => {
-    html += `
-      <div class="moment-circle-wrap" data-uid="${g.userId}">
-        <div class="moment-circle">
-          <div class="moment-circle-inner">
-            ${g.userPhoto ? `<img src="${g.userPhoto}" />` : `<div class="moment-circle-placeholder">${initials(g.userName)}</div>`}
+    if (rectLayout) {
+      const thumb = g.moments[0] && g.moments[0].mediaType === "image" ? g.moments[0].mediaUrl : g.userPhoto;
+      html += `
+        <div class="moment-rect-wrap" data-uid="${g.userId}" style="${thumb ? `background-image:url('${thumb}')` : ""}">
+          ${!thumb ? `<div class="moment-rect-placeholder">${initials(g.userName)}</div>` : ""}
+          <span class="moment-rect-shade"></span>
+          <div class="moment-rect-avatar">
+            ${g.userPhoto ? `<img src="${g.userPhoto}" />` : `<div class="moment-rect-avatar-placeholder">${initials(g.userName)}</div>`}
           </div>
-        </div>
-        <span class="moment-circle-label">${escapeHtml(g.userName)}</span>
-      </div>`;
+          <span class="moment-rect-name">${escapeHtml(g.userName)}</span>
+        </div>`;
+    } else {
+      html += `
+        <div class="moment-circle-wrap" data-uid="${g.userId}">
+          <div class="moment-circle">
+            <div class="moment-circle-inner">
+              ${g.userPhoto ? `<img src="${g.userPhoto}" />` : `<div class="moment-circle-placeholder">${initials(g.userName)}</div>`}
+            </div>
+          </div>
+          <span class="moment-circle-label">${escapeHtml(g.userName)}</span>
+        </div>`;
+    }
   });
   containerEl.innerHTML = html;
 
@@ -2083,7 +2134,7 @@ function renderMomentGroupsBar(containerEl, groups, opts) {
       });
     }
   }
-  containerEl.querySelectorAll(".moment-circle-wrap[data-uid]").forEach((wrap) => {
+  containerEl.querySelectorAll(".moment-circle-wrap[data-uid], .moment-rect-wrap[data-uid]").forEach((wrap) => {
     wrap.addEventListener("click", () => {
       const g = groups.find((x) => x.userId === wrap.dataset.uid);
       if (g) openMomentsViewer(g.moments, 0, g);
