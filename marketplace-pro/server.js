@@ -719,7 +719,11 @@ async function handleApi(req, res, pathname, query) {
   }
 
   // ---- USERS / PROFILES ----
-  const userMatch = pathname.match(/^\/api\/users\/([a-zA-Z0-9]+)$/);
+  // Excludes "search" so it can never shadow the GET /api/users/search route
+  // below - previously this generic :id route ran first, matched "search" as
+  // a literal user id, and made /api/users/search always 404 with "User not
+  // found" instead of ever running the real search handler.
+  const userMatch = pathname.match(/^\/api\/users\/(?!search$)([a-zA-Z0-9]+)$/);
   if (method === "GET" && userMatch) {
     const users = await db.select("mkt_users", { id: "eq." + enc(userMatch[1]), select: "*" });
     const u = users && users[0];
@@ -1719,7 +1723,7 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { ok: true });
   }
 
-  // Simple name search used by the Friends page's "Search friends/products" bar.
+  // Simple name search used by the Friends page's Search friends/Search people tabs.
   if (method === "GET" && pathname === "/api/users/search") {
     const me = await getAuthUser(req);
     const q = (query.q || "").trim();
