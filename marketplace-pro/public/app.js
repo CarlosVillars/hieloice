@@ -357,6 +357,7 @@ function renderHome() {
       <h2 class="section-heading">${I18N.t("feed.friendsHeading")}</h2>
       <div class="moments-bar" id="home-moments-bar-friends"></div>
     </div>
+    <div class="home-feed-posts" id="home-feed-posts" style="display:none;"></div>
     <div class="feed-section" id="feed-section-suggested" style="display:none;">
       <h2 class="section-heading">${I18N.t("feed.suggestedHeading")}</h2>
       <div class="moments-bar" id="home-moments-bar-suggested" style="display:none;"></div>
@@ -418,6 +419,11 @@ async function loadHomeFeed() {
       ownPhoto: state.user.photo,
       ownName: state.user.name,
     });
+    // Friends' actual moments also play inline in the main feed, below the
+    // "stories" circle bar - not just as a circle you have to tap. Own
+    // moments are excluded here since "Your Moment" is already the circle.
+    const friendGroupsForFeed = (data.friends || []).filter((g) => g.userId !== state.user.id);
+    renderHomeFeedPosts(friendGroupsForFeed);
     if (data.suggested && data.suggested.length) {
       suggestedSection.style.display = "block";
       elSuggested.style.display = "flex";
@@ -430,7 +436,167 @@ async function loadHomeFeed() {
     // rather than wiping the whole section - a failed feed fetch shouldn't
     // make the add-a-moment entry point disappear too.
     suggestedSection.style.display = "none";
+    const postsEl = document.getElementById("home-feed-posts");
+    if (postsEl) postsEl.style.display = "none";
   }
+}
+
+// ---- Friends' moments rendered as inline, playable feed cards on Home -----
+// (in addition to the circle bar above). Each card carries the full Reels-
+// style action rail (like/comment/share/repost/save); tapping the media
+// opens the full-screen story viewer starting on that exact moment.
+
+function buildHomeFeedItems(groups) {
+  const items = [];
+  for (const g of groups) {
+    for (const m of g.moments) {
+      items.push({ ...m, userId: g.userId, userName: g.userName, userPhoto: g.userPhoto, isPage: g.isPage });
+    }
+  }
+  items.sort((a, b) => b.createdAt - a.createdAt);
+  return items;
+}
+
+function feedMomentCardHtml(m) {
+  return `
+    <div class="feed-moment-card" data-moment-id="${m.id}">
+      <div class="feed-moment-head">
+        <a class="feed-moment-author-link" href="#/profile/${m.userId}">
+          ${
+            m.userPhoto
+              ? `<img class="feed-moment-avatar" src="${m.userPhoto}" />`
+              : `<div class="feed-moment-avatar-placeholder">${initials(m.userName || "")}</div>`
+          }
+          <span class="feed-moment-author-name">${escapeHtml(m.userName || "")}${m.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        </a>
+        <span class="feed-moment-age">${timeAgoStr(m.createdAt)}</span>
+      </div>
+      <div class="feed-moment-media-wrap">
+        ${
+          m.mediaType === "video"
+            ? `<video class="feed-moment-media" src="${m.mediaUrl}" muted loop playsinline autoplay></video>`
+            : `<img class="feed-moment-media" src="${m.mediaUrl}" />`
+        }
+        <div class="feed-moment-actions">
+          <button class="moment-viewer-action-btn like-btn ${m.liked ? "active" : ""}" data-action="like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
+          <button class="moment-viewer-action-btn" data-action="comment" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
+          <button class="moment-viewer-action-btn" data-action="share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
+          <button class="moment-viewer-action-btn repost-btn" data-action="repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
+          <button class="moment-viewer-action-btn save-btn ${m.saved ? "active" : ""}" data-action="save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
+        </div>
+      </div>
+      ${m.caption ? `<div class="feed-moment-caption">${linkifyHashtags(escapeHtml(m.caption))}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderHomeFeedPosts(groups) {
+  const el = document.getElementById("home-feed-posts");
+  if (!el) return;
+  homeFeedGroupsById = {};
+  groups.forEach((g) => {
+    homeFeedGroupsById[g.userId] = g;
+  });
+  const items = buildHomeFeedItems(groups);
+  homeFeedMomentsList = items;
+  if (!items.length) {
+    el.innerHTML = "";
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "flex";
+  el.innerHTML = items.map(feedMomentCardHtml).join("");
+  wireHomeFeedPostsDelegation();
+}
+
+// Single delegated listener (wired once, survives re-renders since the
+// container itself is never replaced) so we don't need per-card unique ids
+// the way the single-instance Stories/Shorts overlays do.
+function wireHomeFeedPostsDelegation() {
+  const el = document.getElementById("home-feed-posts");
+  if (!el || el.dataset.wired === "1") return;
+  el.dataset.wired = "1";
+  el.addEventListener("click", async (e) => {
+    const card = e.target.closest("[data-moment-id]");
+    if (!card) return;
+    const m = homeFeedMomentsList.find((x) => x.id === card.dataset.momentId);
+    if (!m) return;
+    const actionBtn = e.target.closest("[data-action]");
+
+    if (actionBtn) {
+      const action = actionBtn.dataset.action;
+      if (action === "like") {
+        if (!state.token) {
+          location.hash = "#/login";
+          return;
+        }
+        const nowLiked = !m.liked;
+        m.liked = nowLiked;
+        actionBtn.classList.toggle("active", nowLiked);
+        try {
+          await api("/api/moments/" + m.id + "/like", { method: nowLiked ? "POST" : "DELETE", auth: true });
+        } catch (err) {
+          m.liked = !nowLiked;
+          actionBtn.classList.toggle("active", m.liked);
+        }
+      } else if (action === "save") {
+        if (!state.token) {
+          location.hash = "#/login";
+          return;
+        }
+        const nowSaved = !m.saved;
+        m.saved = nowSaved;
+        actionBtn.classList.toggle("active", nowSaved);
+        try {
+          await api("/api/moments/" + m.id + "/save", { method: nowSaved ? "POST" : "DELETE", auth: true });
+        } catch (err) {
+          m.saved = !nowSaved;
+          actionBtn.classList.toggle("active", m.saved);
+        }
+      } else if (action === "repost") {
+        if (!state.token) {
+          location.hash = "#/login";
+          return;
+        }
+        flashMomentAction(actionBtn);
+        try {
+          await api("/api/moments/" + m.id + "/repost", { method: "POST", auth: true });
+          actionBtn.classList.add("active");
+          setTimeout(() => actionBtn.classList.remove("active"), 1200);
+        } catch (err) {
+          alert(err.message);
+        }
+      } else if (action === "share") {
+        flashMomentAction(actionBtn);
+        const url = location.origin + "/#/profile/" + m.userId;
+        try {
+          if (navigator.share) {
+            await navigator.share({ url, title: "HieloIce" });
+          } else if (navigator.clipboard) {
+            await navigator.clipboard.writeText(url);
+            alert(I18N.t("moments.linkCopied") || "Link copied");
+          }
+        } catch (err) {}
+      } else if (action === "comment") {
+        const group = homeFeedGroupsById[m.userId];
+        if (!group) return;
+        const idx = group.moments.findIndex((x) => x.id === m.id);
+        openMomentsViewer(group.moments, idx >= 0 ? idx : 0, group);
+        setTimeout(() => openMomentComments(m), 60);
+      }
+      return;
+    }
+
+    if (e.target.closest(".feed-moment-author-link")) return; // let the profile link navigate normally
+
+    const mediaEl = e.target.closest(".feed-moment-media-wrap");
+    if (mediaEl) {
+      const group = homeFeedGroupsById[m.userId];
+      if (!group) return;
+      const idx = group.moments.findIndex((x) => x.id === m.id);
+      openMomentsViewer(group.moments, idx >= 0 ? idx : 0, group);
+    }
+  });
 }
 
 let adRotateTimer = null;
@@ -1940,6 +2106,12 @@ function renderProfileMomentsBar(userId, userName, userPhoto, moments, isMe) {
 
 let momentViewerState = null;
 let momentViewerTimer = null;
+// Flat, chronologically-sorted list of friends' active moments rendered as
+// inline feed cards on Home (in addition to the "stories" circle bar above
+// them), plus a userId->group lookup so tapping a card's media can open the
+// full-screen viewer starting on that exact moment within that friend's set.
+let homeFeedMomentsList = [];
+let homeFeedGroupsById = {};
 
 // Reels/Shorts-style action rail icons for the Moments story viewer: white
 // outline by default, filled via the ".active" CSS class (persistent for
@@ -2088,10 +2260,13 @@ function resumeMomentViewerPlayback() {
   }
 }
 
-async function openMomentComments(m) {
-  pauseMomentViewerPlayback();
-  momentCommentsState = { momentId: m.id, comments: [], replyTo: null, loading: true };
-  const overlay = document.getElementById("moment-viewer-overlay");
+async function openMomentComments(m, overlayId, context) {
+  overlayId = overlayId || "moment-viewer-overlay";
+  context = context || "story";
+  if (context === "shorts") pauseShortsPlayback();
+  else pauseMomentViewerPlayback();
+  momentCommentsState = { momentId: m.id, comments: [], replyTo: null, loading: true, context };
+  const overlay = document.getElementById(overlayId);
   if (!overlay) return;
   const panel = document.createElement("div");
   panel.className = "moment-comments-panel";
@@ -2115,8 +2290,20 @@ async function openMomentComments(m) {
 function closeMomentComments() {
   const panel = document.getElementById("moment-comments-panel");
   if (panel) panel.remove();
+  const context = momentCommentsState ? momentCommentsState.context : "story";
   momentCommentsState = null;
-  resumeMomentViewerPlayback();
+  if (context === "shorts") resumeShortsPlayback();
+  else resumeMomentViewerPlayback();
+}
+
+function pauseShortsPlayback() {
+  const videoEl = document.getElementById("shorts-video");
+  if (videoEl) videoEl.pause();
+}
+
+function resumeShortsPlayback() {
+  const videoEl = document.getElementById("shorts-video");
+  if (videoEl) videoEl.play().catch(() => {});
 }
 
 function drawMomentComments() {
@@ -2501,11 +2688,74 @@ function updateShortsLikeUI() {
   const v = shortsState.videos[shortsState.index];
   const btn = document.getElementById("shorts-like");
   const countEl = document.getElementById("shorts-like-count");
-  if (btn) {
-    btn.classList.toggle("active", !!v.liked);
-    btn.textContent = v.liked ? "❤️" : "\u{1F90D}";
-  }
+  if (btn) btn.classList.toggle("active", !!v.liked);
   if (countEl) countEl.textContent = v.likeCount || 0;
+}
+
+// Comment/share/repost/save for the Shorts player - mirrors
+// wireMomentViewerActions() so both surfaces behave identically (optimistic
+// toggle, revert on failure, same icon set and "active" styling).
+function wireShortsActions(v) {
+  const msgBtn = document.getElementById("shorts-message");
+  if (msgBtn) {
+    msgBtn.addEventListener("click", () => {
+      flashMomentAction(msgBtn);
+      openMomentComments(v, "shorts-overlay", "shorts");
+    });
+  }
+
+  const shareBtn = document.getElementById("shorts-share");
+  if (shareBtn) {
+    shareBtn.addEventListener("click", async () => {
+      flashMomentAction(shareBtn);
+      const url = location.origin + "/#/profile/" + v.userId;
+      try {
+        if (navigator.share) {
+          await navigator.share({ url, title: "HieloIce" });
+        } else if (navigator.clipboard) {
+          await navigator.clipboard.writeText(url);
+          alert(I18N.t("moments.linkCopied") || "Link copied");
+        }
+      } catch (e) {}
+    });
+  }
+
+  const repostBtn = document.getElementById("shorts-repost");
+  if (repostBtn) {
+    repostBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      flashMomentAction(repostBtn);
+      try {
+        await api("/api/moments/" + v.id + "/repost", { method: "POST", auth: true });
+        repostBtn.classList.add("active");
+        setTimeout(() => repostBtn.classList.remove("active"), 1200);
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+
+  const saveBtn = document.getElementById("shorts-save");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      const nowSaved = !v.saved;
+      v.saved = nowSaved;
+      saveBtn.classList.toggle("active", nowSaved);
+      try {
+        await api("/api/moments/" + v.id + "/save", { method: nowSaved ? "POST" : "DELETE", auth: true });
+      } catch (e) {
+        v.saved = !nowSaved;
+        saveBtn.classList.toggle("active", v.saved);
+      }
+    });
+  }
 }
 
 function burstShortsHeart() {
@@ -2540,8 +2790,20 @@ function drawShorts() {
       </div>
       <div class="shorts-actions-col">
         <div class="shorts-action">
-          <button class="shorts-action-btn ${v.liked ? "active" : ""}" id="shorts-like">${v.liked ? "❤️" : "\u{1F90D}"}</button>
+          <button class="moment-viewer-action-btn like-btn ${v.liked ? "active" : ""}" id="shorts-like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
           <span class="shorts-action-count" id="shorts-like-count">${v.likeCount || 0}</span>
+        </div>
+        <div class="shorts-action">
+          <button class="moment-viewer-action-btn" id="shorts-message" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
+        </div>
+        <div class="shorts-action">
+          <button class="moment-viewer-action-btn" id="shorts-share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
+        </div>
+        <div class="shorts-action">
+          <button class="moment-viewer-action-btn repost-btn" id="shorts-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
+        </div>
+        <div class="shorts-action">
+          <button class="moment-viewer-action-btn save-btn ${v.saved ? "active" : ""}" id="shorts-save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
         </div>
       </div>
       <div class="shorts-nav-col">
@@ -2555,6 +2817,7 @@ function drawShorts() {
   document.getElementById("shorts-prev").addEventListener("click", () => stepShorts(-1));
   document.getElementById("shorts-next").addEventListener("click", () => stepShorts(1));
   document.getElementById("shorts-like").addEventListener("click", toggleShortsLike);
+  wireShortsActions(v);
 
   shortsState.watchStart = Date.now();
   shortsState.currentDurationMs = 0;
