@@ -2167,7 +2167,7 @@ async function handleApi(req, res, pathname, query) {
 
     const authorIds = [...new Set(videos.map((v) => v.user_id))];
     const videoIds = videos.map((v) => v.id);
-    const [authors, likeRows, eventRows, myEventRows] = await Promise.all([
+    const [authors, likeRows, eventRows, myEventRows, mySaveRows] = await Promise.all([
       db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,photo,is_page" }),
       db.select("mkt_moment_likes", { moment_id: "in.(" + videoIds.map(enc).join(",") + ")", select: "moment_id,user_id" }),
       db.select("mkt_moment_events", {
@@ -2182,6 +2182,17 @@ async function handleApi(req, res, pathname, query) {
             order: "created_at.desc",
             limit: "500",
             select: "moment_author_id,type",
+          })
+        : Promise.resolve([]),
+      // The viewer's own saves for these videos, so the save/bookmark icon can
+      // render pre-filled on load instead of always starting unpressed - this
+      // was previously missing entirely, which made a saved video look
+      // unsaved every time the feed was reloaded.
+      me
+        ? db.select("mkt_moment_saves", {
+            moment_id: "in.(" + videoIds.map(enc).join(",") + ")",
+            user_id: "eq." + enc(me.id),
+            select: "moment_id",
           })
         : Promise.resolve([]),
     ]);
@@ -2199,6 +2210,7 @@ async function handleApi(req, res, pathname, query) {
       likesByMoment[l.moment_id] = (likesByMoment[l.moment_id] || 0) + 1;
       if (me && l.user_id === me.id) myLikedSet.add(l.moment_id);
     }
+    const mySavedSet = new Set(mySaveRows.map((s) => s.moment_id));
 
     // Per-author affinity for this viewer, built from their own recent watch
     // history (independent of whether those older moments are still live) -
@@ -2239,6 +2251,7 @@ async function handleApi(req, res, pathname, query) {
         isPage: !!(author && author.is_page),
         likeCount: likesByMoment[v.id] || 0,
         liked: myLikedSet.has(v.id),
+        saved: mySavedSet.has(v.id),
         score,
       };
     });
