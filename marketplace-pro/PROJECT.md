@@ -194,6 +194,44 @@ resumes it on close. Backend: `GET/POST /api/moments/:id/comments`,
 by the `mkt_moment_comments` table (`moment_id`, `user_id`,
 `parent_comment_id`, `text`, `created_at`).
 
+**Create wizard ("+" nav button)**: a dedicated "+" icon in the top icon-nav
+(`#icon-nav-create`) opens a small dropdown with two options — post a Moment
+or post a Product — rather than sending everyone down the old single
+"Post Ad" path. The "Post Moment" option launches `openCreateWizard()`, a
+camera-capture-first flow: take/upload a photo or short video, apply a
+simple filter, then write a caption/hashtags before publishing — modeled
+loosely on Instagram/TikTok's "capture → adjust → caption → post" sequence,
+but intentionally shorter (no multi-step editing suite). The "Post Product"
+option routes straight into the existing `#/post` listing form. Wired in
+`wireIconNav()` in `app.js`; requires login (redirects to `#/login`
+otherwise).
+
+**Subscribe system (replaces plain Follow)**: Pages (see "Pages & Follow"
+above) now support two subscription modes chosen by the Page owner:
+**manual approval** (default) or **auto-approval**. Subscribing calls
+`POST /api/follow/:id`; under manual mode this creates a *pending* request
+instead of an immediate follow, and the button shows "Pending" until the
+owner acts. Page owners see incoming requests in a dedicated panel
+(`loadSubsRequests()`, `#subs-requests-card`) with Accept/Reject buttons
+backed by `POST /api/follow/requests/:id/accept` and
+`.../reject`; `GET /api/follow/requests` lists the pending queue. The old
+one-directional "Follow" button/copy has been replaced everywhere with
+"Subscribe" / "Subscribed" / "Pending" (`pageFollowMarkup()`,
+i18n keys under `subs.*`). Existing `/api/follow/:id` GET-status and DELETE
+(unsubscribe) endpoints are unchanged.
+
+**Friends page redesign ("#/friends")**: replaced the old static
+Friends/Requests two-tab layout with a single search-driven page —
+`renderFriendsPage()` shows two tabs, **"Search friends"** and
+**"Search products"** (`friendsPageTab` state, `.friends-search-tabs`), plus
+a debounced (300ms) search input (`#friends-search-input`). With no query,
+the "friends" tab falls back to the original pending-requests +
+friends-grid view; typing a query calls the new
+`GET /api/users/search?q=` endpoint (name search across all users, not just
+friends) and swaps in a results grid. The "products" tab searches listings
+directly via the existing `GET /api/products?q=` endpoint. All rendering
+goes through `runFriendsPageSearch(q)`.
+
 **International section**: company directory with registration, admin
 verification queue, public filtered directory, company detail pages, legal
 intermediary-disclaimer clause.
@@ -269,3 +307,18 @@ demands it — not before launch.
   don't conclude a deploy is broken/truncated from that alone; check the
   GitHub blob page's line/byte count (authoritative) before assuming a real
   problem.
+- The Chrome browser-extension file-upload tool can only upload files already
+  shared with the current AI session (chat attachments, or its own
+  outputs/uploads scratch folders) — it cannot upload arbitrary files from a
+  connected project folder, even if other tools can read them. For large
+  files (`app.js` at ~180KB has been the recurring case) that are too big to
+  reliably paste into GitHub's web editor either, the working path is asking
+  Carlos to drag-and-drop the file himself from his real folder into the
+  GitHub "Upload files" page or a Drive folder open in the browser.
+- Google Drive backups live in a "HieloIce Backup" folder owned by a
+  *specific* Google account (`carlosgerardopadillavillars@gmail.com`), not
+  necessarily whichever Google account Chrome happens to be signed into by
+  default. If a Drive folder link shows "Necesitas acceso" / "Access denied,"
+  check which account owns it (Drive's `get_file_permissions` on the folder
+  ID) and have Carlos switch to that account in Chrome (or open the URL with
+  a `/u/N/` prefix matching that account's slot) before trying again.
