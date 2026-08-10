@@ -814,7 +814,8 @@ async function renderProductDetail(id) {
 
         ${
           isOwnerOfListing
-            ? `<div class="action-row" id="status-controls">
+            ? `<div class="action-row"><a class="btn btn-gold" href="#/edit/${p.id}">${I18N.t("product.editListing")}</a></div>
+              <div class="action-row" id="status-controls">
                 <button class="btn btn-outline" data-status="active" ${p.status === "active" || !p.status ? "disabled" : ""}>${I18N.t("product.markActive")}</button>
                 <button class="btn btn-outline" data-status="reserved" ${p.status === "reserved" ? "disabled" : ""}>${I18N.t("product.markReserved")}</button>
                 <button class="btn btn-outline" data-status="sold" ${p.status === "sold" ? "disabled" : ""}>${I18N.t("product.markSold")}</button>
@@ -3528,7 +3529,15 @@ async function renderProfile(userId) {
   viewEl.innerHTML = `
     <div class="profile-cover-wrap">
       <div class="profile-cover" id="profile-cover" style="${profile.coverPhoto ? `background-image:url('${profile.coverPhoto}')` : ""}">
-        ${isMe ? `<button class="profile-cover-edit-btn" id="btn-edit-cover">${I18N.t("profile.changeCover")}</button><input type="file" id="cover-input" class="profile-cover-input" accept="image/*" />` : ""}
+        ${
+          isMe
+            ? `<div class="profile-cover-controls">
+                <button class="profile-cover-icon-btn" id="btn-edit-cover" title="${I18N.t("profile.changeCover")}" aria-label="${I18N.t("profile.changeCover")}">\u{1F4F7}</button>
+                ${profile.coverPhoto ? `<button class="profile-cover-icon-btn profile-cover-icon-btn-danger" id="btn-remove-cover" title="${I18N.t("profile.removeCover")}" aria-label="${I18N.t("profile.removeCover")}">\u{1F5D1}</button>` : ""}
+              </div>
+              <input type="file" id="cover-input" class="profile-cover-input" accept="image/*" />`
+            : ""
+        }
       </div>
       <div class="profile-header">
         <div class="profile-avatar-wrap">
@@ -3701,11 +3710,24 @@ async function renderProfile(userId) {
           try {
             await api("/api/users/me", { method: "PUT", auth: true, body: { coverPhoto: reader.result } });
             document.getElementById("profile-cover").style.backgroundImage = `url('${reader.result}')`;
+            router();
           } catch (err) {
             alert(err.message);
           }
         };
         reader.readAsDataURL(file);
+      });
+    }
+    const removeCoverBtn = document.getElementById("btn-remove-cover");
+    if (removeCoverBtn) {
+      removeCoverBtn.addEventListener("click", async () => {
+        if (!confirm(I18N.t("profile.removeCover") + "?")) return;
+        try {
+          await api("/api/users/me", { method: "PUT", auth: true, body: { coverPhoto: "" } });
+          router();
+        } catch (err) {
+          alert(err.message);
+        }
       });
     }
     if (profile.isPage) loadSubsRequests();

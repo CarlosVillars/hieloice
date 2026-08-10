@@ -495,19 +495,21 @@ button { cursor: pointer; font-family: inherit; }
   position: relative;
   overflow: hidden;
 }
-.profile-cover-edit-btn {
-  position: absolute;
-  bottom: 10px;
-  right: 10px;
+.profile-cover-controls { position: absolute; top: 10px; right: 10px; z-index: 2; display: flex; gap: 8px; }
+.profile-cover-icon-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   background: rgba(0,0,0,0.55);
   color: #fff;
   border: none;
-  border-radius: 6px;
-  padding: 7px 12px;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.profile-cover-edit-btn:hover { background: rgba(0,0,0,0.75); }
+.profile-cover-icon-btn:hover { background: rgba(0,0,0,0.75); }
+.profile-cover-icon-btn-danger:hover { background: rgba(200,50,40,0.85); }
 .profile-cover-input { display: none; }
 
 .profile-header {
