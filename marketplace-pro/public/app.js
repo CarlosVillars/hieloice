@@ -387,9 +387,21 @@ function renderMarketplaceHome() {
       <h1>${escapeHtml(I18N.t("site.name"))}</h1>
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
     </div>
+    <div class="filters" id="marketplace-search-row">
+      <input type="text" id="marketplace-search-input" placeholder="${I18N.t("home.searchPlaceholder")}" />
+      <button id="marketplace-search-btn">${I18N.t("home.searchBtn")}</button>
+    </div>
     <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
     <div class="category-grid">${categoryCardsHtml()}</div>
   `;
+  const doMarketplaceSearch = () => {
+    const q = document.getElementById("marketplace-search-input").value.trim();
+    location.hash = "#/category/all" + (q ? "?q=" + encodeURIComponent(q) : "");
+  };
+  document.getElementById("marketplace-search-btn").addEventListener("click", doMarketplaceSearch);
+  document.getElementById("marketplace-search-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doMarketplaceSearch();
+  });
   loadAdCarousel();
 }
 
@@ -1361,9 +1373,9 @@ async function renderFriendsPage() {
     <h2 class="section-heading">${I18N.t("friendsPage.title")}</h2>
     <div class="friends-search-tabs">
       <button class="friends-search-tab ${friendsPageTab === "friends" ? "active" : ""}" data-tab="friends">${I18N.t("friendsPage.tabFriends")}</button>
-      <button class="friends-search-tab ${friendsPageTab === "products" ? "active" : ""}" data-tab="products">${I18N.t("friendsPage.tabProducts")}</button>
+      <button class="friends-search-tab ${friendsPageTab === "people" ? "active" : ""}" data-tab="people">${I18N.t("friendsPage.tabPeople")}</button>
     </div>
-    <input type="text" id="friends-search-input" class="friends-search-input" placeholder="${friendsPageTab === "friends" ? I18N.t("friendsPage.searchFriendsPlaceholder") : I18N.t("friendsPage.searchProductsPlaceholder")}" />
+    <input type="text" id="friends-search-input" class="friends-search-input" placeholder="${friendsPageTab === "people" ? I18N.t("friendsPage.searchPeoplePlaceholder") : I18N.t("friendsPage.searchFriendsPlaceholder")}" />
     <div id="friends-page-body"><p>${I18N.t("common.loading")}</p></div>
   `;
 
@@ -1388,34 +1400,14 @@ async function runFriendsPageSearch(q) {
   const body = document.getElementById("friends-page-body");
   if (!body) return;
 
-  if (friendsPageTab === "products") {
+  // "people" tab: search every platform user by name (not just existing
+  // friends), with Add-Friend/Request-Sent/Accept-Decline/Friends actions
+  // straight from the results - the discovery/add-new-people search.
+  if (friendsPageTab === "people") {
     if (!q) {
-      body.innerHTML = `<div class="empty-state">${I18N.t("friendsPage.searchProductsHint")}</div>`;
+      body.innerHTML = `<div class="empty-state">${I18N.t("friendsPage.searchPeopleHint")}</div>`;
       return;
     }
-    body.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
-    const products = await api("/api/products?q=" + encodeURIComponent(q));
-    body.innerHTML = products.length
-      ? `<div class="product-grid">${products
-          .map(
-            (p) => `
-        <a class="product-card" href="#/product/${p.id}">
-          <div class="product-thumb-wrap">
-            ${p.photos && p.photos[0] ? `<img class="product-thumb" src="${p.photos[0]}" alt="" />` : `<div class="product-thumb-empty">\u{1F4E6}</div>`}
-          </div>
-          <div class="product-card-body">
-            <p class="product-title">${escapeHtml(p.title)}</p>
-            <p class="product-price">${fmtPrice(p.price)}</p>
-          </div>
-        </a>`
-          )
-          .join("")}</div>`
-      : `<div class="empty-state">${I18N.t("friendsPage.noProductResults")}</div>`;
-    return;
-  }
-
-  // "friends" tab
-  if (q) {
     body.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
     const users = await api("/api/users/search?q=" + encodeURIComponent(q), { auth: true });
     body.innerHTML = users.length
@@ -1447,6 +1439,41 @@ async function runFriendsPageSearch(q) {
       });
       body.dataset.friendActionsWired = "1";
     }
+    return;
+  }
+
+  // "friends" tab, with a query typed: filter the caller's own friends list
+  // by name client-side (small list, no need for a dedicated endpoint) -
+  // this is a lookup among people you're already connected to, distinct
+  // from the "people" tab's platform-wide discovery search above.
+  if (q) {
+    body.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    const allFriends = await api("/api/friends", { auth: true });
+    const qLower = q.toLowerCase();
+    const matches = allFriends.filter((f) => (f.name || "").toLowerCase().includes(qLower));
+    body.innerHTML = matches.length
+      ? `<div class="friends-grid">${matches
+          .map(
+            (f) => `
+        <div class="friend-card">
+          <a href="#/profile/${f.userId}">
+            ${f.photo ? `<img class="friend-card-photo" src="${f.photo}" />` : `<div class="friend-card-photo-placeholder">${initials(f.name)}</div>`}
+          </a>
+          <div class="friend-card-body">
+            <p class="friend-card-name">${escapeHtml(f.name)}</p>
+            <button class="friend-card-remove" data-uid="${f.userId}">${I18N.t("friends.removeFriend")}</button>
+          </div>
+        </div>`
+          )
+          .join("")}</div>`
+      : `<div class="empty-state">${I18N.t("friendsPage.noFriendResults")}</div>`;
+    body.querySelectorAll(".friend-card-remove").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(I18N.t("friends.confirmRemove"))) return;
+        await api("/api/friends/user/" + btn.dataset.uid, { method: "DELETE", auth: true });
+        runFriendsPageSearch(q);
+      });
+    });
     return;
   }
 
