@@ -1128,7 +1128,15 @@ async function renderPostAd(editId) {
 
   let existing = null;
   if (editId) {
-    existing = await api("/api/products/" + editId);
+    viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    try {
+      existing = await api("/api/products/" + editId);
+    } catch (e) {
+      viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message || "")}</p><p><a href="#/edit/${editId}" id="retry-edit-load">${I18N.t("common.retry") || "Retry"}</a></p>`;
+      const retryLink = document.getElementById("retry-edit-load");
+      if (retryLink) retryLink.addEventListener("click", (ev) => { ev.preventDefault(); renderPostAd(editId); });
+      return;
+    }
     if (!state.user || existing.sellerId !== state.user.id) {
       viewEl.innerHTML = `<p class="form-msg error">Not authorized.</p>`;
       return;
@@ -3788,6 +3796,38 @@ async function registerServiceWorker() {
   }
 }
 
+// Web Push has no way to attach a custom sound file to a system
+// notification, so while the app is open in the foreground (where the OS
+// stays silent for the notification itself) we play our own short two-tone
+// chime for incoming chat messages specifically, so they're recognizable
+// without opening the tab. sw.js posts this message to every open client
+// the moment a push with type:"message" arrives.
+function playMessageChime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const now = ctx.currentTime;
+    [880, 1320].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, now + i * 0.12);
+      gain.gain.linearRampToValueAtTime(0.25, now + i * 0.12 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.12 + 0.3);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + i * 0.12);
+      osc.stop(now + i * 0.12 + 0.32);
+    });
+  } catch (e) {}
+}
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data && event.data.kind === "push-received" && event.data.type === "message") {
+      playMessageChime();
+    }
+  });
+}
+
 function urlBase64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -3845,7 +3885,7 @@ async function renderNotificationSettings() {
     return;
   }
 
-  const prefs = Object.assign({ offers: true, flashSales: true, newProducts: true, reminders: true }, data.prefs || {});
+  const prefs = Object.assign({ offers: true, flashSales: true, newProducts: true, reminders: true, messages: true }, data.prefs || {});
   const followed = data.followedCategories || [];
   const supported = "serviceWorker" in navigator && "PushManager" in window;
 
@@ -3861,6 +3901,7 @@ async function renderNotificationSettings() {
           <span>${I18N.t("notif.enableOnDevice")}</span>
         </label>
         <div id="notif-cats" style="${data.pushEnabled ? "" : "display:none;"}margin-top:14px;">
+          <label class="notif-cat-row"><input type="checkbox" id="notif-messages" ${prefs.messages ? "checked" : ""} /> ${I18N.t("notif.catMessages")}</label>
           <label class="notif-cat-row"><input type="checkbox" id="notif-offers" ${prefs.offers ? "checked" : ""} /> ${I18N.t("notif.catOffers")}</label>
           <label class="notif-cat-row"><input type="checkbox" id="notif-flashSales" ${prefs.flashSales ? "checked" : ""} /> ${I18N.t("notif.catFlashSales")}</label>
           <label class="notif-cat-row"><input type="checkbox" id="notif-newProducts" ${prefs.newProducts ? "checked" : ""} /> ${I18N.t("notif.catNewProducts")}</label>
@@ -3906,6 +3947,7 @@ async function renderNotificationSettings() {
         await disablePushNotifications();
       }
       const newPrefs = {
+        messages: document.getElementById("notif-messages").checked,
         offers: document.getElementById("notif-offers").checked,
         flashSales: document.getElementById("notif-flashSales").checked,
         newProducts: document.getElementById("notif-newProducts").checked,
