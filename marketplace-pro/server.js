@@ -1725,7 +1725,36 @@ async function handleApi(req, res, pathname, query) {
     const q = (query.q || "").trim();
     if (!q) return sendJson(res, 200, []);
     const rows = await db.select("mkt_users", { name: "ilike.*" + enc(q) + "*", select: "id,name,photo", limit: "20" });
-    return sendJson(res, 200, rows.filter((u) => !me || u.id !== me.id).map((u) => ({ userId: u.id, name: u.name, photo: u.photo })));
+    const results = rows.filter((u) => !me || u.id !== me.id);
+
+    // Attach each result's friendship status (none/pending_sent/pending_received/friends)
+    // so the client can render the same Add-Friend / Request-Sent / Accept-Decline /
+    // Friends button used everywhere else, straight from the search results.
+    let friendshipByUser = {};
+    if (me && results.length) {
+      const friendRows = await db.select("mkt_friendships", {
+        or: "(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(me.id) + ")",
+        select: "*",
+      });
+      for (const f of friendRows) {
+        const otherId = f.requester_id === me.id ? f.addressee_id : f.requester_id;
+        if (f.status === "accepted") {
+          friendshipByUser[otherId] = { status: "friends", friendshipId: f.id };
+        } else {
+          friendshipByUser[otherId] = { status: f.requester_id === me.id ? "pending_sent" : "pending_received", friendshipId: f.id };
+        }
+      }
+    }
+    return sendJson(
+      res,
+      200,
+      results.map((u) => ({
+        userId: u.id,
+        name: u.name,
+        photo: u.photo,
+        friendStatus: friendshipByUser[u.id] || { status: "none" },
+      }))
+    );
   }
 
   if (method === "GET" && pathname === "/api/pages/suggested") {
