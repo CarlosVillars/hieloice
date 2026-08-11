@@ -232,7 +232,11 @@ async function getAuthUser(req) {
   const sessions = await db.select("mkt_sessions", { token: "eq." + enc(token), select: "user_id" });
   if (!sessions || !sessions[0]) return null;
   const users = await db.select("mkt_users", { id: "eq." + enc(sessions[0].user_id), select: "*" });
-  return (users && users[0]) || null;
+  const user = (users && users[0]) || null;
+  // Suspended accounts are treated as logged-out for every authenticated
+  // action app-wide (their public listings/profile stay visible to others).
+  if (user && user.suspended) return null;
+  return user;
 }
 
 function publicUser(u) {
@@ -252,7 +256,7 @@ function ownUser(u) {
 
 function toCamelUser(u) {
   if (!u) return u;
-  const { created_at, cover_photo, chat_privacy, is_page, page_category, subscription_mode, ...rest } = u;
+  const { created_at, cover_photo, chat_privacy, is_page, page_category, subscription_mode, suspended_reason, suspended_at, ...rest } = u;
   return {
     ...rest,
     createdAt: created_at,
@@ -261,11 +265,21 @@ function toCamelUser(u) {
     isPage: !!is_page,
     pageCategory: page_category || "",
     subscriptionMode: subscription_mode || "manual",
+    role: u.role || "user",
+    suspendedReason: suspended_reason || "",
+    suspendedAt: suspended_at || null,
   };
 }
 
 function isOwner(user) {
   return !!(user && OWNER_EMAIL && user.email && user.email.toLowerCase() === OWNER_EMAIL);
+}
+
+// Admins/moderators/support staff: role stored on mkt_users.role. The legacy
+// OWNER_EMAIL account is always treated as admin too, even if its role
+// column was never explicitly set.
+function isAdmin(user) {
+  return !!(user && (user.role === "admin" || isOwner(user)));
 }
 
 async function isFriendsWith(userIdA, userIdB) {
@@ -600,6 +614,9 @@ async function handleApi(req, res, pathname, query) {
     const user = users && users[0];
     if (!user || !verifyPassword(password || "", user.password_hash)) {
       return sendJson(res, 401, { error: "Invalid email or password" });
+    }
+    if (user.suspended) {
+      return sendJson(res, 403, { error: "This account has been suspended." + (user.suspended_reason ? " Reason: " + user.suspended_reason : "") });
     }
     const token = crypto.randomBytes(24).toString("hex");
     await db.insert("mkt_sessions", { token, user_id: user.id, created_at: Date.now() });
@@ -2747,6 +2764,223 @@ async function handleApi(req, res, pathname, query) {
     if (body.sortOrder !== undefined) patch.sort_order = Number(body.sortOrder) || 0;
     const updated = await db.update("mkt_ads", { id: "eq." + enc(adMatch[1]) }, patch);
     return sendJson(res, 200, adOut(updated[0]));
+  }
+
+  // ---- ADMIN (role === 'admin' only, or the legacy OWNER_EMAIL account) ----
+  if (pathname.startsWith("/api/admin/")) {
+    const me = await getAuthUser(req);
+    if (!isAdmin(me)) return sendJson(res, 403, { error: "Not authorized" });
+
+    // GET /api/admin/users?q=&suspended=true&flagged=true
+    if (method === "GET" && pathname === "/api/admin/users") {
+      const q = String(query.q || "").trim();
+      const params = {
+        select: "id,name,email,phone,photo,role,suspended,suspended_reason,flagged,created_at",
+        order: "created_at.desc",
+        limit: "50",
+      };
+      if (q) params.or = "(name.ilike.*" + enc(q) + "*,email.ilike.*" + enc(q) + "*)";
+      if (query.suspended === "true") params.suspended = "eq.true";
+      if (query.flagged === "true") params.flagged = "eq.true";
+      const rows = await db.select("mkt_users", params);
+      return sendJson(
+        res,
+        200,
+        (rows || []).map((u) => ({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          phone: u.phone || "",
+          photo: u.photo || null,
+          role: u.role || "user",
+          suspended: !!u.suspended,
+          suspendedReason: u.suspended_reason || "",
+          flagged: !!u.flagged,
+          createdAt: u.created_at,
+        }))
+      );
+    }
+
+    // PUT /api/admin/users/:id  { role?, suspended?, suspendedReason? }
+    const adminUserMatch = pathname.match(/^\/api\/admin\/users\/([a-zA-Z0-9]+)$/);
+    if (method === "PUT" && adminUserMatch) {
+      const targetId = adminUserMatch[1];
+      const body = await readBody(req);
+      const patch = {};
+      if (body.role !== undefined) {
+        if (!["user", "moderator", "support", "admin"].includes(body.role)) {
+          return sendJson(res, 400, { error: "Invalid role" });
+        }
+        if (targetId === me.id && body.role !== "admin") {
+          return sendJson(res, 400, { error: "You cannot remove your own admin role" });
+        }
+        patch.role = body.role;
+      }
+      if (body.suspended !== undefined) {
+        if (targetId === me.id && body.suspended) {
+          return sendJson(res, 400, { error: "You cannot suspend your own account" });
+        }
+        patch.suspended = !!body.suspended;
+        patch.suspended_reason = body.suspended ? String(body.suspendedReason || "").slice(0, 300) : null;
+        patch.suspended_at = body.suspended ? Date.now() : null;
+      }
+      if (!Object.keys(patch).length) return sendJson(res, 400, { error: "Nothing to update" });
+      const updated = await db.update("mkt_users", { id: "eq." + enc(targetId) }, patch);
+      if (!updated || !updated[0]) return sendJson(res, 404, { error: "User not found" });
+      const u = updated[0];
+      return sendJson(res, 200, {
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        role: u.role || "user",
+        suspended: !!u.suspended,
+        suspendedReason: u.suspended_reason || "",
+      });
+    }
+
+    // GET /api/admin/products?q=&status=&flagged=true
+    if (method === "GET" && pathname === "/api/admin/products") {
+      const q = String(query.q || "").trim();
+      const params = {
+        select: "id,title,price,category,status,flagged,seller_id,created_at",
+        order: "created_at.desc",
+        limit: "50",
+      };
+      if (q) params.title = "ilike.*" + enc(q) + "*";
+      if (query.status) params.status = "eq." + enc(query.status);
+      if (query.flagged === "true") params.flagged = "eq.true";
+      const rows = await db.select("mkt_products", params);
+      const sellerIds = [...new Set((rows || []).map((r) => r.seller_id))];
+      let sellers = [];
+      if (sellerIds.length) {
+        sellers = await db.select("mkt_users", { id: "in.(" + sellerIds.map(enc).join(",") + ")", select: "id,name,email" });
+      }
+      const sellerMap = {};
+      (sellers || []).forEach((s) => {
+        sellerMap[s.id] = s;
+      });
+      return sendJson(
+        res,
+        200,
+        (rows || []).map((p) => ({
+          id: p.id,
+          title: p.title,
+          price: p.price,
+          category: p.category,
+          status: p.status,
+          flagged: !!p.flagged,
+          createdAt: p.created_at,
+          sellerId: p.seller_id,
+          sellerName: sellerMap[p.seller_id] ? sellerMap[p.seller_id].name : "Unknown",
+          sellerEmail: sellerMap[p.seller_id] ? sellerMap[p.seller_id].email : "",
+        }))
+      );
+    }
+
+    // PUT/DELETE /api/admin/products/:id (bypasses the ownership check regular sellers are subject to)
+    const adminProductMatch = pathname.match(/^\/api\/admin\/products\/([a-zA-Z0-9]+)$/);
+    if ((method === "PUT" || method === "DELETE") && adminProductMatch) {
+      const products = await db.select("mkt_products", { id: "eq." + enc(adminProductMatch[1]), select: "*" });
+      const p = products && products[0];
+      if (!p) return sendJson(res, 404, { error: "Product not found" });
+
+      if (method === "DELETE") {
+        await db.remove("mkt_products", { id: "eq." + enc(p.id) });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      const body = await readBody(req);
+      const patch = {};
+      if (body.title !== undefined) patch.title = String(body.title).trim().slice(0, 140);
+      if (body.description !== undefined) patch.description = String(body.description).slice(0, 3000);
+      if (body.price !== undefined) patch.price = Number(body.price) || 0;
+      if (body.category !== undefined && CATEGORIES.includes(body.category)) patch.category = body.category;
+      if (body.status !== undefined && ["active", "reserved", "sold"].includes(body.status)) {
+        patch.status = body.status;
+        patch.status_changed_at = Date.now();
+      }
+      if (body.flagged !== undefined) patch.flagged = !!body.flagged;
+      const updated = await db.update("mkt_products", { id: "eq." + enc(p.id) }, patch);
+      return sendJson(res, 200, productOut(updated[0]));
+    }
+
+    // GET /api/admin/reports?status=open
+    if (method === "GET" && pathname === "/api/admin/reports") {
+      const params = { select: "*", order: "created_at.desc", limit: "50" };
+      params.status = "eq." + enc(query.status || "open");
+      const rows = await db.select("mkt_reports", params);
+
+      const reporterIds = [...new Set((rows || []).map((r) => r.reporter_user_id))];
+      let reporters = [];
+      if (reporterIds.length) {
+        reporters = await db.select("mkt_users", { id: "in.(" + reporterIds.map(enc).join(",") + ")", select: "id,name" });
+      }
+      const reporterMap = {};
+      (reporters || []).forEach((u) => {
+        reporterMap[u.id] = u.name;
+      });
+
+      const productIds = [...new Set((rows || []).filter((r) => r.target_type === "product").map((r) => r.target_id))];
+      const userTargetIds = [...new Set((rows || []).filter((r) => r.target_type === "user").map((r) => r.target_id))];
+      let targetProducts = [];
+      let targetUsers = [];
+      if (productIds.length) {
+        targetProducts = await db.select("mkt_products", { id: "in.(" + productIds.map(enc).join(",") + ")", select: "id,title" });
+      }
+      if (userTargetIds.length) {
+        targetUsers = await db.select("mkt_users", { id: "in.(" + userTargetIds.map(enc).join(",") + ")", select: "id,name" });
+      }
+      const productMap = {};
+      (targetProducts || []).forEach((p) => {
+        productMap[p.id] = p.title;
+      });
+      const userMap = {};
+      (targetUsers || []).forEach((u) => {
+        userMap[u.id] = u.name;
+      });
+
+      return sendJson(
+        res,
+        200,
+        (rows || []).map((r) => ({
+          id: r.id,
+          reporterUserId: r.reporter_user_id,
+          reporterName: reporterMap[r.reporter_user_id] || "Unknown",
+          targetType: r.target_type,
+          targetId: r.target_id,
+          targetLabel:
+            r.target_type === "product"
+              ? productMap[r.target_id] || "(deleted listing)"
+              : userMap[r.target_id] || "(deleted user)",
+          reason: r.reason,
+          description: r.description || "",
+          status: r.status,
+          resolutionNote: r.resolution_note || "",
+          createdAt: r.created_at,
+          resolvedAt: r.resolved_at || null,
+        }))
+      );
+    }
+
+    // PUT /api/admin/reports/:id  { status: 'resolved'|'dismissed'|'open', resolutionNote? }
+    const adminReportMatch = pathname.match(/^\/api\/admin\/reports\/([a-zA-Z0-9]+)$/);
+    if (method === "PUT" && adminReportMatch) {
+      const body = await readBody(req);
+      if (!["resolved", "dismissed", "open"].includes(body.status)) {
+        return sendJson(res, 400, { error: "Invalid status" });
+      }
+      const patch = {
+        status: body.status,
+        resolution_note: String(body.resolutionNote || "").slice(0, 500),
+        resolved_at: body.status === "open" ? null : Date.now(),
+        resolved_by: body.status === "open" ? null : me.id,
+      };
+      const updated = await db.update("mkt_reports", { id: "eq." + enc(adminReportMatch[1]) }, patch);
+      if (!updated || !updated[0]) return sendJson(res, 404, { error: "Report not found" });
+      return sendJson(res, 200, { ok: true });
+    }
+
+    return sendJson(res, 404, { error: "Route not found" });
   }
 
   return sendJson(res, 404, { error: "Route not found" });
