@@ -113,6 +113,11 @@ function updateNavUI() {
   document.getElementById("nav-logout").style.display = loggedIn ? "inline" : "none";
   document.getElementById("nav-profile").style.display = loggedIn ? "inline" : "none";
   document.getElementById("nav-messages").style.display = loggedIn ? "inline" : "none";
+  const navAdmin = document.getElementById("nav-admin");
+  if (navAdmin) {
+    const canAdmin = loggedIn && state.user && (state.user.role === "admin" || state.user.isOwner);
+    navAdmin.style.display = canAdmin ? "inline" : "none";
+  }
   const iconNav = document.getElementById("icon-nav");
   if (iconNav) iconNav.style.display = loggedIn ? "flex" : "none";
   if (!loggedIn) {
@@ -346,6 +351,8 @@ async function router() {
     if (parts[0] === "intl" && parts[1] === "mine") return renderIntlMyCompanies();
     if (parts[0] === "intl" && parts[1] === "admin") return renderIntlAdminQueue();
     if (parts[0] === "intl") return renderIntlHome();
+    if (parts[0] === "admin" && parts[1]) return renderAdminPanel(parts[1]);
+    if (parts[0] === "admin") return renderAdminPanel("reports");
     viewEl.innerHTML = "<p>Not found.</p>";
   } catch (e) {
     viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
@@ -4652,6 +4659,257 @@ async function renderIntlAdminQueue() {
       }
     });
   });
+}
+
+// ---------------- Admin panel ----------------
+
+function isAdminUser() {
+  return !!(state.user && (state.user.role === "admin" || state.user.isOwner));
+}
+
+function adminTabsMarkup(active) {
+  const tabs = [
+    { key: "reports", label: I18N.t("admin.tabReports") },
+    { key: "products", label: I18N.t("admin.tabProducts") },
+    { key: "users", label: I18N.t("admin.tabUsers") },
+  ];
+  return `<div class="admin-tabs">${tabs
+    .map((t) => `<a href="#/admin/${t.key}" class="admin-tab${active === t.key ? " active" : ""}">${t.label}</a>`)
+    .join("")}</div>`;
+}
+
+async function renderAdminPanel(section) {
+  section = section || "reports";
+  if (!isAdminUser()) {
+    viewEl.innerHTML = `<p class="form-msg error">${I18N.t("admin.notAuthorized")}</p>`;
+    return;
+  }
+  viewEl.innerHTML = `
+    <h2 class="section-heading">${I18N.t("admin.title")}</h2>
+    ${adminTabsMarkup(section)}
+    <div id="admin-content"><p>${I18N.t("common.loading")}</p></div>
+  `;
+  if (section === "users") return renderAdminUsers();
+  if (section === "products") return renderAdminProducts();
+  return renderAdminReports();
+}
+
+async function renderAdminReports() {
+  const content = document.getElementById("admin-content");
+  let reports;
+  try {
+    reports = await api("/api/admin/reports?status=open", { auth: true });
+  } catch (e) {
+    content.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  content.innerHTML = reports.length
+    ? `<div class="intl-admin-list">${reports
+        .map(
+          (r) => `
+      <div class="intl-admin-row">
+        <div class="intl-card-head">
+          <span class="intl-role-tag">${escapeHtml(r.targetType)}</span>
+          <span class="intl-role-tag">${escapeHtml(r.reason)}</span>
+        </div>
+        <p class="intl-card-name">${escapeHtml(r.targetLabel)}</p>
+        <p class="intl-card-meta">${I18N.t("admin.reportedBy")}: ${escapeHtml(r.reporterName)} &middot; ${fmtDate(r.createdAt)}</p>
+        ${r.description ? `<p style="font-size:13px;color:#555;">${escapeHtml(r.description)}</p>` : ""}
+        <div class="form-group">
+          <label>${I18N.t("admin.resolutionNote")}</label>
+          <textarea rows="2" data-note="${r.id}"></textarea>
+        </div>
+        <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-primary" data-resolve="${r.id}">${I18N.t("admin.resolve")}</button>
+          <button class="btn" data-dismiss="${r.id}">${I18N.t("admin.dismiss")}</button>
+          <a class="btn" href="#/${r.targetType === "product" ? "product" : "profile"}/${r.targetId}" target="_blank">${I18N.t("admin.viewTarget")}</a>
+        </div>
+      </div>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("admin.reportsEmpty")}</div>`;
+
+  async function setReportStatus(id, status) {
+    const note = document.querySelector(`[data-note="${id}"]`);
+    try {
+      await api("/api/admin/reports/" + id, { method: "PUT", auth: true, body: { status, resolutionNote: note ? note.value : "" } });
+      renderAdminReports();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+  document.querySelectorAll("[data-resolve]").forEach((btn) => {
+    btn.addEventListener("click", () => setReportStatus(btn.dataset.resolve, "resolved"));
+  });
+  document.querySelectorAll("[data-dismiss]").forEach((btn) => {
+    btn.addEventListener("click", () => setReportStatus(btn.dataset.dismiss, "dismissed"));
+  });
+}
+
+async function renderAdminProducts() {
+  const content = document.getElementById("admin-content");
+  content.innerHTML = `
+    <div class="admin-search-bar">
+      <input type="text" id="admin-product-search" placeholder="${I18N.t("admin.searchProductsPlaceholder")}" />
+      <button class="btn" id="admin-product-search-btn">${I18N.t("common.search")}</button>
+    </div>
+    <div id="admin-products-list"><p>${I18N.t("common.loading")}</p></div>
+  `;
+
+  async function load(q) {
+    const list = document.getElementById("admin-products-list");
+    list.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    let rows;
+    try {
+      rows = await api("/api/admin/products" + (q ? "?q=" + encodeURIComponent(q) : ""), { auth: true });
+    } catch (e) {
+      list.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+      return;
+    }
+    list.innerHTML = rows.length
+      ? `<div class="intl-admin-list">${rows
+          .map(
+            (p) => `
+        <div class="intl-admin-row">
+          <div class="intl-card-head">
+            <span class="intl-role-tag">${escapeHtml(p.category)}</span>
+            <span class="intl-role-tag">${escapeHtml(p.status)}</span>
+            ${p.flagged ? `<span class="intl-role-tag admin-badge-danger">${I18N.t("admin.flagged")}</span>` : ""}
+          </div>
+          <p class="intl-card-name">${escapeHtml(p.title)} &middot; ${fmtPrice(p.price)}</p>
+          <p class="intl-card-meta">${I18N.t("admin.seller")}: ${escapeHtml(p.sellerName)} (${escapeHtml(p.sellerEmail)})</p>
+          <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+            <a class="btn" href="#/product/${p.id}" target="_blank">${I18N.t("admin.viewTarget")}</a>
+            <a class="btn" href="#/edit/${p.id}" target="_blank">${I18N.t("product.editListing")}</a>
+            <button class="btn btn-danger" data-delete-product="${p.id}">${I18N.t("common.delete")}</button>
+          </div>
+        </div>`
+          )
+          .join("")}</div>`
+      : `<div class="empty-state">${I18N.t("admin.noResults")}</div>`;
+
+    document.querySelectorAll("[data-delete-product]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(I18N.t("admin.confirmDeleteProduct"))) return;
+        try {
+          await api("/api/admin/products/" + btn.dataset.deleteProduct, { method: "DELETE", auth: true });
+          load(document.getElementById("admin-product-search").value.trim());
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    });
+  }
+
+  document.getElementById("admin-product-search-btn").addEventListener("click", () => {
+    load(document.getElementById("admin-product-search").value.trim());
+  });
+  document.getElementById("admin-product-search").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") load(e.target.value.trim());
+  });
+  load("");
+}
+
+async function renderAdminUsers() {
+  const content = document.getElementById("admin-content");
+  content.innerHTML = `
+    <div class="admin-search-bar">
+      <input type="text" id="admin-user-search" placeholder="${I18N.t("admin.searchUsersPlaceholder")}" />
+      <button class="btn" id="admin-user-search-btn">${I18N.t("common.search")}</button>
+    </div>
+    <div id="admin-users-list"><p>${I18N.t("common.loading")}</p></div>
+  `;
+
+  async function load(q) {
+    const list = document.getElementById("admin-users-list");
+    list.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    let rows;
+    try {
+      rows = await api("/api/admin/users" + (q ? "?q=" + encodeURIComponent(q) : ""), { auth: true });
+    } catch (e) {
+      list.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+      return;
+    }
+    list.innerHTML = rows.length
+      ? `<div class="intl-admin-list">${rows
+          .map(
+            (u) => `
+        <div class="intl-admin-row">
+          <div class="intl-card-head">
+            <span class="intl-role-tag">${escapeHtml(u.role)}</span>
+            ${u.suspended ? `<span class="intl-role-tag admin-badge-danger">${I18N.t("admin.suspended")}</span>` : ""}
+            ${u.flagged ? `<span class="intl-role-tag admin-badge-warn">${I18N.t("admin.flagged")}</span>` : ""}
+          </div>
+          <p class="intl-card-name">${escapeHtml(u.name)}</p>
+          <p class="intl-card-meta">${escapeHtml(u.email)}${u.phone ? " &middot; " + escapeHtml(u.phone) : ""}</p>
+          ${u.suspended && u.suspendedReason ? `<p style="font-size:13px;color:#9c1f1f;">${I18N.t("admin.suspendedReason")}: ${escapeHtml(u.suspendedReason)}</p>` : ""}
+          <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+            <div class="form-group" style="min-width:140px;">
+              <label>${I18N.t("admin.role")}</label>
+              <select data-role="${u.id}">
+                <option value="user"${u.role === "user" ? " selected" : ""}>user</option>
+                <option value="support"${u.role === "support" ? " selected" : ""}>support</option>
+                <option value="moderator"${u.role === "moderator" ? " selected" : ""}>moderator</option>
+                <option value="admin"${u.role === "admin" ? " selected" : ""}>admin</option>
+              </select>
+            </div>
+            <button class="btn btn-primary" data-save-role="${u.id}">${I18N.t("admin.saveRole")}</button>
+            <a class="btn" href="#/profile/${u.id}" target="_blank">${I18N.t("admin.viewTarget")}</a>
+            ${
+              u.suspended
+                ? `<button class="btn" data-reactivate="${u.id}">${I18N.t("admin.reactivate")}</button>`
+                : `<button class="btn btn-danger" data-suspend="${u.id}">${I18N.t("admin.suspend")}</button>`
+            }
+          </div>
+        </div>`
+          )
+          .join("")}</div>`
+      : `<div class="empty-state">${I18N.t("admin.noResults")}</div>`;
+
+    document.querySelectorAll("[data-save-role]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.saveRole;
+        const role = document.querySelector(`[data-role="${id}"]`).value;
+        try {
+          await api("/api/admin/users/" + id, { method: "PUT", auth: true, body: { role } });
+          load(document.getElementById("admin-user-search").value.trim());
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    });
+    document.querySelectorAll("[data-suspend]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.suspend;
+        const reason = prompt(I18N.t("admin.suspendReasonPrompt")) || "";
+        try {
+          await api("/api/admin/users/" + id, { method: "PUT", auth: true, body: { suspended: true, suspendedReason: reason } });
+          load(document.getElementById("admin-user-search").value.trim());
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    });
+    document.querySelectorAll("[data-reactivate]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.reactivate;
+        try {
+          await api("/api/admin/users/" + id, { method: "PUT", auth: true, body: { suspended: false } });
+          load(document.getElementById("admin-user-search").value.trim());
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    });
+  }
+
+  document.getElementById("admin-user-search-btn").addEventListener("click", () => {
+    load(document.getElementById("admin-user-search").value.trim());
+  });
+  document.getElementById("admin-user-search").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") load(e.target.value.trim());
+  });
+  load("");
 }
 
 // ---------------- Init ----------------

@@ -924,6 +924,15 @@ button { cursor: pointer; font-family: inherit; }
 .intl-admin-list { display: flex; flex-direction: column; gap: 14px; }
 .intl-admin-row { background: #fff; border: 1px solid #e3e0d8; border-radius: 10px; padding: 16px; }
 
+/* ---- Admin panel ---- */
+.admin-tabs { display: flex; gap: 6px; margin: 10px 0 18px; border-bottom: 1px solid #e3e0d8; }
+.admin-tab { padding: 8px 14px; font-size: 14px; font-weight: 600; color: #666; text-decoration: none; border-bottom: 2px solid transparent; }
+.admin-tab.active { color: #0f3d2e; border-bottom-color: #0f3d2e; }
+.admin-search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+.admin-search-bar input { flex: 1; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; }
+.admin-badge-danger { background: #fbe2e2 !important; color: #9c1f1f !important; }
+.admin-badge-warn { background: #fff3cd !important; color: #7a5b00 !important; }
+
 /* ---- Notification preferences panel ---- */
 .notif-master-row { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; cursor: pointer; }
 .notif-master-row input { width: 18px; height: 18px; }
