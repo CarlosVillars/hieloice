@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>HieloIce - Marketplace</title>
+<link rel="icon" type="image/png" href="icon.png" />
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0f3d2e" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="HieloIce" />
+<link rel="apple-touch-icon" href="icon.png" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-top-row">
+        <a href="#/" class="brand" id="brand-link">
+          <img src="icon.png" alt="HieloIce" class="brand-logo-img" />
+          <span id="brand-name">HieloIce</span>
+        </a>
+        <div class="topbar-menu-wrap" id="topbar-menu-wrap">
+          <button id="topbar-menu-btn" class="topbar-menu-btn" aria-label="More options" aria-expanded="false">&#8943;</button>
+          <div class="topbar-menu-dropdown" id="topbar-menu-dropdown" style="display:none;">
+            <div class="lang-toggle">
+              <button id="lang-en" class="lang-btn active">EN</button>
+              <button id="lang-es" class="lang-btn">ES</button>
+            </div>
+            <a href="#/admin" id="nav-admin" class="topbar-menu-logout" style="display:none;">Admin</a>
+            <button id="nav-logout" class="topbar-menu-logout" style="display:none;">Log Out</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="topbar-search">
+        <input type="text" id="global-search" placeholder="Search products..." />
+        <button id="global-search-btn">🔍</button>
+      </div>
+
+      <nav class="topbar-nav">
+        <a href="#/profile" id="nav-profile" class="nav-link">Profile</a>
+        <a href="#/messages" id="nav-messages" class="nav-link">Messages</a>
+        <a href="#/post" id="nav-post" class="nav-link nav-post-btn">Post an Ad</a>
+        <a href="#/login" id="nav-login" class="nav-link">Log In</a>
+        <a href="#/register" id="nav-register" class="nav-link">Sign Up</a>
+      </nav>
+    </div>
+  </header>
+
+  <nav class="icon-nav" id="icon-nav" style="display:none;">
+    <a href="#/" class="icon-nav-btn" id="icon-nav-home">
+      <span class="icon-nav-emoji">🏠</span><span class="icon-nav-label" id="icon-nav-home-label">Home</span>
+    </a>
+    <a href="#/friends" class="icon-nav-btn" id="icon-nav-friends">
+      <span class="icon-nav-emoji">👥</span><span class="icon-nav-label" id="icon-nav-friends-label">Friends</span>
+    </a>
+    <a href="#/shorts" class="icon-nav-btn icon-nav-btn-center" id="icon-nav-shorts">
+      <svg class="icon-nav-icecube" viewBox="0 0 24 24" width="27" height="27" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="iceCubeGrad" x1="0" y1="0" x2="0.7" y2="1">
+            <stop offset="0%" stop-color="#f2fbfd" />
+            <stop offset="55%" stop-color="#bfe7f5" />
+            <stop offset="100%" stop-color="#8fd0ea" />
+          </linearGradient>
+        </defs>
+        <polygon points="12,1.5 22,7 22,17 12,22.5 2,17 2,7" fill="url(#iceCubeGrad)" stroke="#5fb8dc" stroke-width="0.7" stroke-linejoin="round" />
+        <polygon points="12,1.5 22,7 12,12.5 2,7" fill="#ffffff" fill-opacity="0.55" />
+        <polygon points="12,12.5 22,7 22,17 12,22.5" fill="#0f3d2e" fill-opacity="0.12" />
+        <line x1="12" y1="1.5" x2="12" y2="22.5" stroke="#ffffff" stroke-opacity="0.6" stroke-width="0.5" />
+        <line x1="12" y1="12.5" x2="4.5" y2="8.2" stroke="#ffffff" stroke-opacity="0.5" stroke-width="0.4" />
+      </svg>
+      <span class="icon-nav-label" id="icon-nav-shorts-label">Moments</span>
+    </a>
+    <div class="icon-nav-dropdown-wrap">
+      <button class="icon-nav-btn icon-nav-btn-plain" id="icon-nav-create">
+        <span class="icon-nav-create-plus">+</span><span class="icon-nav-label" id="icon-nav-create-label">Create</span>
+      </button>
+      <div class="icon-nav-dropdown" id="icon-nav-create-dropdown" style="display:none;">
+        <a href="#" id="icon-nav-create-moment">📸 <span id="icon-nav-create-moment-label">Moment / Photo</span></a>
+        <a href="#/post" id="icon-nav-create-product">🛒 <span id="icon-nav-create-product-label">Product</span></a>
+      </div>
+    </div>
+    <div class="icon-nav-dropdown-wrap">
+      <button class="icon-nav-btn icon-nav-btn-plain" id="icon-nav-marketplace">
+        <span class="icon-nav-emoji">🛒</span><span class="icon-nav-label" id="icon-nav-marketplace-label">Marketplace</span>
+      </button>
+      <div class="icon-nav-dropdown" id="icon-nav-marketplace-dropdown" style="display:none;">
+        <a href="#/marketplace" id="icon-nav-dropdown-marketplace">🛒 Marketplace</a>
+        <a href="#/intl" id="icon-nav-dropdown-intl">🌎 International</a>
+        <a href="#/groups" id="icon-nav-dropdown-groups">💬 Communities</a>
+      </div>
+    </div>
+    <a href="#/notifications" class="icon-nav-btn" id="icon-nav-notifications">
+      <span class="icon-nav-emoji">🔔</span><span class="icon-nav-label" id="icon-nav-notifications-label">Notifications</span>
+      <span class="icon-nav-badge" id="icon-nav-badge" style="display:none;"></span>
+    </a>
+  </nav>
+
+  <main id="view" class="view"></main>
+
+  <footer class="site-footer">
+    <div class="site-footer-inner">
+      <p id="footer-social-label" class="footer-social-label">Follow us</p>
+      <div class="footer-social" id="footer-social">
+        <a href="#" id="social-facebook" class="footer-social-link" title="Facebook"><img src="icon-social-facebook.svg" alt="Facebook" loading="lazy"></a>
+        <a href="#" id="social-instagram" class="footer-social-link" title="Instagram"><img src="icon-social-instagram.svg" alt="Instagram" loading="lazy"></a>
+        <a href="#" id="social-whatsapp" class="footer-social-link" title="WhatsApp"><img src="icon-social-whatsapp.svg" alt="WhatsApp" loading="lazy"></a>
+        <a href="#" id="social-youtube" class="footer-social-link" title="YouTube"><img src="icon-social-youtube.svg" alt="YouTube" loading="lazy"></a>
+        <a href="#" id="social-tiktok" class="footer-social-link" title="TikTok"><img src="icon-social-tiktok.svg" alt="TikTok" loading="lazy"></a>
+        <a href="#" id="social-reddit" class="footer-social-link" title="Reddit"><img src="icon-social-reddit.svg" alt="Reddit" loading="lazy"></a>
+      </div>
+      <a href="#/terms" id="footer-terms">Terms &amp; Conditions</a>
+      <span class="footer-dot">&middot;</span>
+      <a href="#/privacy" id="footer-privacy">Privacy Policy</a>
+      <span class="footer-dot">&middot;</span>
+      <a href="#/report-bug" id="footer-bug">Report a Bug</a>
+      <span class="footer-dot">&middot;</span>
+      <a href="mailto:info@hieloice.com" id="footer-contact">Contact</a>
+      <p id="footer-rights" class="footer-rights">&copy; 2026 HieloIce. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <script src="i18n.js"></script>
+  <script src="legal.js"></script>
+  <script src="chatbot.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
