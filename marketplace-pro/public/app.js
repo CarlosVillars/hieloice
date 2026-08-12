@@ -3521,6 +3521,7 @@ async function renderProfile(userId) {
 
   let friendStatus = null;
   let followStatus = null;
+  let isBlocked = false;
   if (state.token && !isMe) {
     try {
       friendStatus = await api("/api/friends/status/" + userId, { auth: true });
@@ -3530,6 +3531,10 @@ async function renderProfile(userId) {
         followStatus = await api("/api/follow/status/" + userId, { auth: true });
       } catch (e) {}
     }
+    try {
+      const bs = await api("/api/users/" + userId + "/block-status", { auth: true });
+      isBlocked = !!bs.blocked;
+    } catch (e) {}
   }
 
   const aboutRows = [
@@ -3574,9 +3579,10 @@ async function renderProfile(userId) {
         <div class="profile-actions" id="profile-actions">
           ${isMe ? `<button class="btn btn-outline" id="btn-edit-profile">${I18N.t("profile.editProfile")}</button>` : ""}
           ${isMe ? `<a class="btn btn-gold" href="#/post">${I18N.t("profile.postNewListing")}</a>` : ""}
-          ${!isMe && profile.isPage ? pageFollowMarkup(followStatus) : ""}
-          ${!isMe ? friendActionMarkup(friendStatus) : ""}
-          ${!isMe && state.token ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}
+          ${!isMe && profile.isPage && !isBlocked ? pageFollowMarkup(followStatus) : ""}
+          ${!isMe && !isBlocked ? friendActionMarkup(friendStatus) : ""}
+          ${!isMe && state.token && !isBlocked ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}
+          ${!isMe && state.token ? `<button class="btn btn-outline" id="btn-block-user" data-blocked="${isBlocked ? "1" : "0"}">${isBlocked ? I18N.t("profile.unblockUser") : I18N.t("profile.blockUser")}</button>` : ""}
         </div>
       </div>
     </div>
@@ -3617,6 +3623,7 @@ async function renderProfile(userId) {
         ${isMe ? `<button class="tab-btn" data-tab="friends">${I18N.t("profile.friendsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="requests">${I18N.t("profile.requestsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="saved">${I18N.t("profile.savedTab")}</button>` : ""}
+        ${isMe ? `<button class="tab-btn" data-tab="blocked">${I18N.t("profile.blockedTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="offers">${I18N.t("profile.myOffers")}</button>` : ""}
         ${isMe && state.token ? `<button class="tab-btn" data-tab="notifications">${I18N.t("notif.tabTitle")}</button>` : ""}
         ${isMe && state.user && state.user.isOwner ? `<button class="tab-btn" data-tab="ads">${I18N.t("ads.manageAds")}</button>` : ""}
@@ -3683,6 +3690,7 @@ async function renderProfile(userId) {
       ${isMe ? `<div id="tab-friends" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-requests" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-saved" style="display:none;"></div>` : ""}
+      ${isMe ? `<div id="tab-blocked" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-offers" style="display:none;"></div>` : ""}
       ${isMe && state.token ? `<div id="tab-notifications" style="display:none;"></div>` : ""}
       ${isMe && state.user && state.user.isOwner ? `<div id="tab-ads" style="display:none;"></div>` : ""}
@@ -3696,13 +3704,14 @@ async function renderProfile(userId) {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "photos", "reviews", "friends", "requests", "saved", "offers", "notifications", "ads"].forEach((t) => {
+      ["listings", "photos", "reviews", "friends", "requests", "saved", "blocked", "offers", "notifications", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
       if (btn.dataset.tab === "friends" && isMe) await renderFriendsTab();
       if (btn.dataset.tab === "requests" && isMe) await renderRequestsTab();
       if (btn.dataset.tab === "saved" && isMe) await renderSavedTab();
+      if (btn.dataset.tab === "blocked" && isMe) await renderBlockedTab();
       if (btn.dataset.tab === "offers" && isMe) await renderMyOffers();
       if (btn.dataset.tab === "notifications" && isMe && state.token) await renderNotificationSettings();
       if (btn.dataset.tab === "ads" && isMe && state.user && state.user.isOwner) await renderAdsManager();
@@ -3757,6 +3766,21 @@ async function renderProfile(userId) {
       reportUserLink.addEventListener("click", (e) => {
         e.preventDefault();
         openReportModal("user", profile.id);
+      });
+    }
+
+    const blockBtn = document.getElementById("btn-block-user");
+    if (blockBtn) {
+      blockBtn.addEventListener("click", async () => {
+        const currentlyBlocked = blockBtn.dataset.blocked === "1";
+        const confirmMsg = currentlyBlocked ? I18N.t("profile.confirmUnblock") : I18N.t("profile.confirmBlock");
+        if (!confirm(confirmMsg)) return;
+        try {
+          await api("/api/users/" + profile.id + (currentlyBlocked ? "/unblock" : "/block"), { method: "POST", auth: true });
+          router();
+        } catch (err) {
+          alert(err.message);
+        }
       });
     }
 
@@ -4034,6 +4058,41 @@ async function renderSavedTab() {
     </div>`
     )
     .join("");
+}
+
+async function renderBlockedTab() {
+  const el = document.getElementById("tab-blocked");
+  if (!el) return;
+  el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let items = [];
+  try {
+    items = await api("/api/users/blocked", { auth: true });
+  } catch (e) {}
+  if (!items.length) {
+    el.innerHTML = `<div class="empty-state">${I18N.t("profile.blockedEmpty")}</div>`;
+    return;
+  }
+  el.innerHTML = items
+    .map(
+      (u) => `
+    <div class="blocked-user-row" data-user-id="${u.userId}">
+      ${u.photo ? `<img class="blocked-user-avatar" src="${u.photo}" />` : `<div class="blocked-user-avatar-placeholder">${initials(u.name)}</div>`}
+      <span class="blocked-user-name">${escapeHtml(u.name)}</span>
+      <button class="btn btn-outline btn-sm btn-unblock" data-user-id="${u.userId}">${I18N.t("profile.unblockUser")}</button>
+    </div>`
+    )
+    .join("");
+  el.querySelectorAll(".btn-unblock").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("profile.confirmUnblock"))) return;
+      try {
+        await api("/api/users/" + btn.dataset.userId + "/unblock", { method: "POST", auth: true });
+        await renderBlockedTab();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
 }
 
 async function renderAdsManager() {

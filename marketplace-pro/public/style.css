@@ -548,6 +548,12 @@ button { cursor: pointer; font-family: inherit; }
 .review-date { font-size: 11px; color: #999; margin-left: auto; }
 .review-comment { font-size: 13px; color: #444; }
 
+.blocked-user-row { display: flex; align-items: center; gap: 10px; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.blocked-user-avatar, .blocked-user-avatar-placeholder { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.blocked-user-avatar-placeholder { background: #0f3d2e; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.blocked-user-name { flex: 1; font-weight: 600; font-size: 14px; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+
 /* ---- Photo gallery (profile Photos tab) ---- */
 .photo-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .photo-gallery-item { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #eee; }
