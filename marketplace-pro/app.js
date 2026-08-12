@@ -337,6 +337,7 @@ async function router() {
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
     if (parts[0] === "login") return renderLogin();
     if (parts[0] === "register") return renderRegister();
+    if (parts[0] === "delete-account") return renderDeleteAccount();
     if (parts[0] === "oauth-callback") return renderOAuthCallback(query);
     if (parts[0] === "post") return renderPostAd();
     if (parts[0] === "edit" && parts[1]) return renderPostAd(parts[1]);
@@ -1121,6 +1122,86 @@ async function renderOAuthCallback(query) {
     setAuth(null, null);
   }
   location.hash = "#/";
+}
+
+// "#/delete-account": a public URL (required by Google Play's Data Safety
+// account-deletion policy) that works even for someone who doesn't have the
+// app installed - it's just the website. Shows a login form if not
+// authenticated, then an explanation + confirmation step that permanently
+// scrubs the account's personal data.
+function renderDeleteAccount() {
+  if (!state.token || !state.user) {
+    viewEl.innerHTML = `
+      <div class="form-panel">
+        <h2 class="section-heading">${I18N.t("deleteAccount.title")}</h2>
+        <p>${I18N.t("deleteAccount.loginFirst")}</p>
+        <div class="form-group">
+          <label>${I18N.t("auth.email")}</label>
+          <input type="email" id="del-login-email" />
+        </div>
+        <div class="form-group">
+          <label>${I18N.t("auth.password")}</label>
+          <input type="password" id="del-login-password" />
+        </div>
+        <button class="btn btn-primary" id="del-login-submit" style="width:100%;">${I18N.t("auth.submitLogin")}</button>
+        <p class="form-msg" id="del-login-msg"></p>
+        <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
+        <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
+        <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      </div>
+    `;
+    document.getElementById("del-login-submit").addEventListener("click", async () => {
+      const email = document.getElementById("del-login-email").value;
+      const password = document.getElementById("del-login-password").value;
+      const msgEl = document.getElementById("del-login-msg");
+      try {
+        const data = await api("/api/auth/login", { method: "POST", body: { email, password } });
+        setAuth(data.token, data.user);
+        renderDeleteAccount();
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+    return;
+  }
+
+  viewEl.innerHTML = `
+    <div class="form-panel">
+      <h2 class="section-heading">${I18N.t("deleteAccount.title")}</h2>
+      <p>${I18N.t("deleteAccount.intro")}</p>
+      <p><strong>${I18N.t("deleteAccount.willDeleteHeading")}</strong> ${I18N.t("deleteAccount.willDelete")}</p>
+      <p><strong>${I18N.t("deleteAccount.willKeepHeading")}</strong> ${I18N.t("deleteAccount.willKeep")}</p>
+      <div class="form-group">
+        <label>${I18N.t("deleteAccount.passwordLabel")}</label>
+        <input type="password" id="del-password" placeholder="${I18N.t("deleteAccount.passwordPlaceholder")}" />
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="del-confirm-checkbox" />
+        <span>${I18N.t("deleteAccount.confirmCheckbox")}</span>
+      </label>
+      <button class="btn btn-danger" id="del-confirm-submit" style="width:100%;margin-top:12px;">${I18N.t("deleteAccount.confirmButton")}</button>
+      <p class="form-msg" id="del-confirm-msg"></p>
+    </div>
+  `;
+  document.getElementById("del-confirm-submit").addEventListener("click", async () => {
+    const msgEl = document.getElementById("del-confirm-msg");
+    if (!document.getElementById("del-confirm-checkbox").checked) {
+      msgEl.textContent = I18N.t("deleteAccount.mustCheck");
+      msgEl.className = "form-msg error";
+      return;
+    }
+    if (!confirm(I18N.t("deleteAccount.finalConfirm"))) return;
+    const password = document.getElementById("del-password").value;
+    try {
+      await api("/api/users/me", { method: "DELETE", auth: true, body: { password } });
+      setAuth(null, null);
+      viewEl.innerHTML = `<div class="form-panel"><p>${I18N.t("deleteAccount.done")}</p></div>`;
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  });
 }
 
 // ---------------- Post / Edit Ad ----------------
@@ -3521,6 +3602,7 @@ async function renderProfile(userId) {
 
   let friendStatus = null;
   let followStatus = null;
+  let isBlocked = false;
   if (state.token && !isMe) {
     try {
       friendStatus = await api("/api/friends/status/" + userId, { auth: true });
@@ -3530,6 +3612,10 @@ async function renderProfile(userId) {
         followStatus = await api("/api/follow/status/" + userId, { auth: true });
       } catch (e) {}
     }
+    try {
+      const bs = await api("/api/users/" + userId + "/block-status", { auth: true });
+      isBlocked = !!bs.blocked;
+    } catch (e) {}
   }
 
   const aboutRows = [
@@ -3574,9 +3660,10 @@ async function renderProfile(userId) {
         <div class="profile-actions" id="profile-actions">
           ${isMe ? `<button class="btn btn-outline" id="btn-edit-profile">${I18N.t("profile.editProfile")}</button>` : ""}
           ${isMe ? `<a class="btn btn-gold" href="#/post">${I18N.t("profile.postNewListing")}</a>` : ""}
-          ${!isMe && profile.isPage ? pageFollowMarkup(followStatus) : ""}
-          ${!isMe ? friendActionMarkup(friendStatus) : ""}
-          ${!isMe && state.token ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}
+          ${!isMe && profile.isPage && !isBlocked ? pageFollowMarkup(followStatus) : ""}
+          ${!isMe && !isBlocked ? friendActionMarkup(friendStatus) : ""}
+          ${!isMe && state.token && !isBlocked ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}
+          ${!isMe && state.token ? `<button class="btn btn-outline" id="btn-block-user" data-blocked="${isBlocked ? "1" : "0"}">${isBlocked ? I18N.t("profile.unblockUser") : I18N.t("profile.blockUser")}</button>` : ""}
         </div>
       </div>
     </div>
@@ -3617,6 +3704,7 @@ async function renderProfile(userId) {
         ${isMe ? `<button class="tab-btn" data-tab="friends">${I18N.t("profile.friendsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="requests">${I18N.t("profile.requestsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="saved">${I18N.t("profile.savedTab")}</button>` : ""}
+        ${isMe ? `<button class="tab-btn" data-tab="blocked">${I18N.t("profile.blockedTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="offers">${I18N.t("profile.myOffers")}</button>` : ""}
         ${isMe && state.token ? `<button class="tab-btn" data-tab="notifications">${I18N.t("notif.tabTitle")}</button>` : ""}
         ${isMe && state.user && state.user.isOwner ? `<button class="tab-btn" data-tab="ads">${I18N.t("ads.manageAds")}</button>` : ""}
@@ -3683,6 +3771,7 @@ async function renderProfile(userId) {
       ${isMe ? `<div id="tab-friends" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-requests" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-saved" style="display:none;"></div>` : ""}
+      ${isMe ? `<div id="tab-blocked" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-offers" style="display:none;"></div>` : ""}
       ${isMe && state.token ? `<div id="tab-notifications" style="display:none;"></div>` : ""}
       ${isMe && state.user && state.user.isOwner ? `<div id="tab-ads" style="display:none;"></div>` : ""}
@@ -3696,13 +3785,14 @@ async function renderProfile(userId) {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "photos", "reviews", "friends", "requests", "saved", "offers", "notifications", "ads"].forEach((t) => {
+      ["listings", "photos", "reviews", "friends", "requests", "saved", "blocked", "offers", "notifications", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
       if (btn.dataset.tab === "friends" && isMe) await renderFriendsTab();
       if (btn.dataset.tab === "requests" && isMe) await renderRequestsTab();
       if (btn.dataset.tab === "saved" && isMe) await renderSavedTab();
+      if (btn.dataset.tab === "blocked" && isMe) await renderBlockedTab();
       if (btn.dataset.tab === "offers" && isMe) await renderMyOffers();
       if (btn.dataset.tab === "notifications" && isMe && state.token) await renderNotificationSettings();
       if (btn.dataset.tab === "ads" && isMe && state.user && state.user.isOwner) await renderAdsManager();
@@ -3757,6 +3847,21 @@ async function renderProfile(userId) {
       reportUserLink.addEventListener("click", (e) => {
         e.preventDefault();
         openReportModal("user", profile.id);
+      });
+    }
+
+    const blockBtn = document.getElementById("btn-block-user");
+    if (blockBtn) {
+      blockBtn.addEventListener("click", async () => {
+        const currentlyBlocked = blockBtn.dataset.blocked === "1";
+        const confirmMsg = currentlyBlocked ? I18N.t("profile.confirmUnblock") : I18N.t("profile.confirmBlock");
+        if (!confirm(confirmMsg)) return;
+        try {
+          await api("/api/users/" + profile.id + (currentlyBlocked ? "/unblock" : "/block"), { method: "POST", auth: true });
+          router();
+        } catch (err) {
+          alert(err.message);
+        }
       });
     }
 
@@ -4034,6 +4139,41 @@ async function renderSavedTab() {
     </div>`
     )
     .join("");
+}
+
+async function renderBlockedTab() {
+  const el = document.getElementById("tab-blocked");
+  if (!el) return;
+  el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let items = [];
+  try {
+    items = await api("/api/users/blocked", { auth: true });
+  } catch (e) {}
+  if (!items.length) {
+    el.innerHTML = `<div class="empty-state">${I18N.t("profile.blockedEmpty")}</div>`;
+    return;
+  }
+  el.innerHTML = items
+    .map(
+      (u) => `
+    <div class="blocked-user-row" data-user-id="${u.userId}">
+      ${u.photo ? `<img class="blocked-user-avatar" src="${u.photo}" />` : `<div class="blocked-user-avatar-placeholder">${initials(u.name)}</div>`}
+      <span class="blocked-user-name">${escapeHtml(u.name)}</span>
+      <button class="btn btn-outline btn-sm btn-unblock" data-user-id="${u.userId}">${I18N.t("profile.unblockUser")}</button>
+    </div>`
+    )
+    .join("");
+  el.querySelectorAll(".btn-unblock").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("profile.confirmUnblock"))) return;
+      try {
+        await api("/api/users/" + btn.dataset.userId + "/unblock", { method: "POST", auth: true });
+        await renderBlockedTab();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
 }
 
 async function renderAdsManager() {
