@@ -337,6 +337,7 @@ async function router() {
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
     if (parts[0] === "login") return renderLogin();
     if (parts[0] === "register") return renderRegister();
+    if (parts[0] === "delete-account") return renderDeleteAccount();
     if (parts[0] === "oauth-callback") return renderOAuthCallback(query);
     if (parts[0] === "post") return renderPostAd();
     if (parts[0] === "edit" && parts[1]) return renderPostAd(parts[1]);
@@ -1121,6 +1122,86 @@ async function renderOAuthCallback(query) {
     setAuth(null, null);
   }
   location.hash = "#/";
+}
+
+// "#/delete-account": a public URL (required by Google Play's Data Safety
+// account-deletion policy) that works even for someone who doesn't have the
+// app installed - it's just the website. Shows a login form if not
+// authenticated, then an explanation + confirmation step that permanently
+// scrubs the account's personal data.
+function renderDeleteAccount() {
+  if (!state.token || !state.user) {
+    viewEl.innerHTML = `
+      <div class="form-panel">
+        <h2 class="section-heading">${I18N.t("deleteAccount.title")}</h2>
+        <p>${I18N.t("deleteAccount.loginFirst")}</p>
+        <div class="form-group">
+          <label>${I18N.t("auth.email")}</label>
+          <input type="email" id="del-login-email" />
+        </div>
+        <div class="form-group">
+          <label>${I18N.t("auth.password")}</label>
+          <input type="password" id="del-login-password" />
+        </div>
+        <button class="btn btn-primary" id="del-login-submit" style="width:100%;">${I18N.t("auth.submitLogin")}</button>
+        <p class="form-msg" id="del-login-msg"></p>
+        <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
+        <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
+        <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      </div>
+    `;
+    document.getElementById("del-login-submit").addEventListener("click", async () => {
+      const email = document.getElementById("del-login-email").value;
+      const password = document.getElementById("del-login-password").value;
+      const msgEl = document.getElementById("del-login-msg");
+      try {
+        const data = await api("/api/auth/login", { method: "POST", body: { email, password } });
+        setAuth(data.token, data.user);
+        renderDeleteAccount();
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+    return;
+  }
+
+  viewEl.innerHTML = `
+    <div class="form-panel">
+      <h2 class="section-heading">${I18N.t("deleteAccount.title")}</h2>
+      <p>${I18N.t("deleteAccount.intro")}</p>
+      <p><strong>${I18N.t("deleteAccount.willDeleteHeading")}</strong> ${I18N.t("deleteAccount.willDelete")}</p>
+      <p><strong>${I18N.t("deleteAccount.willKeepHeading")}</strong> ${I18N.t("deleteAccount.willKeep")}</p>
+      <div class="form-group">
+        <label>${I18N.t("deleteAccount.passwordLabel")}</label>
+        <input type="password" id="del-password" placeholder="${I18N.t("deleteAccount.passwordPlaceholder")}" />
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="del-confirm-checkbox" />
+        <span>${I18N.t("deleteAccount.confirmCheckbox")}</span>
+      </label>
+      <button class="btn btn-danger" id="del-confirm-submit" style="width:100%;margin-top:12px;">${I18N.t("deleteAccount.confirmButton")}</button>
+      <p class="form-msg" id="del-confirm-msg"></p>
+    </div>
+  `;
+  document.getElementById("del-confirm-submit").addEventListener("click", async () => {
+    const msgEl = document.getElementById("del-confirm-msg");
+    if (!document.getElementById("del-confirm-checkbox").checked) {
+      msgEl.textContent = I18N.t("deleteAccount.mustCheck");
+      msgEl.className = "form-msg error";
+      return;
+    }
+    if (!confirm(I18N.t("deleteAccount.finalConfirm"))) return;
+    const password = document.getElementById("del-password").value;
+    try {
+      await api("/api/users/me", { method: "DELETE", auth: true, body: { password } });
+      setAuth(null, null);
+      viewEl.innerHTML = `<div class="form-panel"><p>${I18N.t("deleteAccount.done")}</p></div>`;
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  });
 }
 
 // ---------------- Post / Edit Ad ----------------
