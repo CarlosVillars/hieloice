@@ -292,6 +292,17 @@ async function isFriendsWith(userIdA, userIdB) {
   return !!(rows && rows.length);
 }
 
+// Returns true if either user has blocked the other (blocking is one-directional
+// to create but its effect — no contact — applies both ways).
+async function isBlockedEitherWay(userIdA, userIdB) {
+  const rows = await db.select("mkt_user_blocks", {
+    or:
+      "(and(blocker_id.eq." + enc(userIdA) + ",blocked_id.eq." + enc(userIdB) + "),and(blocker_id.eq." + enc(userIdB) + ",blocked_id.eq." + enc(userIdA) + "))",
+    select: "id",
+  });
+  return !!(rows && rows.length);
+}
+
 async function findOrCreateOAuthUser({ provider, providerId, email, name, photo }) {
   const idField = provider === "google" ? "google_id" : "facebook_id";
   let rows = await db.select("mkt_users", { [idField]: "eq." + enc(providerId), select: "*" });
@@ -1433,6 +1444,10 @@ async function handleApi(req, res, pathname, query) {
     const others = await db.select("mkt_users", { id: "eq." + enc(otherId), select: "id,chat_privacy" });
     if (!others || !others[0]) return sendJson(res, 404, { error: "User not found" });
 
+    if (otherId !== me.id && (await isBlockedEitherWay(me.id, otherId))) {
+      return sendJson(res, 403, { error: "You can't message this user." });
+    }
+
     if (otherId !== me.id && others[0].chat_privacy === "friends") {
       const areFriends = await isFriendsWith(me.id, otherId);
       if (!areFriends) {
@@ -1664,6 +1679,83 @@ async function handleApi(req, res, pathname, query) {
     if (f.status === "accepted") return sendJson(res, 200, { status: "friends", friendshipId: f.id });
     if (f.requester_id === me.id) return sendJson(res, 200, { status: "pending_sent", friendshipId: f.id });
     return sendJson(res, 200, { status: "pending_received", friendshipId: f.id });
+  }
+
+  // ---- BLOCKED USERS ----
+  // Blocking is one-directional to record (blocker -> blocked) but its effect
+  // is mutual: once blocked, neither side can message the other, and the
+  // blocker no longer sees the blocked user's products/moments/profile in
+  // their own feeds (best-effort filtering, not exhaustive).
+
+  const blockUserMatch = pathname.match(/^\/api\/users\/([a-zA-Z0-9]+)\/block$/);
+  if (method === "POST" && blockUserMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const targetId = blockUserMatch[1];
+    if (!targetId || targetId === me.id) return sendJson(res, 400, { error: "Invalid user" });
+    const targets = await db.select("mkt_users", { id: "eq." + enc(targetId), select: "id" });
+    if (!targets || !targets[0]) return sendJson(res, 404, { error: "User not found" });
+
+    const existing = await db.select("mkt_user_blocks", {
+      blocker_id: "eq." + enc(me.id),
+      blocked_id: "eq." + enc(targetId),
+      select: "id",
+    });
+    if (existing && existing[0]) return sendJson(res, 200, { ok: true, alreadyBlocked: true });
+
+    await db.insert("mkt_user_blocks", {
+      id: crypto.randomBytes(8).toString("hex"),
+      blocker_id: me.id,
+      blocked_id: targetId,
+      created_at: Date.now(),
+    });
+    // Blocking implicitly ends any friendship between the two users.
+    const friendRows = await db.select("mkt_friendships", {
+      status: "eq.accepted",
+      or:
+        "(and(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(targetId) + "),and(requester_id.eq." + enc(targetId) + ",addressee_id.eq." + enc(me.id) + "))",
+      select: "id",
+    });
+    if (friendRows && friendRows[0]) await db.remove("mkt_friendships", { id: "eq." + enc(friendRows[0].id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  const unblockUserMatch = pathname.match(/^\/api\/users\/([a-zA-Z0-9]+)\/unblock$/);
+  if (method === "POST" && unblockUserMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const targetId = unblockUserMatch[1];
+    await db.remove("mkt_user_blocks", { blocker_id: "eq." + enc(me.id), blocked_id: "eq." + enc(targetId) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (method === "GET" && pathname === "/api/users/blocked") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_user_blocks", { blocker_id: "eq." + enc(me.id), select: "*", order: "created_at.desc" });
+    const blockedIds = rows.map((r) => r.blocked_id);
+    let users = [];
+    if (blockedIds.length) {
+      users = await db.select("mkt_users", { id: "in.(" + blockedIds.map(enc).join(",") + ")", select: "id,name,photo" });
+    }
+    const out = rows.map((r) => {
+      const u = users.find((x) => x.id === r.blocked_id);
+      return { userId: r.blocked_id, name: u ? u.name : "Deleted user", photo: u ? u.photo : null, blockedAt: r.created_at };
+    });
+    return sendJson(res, 200, out);
+  }
+
+  const blockStatusMatch = pathname.match(/^\/api\/users\/([a-zA-Z0-9]+)\/block-status$/);
+  if (method === "GET" && blockStatusMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const targetId = blockStatusMatch[1];
+    const rows = await db.select("mkt_user_blocks", {
+      blocker_id: "eq." + enc(me.id),
+      blocked_id: "eq." + enc(targetId),
+      select: "id",
+    });
+    return sendJson(res, 200, { blocked: !!(rows && rows[0]) });
   }
 
   // ---- FOLLOW (one-directional, only for "Public Page" accounts - separate from friends) ----
