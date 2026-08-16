@@ -434,6 +434,18 @@ window.addEventListener("hashchange", router);
 
 // ---------------- Home ----------------
 
+// Horizontal genre-tab row shown above marketplace results (like a
+// bookstore's shelf tabs) - all categories scroll sideways, the one being
+// browsed is underlined. activeSlug is "all" on the unfiltered/search view.
+function categoryTabsHtml(activeSlug) {
+  const allTab = `
+    <a class="category-tab-pill${activeSlug === "all" ? " active" : ""}" href="#/category/all">${I18N.t("category.allTab")}</a>`;
+  return `<div class="category-tabs-row">${allTab}${CATEGORY_LIST.map(
+    (c) => `
+    <a class="category-tab-pill${activeSlug === c.slug ? " active" : ""}" href="#/category/${c.slug}">${c.icon} ${I18N.lang === "es" ? c.es : c.en}</a>`
+  ).join("")}</div>`;
+}
+
 function categoryCardsHtml() {
   return CATEGORY_LIST.map(
     (c) => `
@@ -491,6 +503,7 @@ function renderMarketplaceHome() {
       <input type="text" id="marketplace-search-input" placeholder="${I18N.t("home.searchPlaceholder")}" />
       <button id="marketplace-search-btn">${I18N.t("home.searchBtn")}</button>
     </div>
+    ${categoryTabsHtml("all")}
     <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
     <div class="category-grid">${categoryCardsHtml()}</div>
   `;
@@ -787,6 +800,7 @@ async function renderCategory(slug, query) {
 
   viewEl.innerHTML = `
     <a class="back-link" href="#/">&larr; ${I18N.t("category.back")}</a>
+    ${categoryTabsHtml(slug)}
     <h2 class="section-heading">${I18N.t("category.resultsFor")} ${escapeHtml(heading)}</h2>
     <div class="filters">
       <input type="text" id="f-country" placeholder="${I18N.t("category.filterCountry")}" value="${escapeHtml(query.country || "")}" />

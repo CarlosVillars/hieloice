@@ -16,7 +16,7 @@
   --danger-bg: rgba(192,57,43,0.08);
   --success: #1F8F5A;
   --card-shadow: 0 1px 3px rgba(0,0,0,0.1);
-  --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-display: "Playfair Display", Georgia, "Times New Roman", serif;
 }
 
 /* Premium account tier: exclusive black + gold skin, applied automatically
@@ -373,6 +373,46 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .category-icon { font-size: 32px; display: block; margin-bottom: 8px; }
 .category-icon-img { display: block; width: 40px; height: 40px; object-fit: contain; margin: 0 auto 8px; }
 .category-label { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+
+/* ---- Category tabs row (bookshelf-style genre nav) ---- */
+.category-tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  padding: 4px 2px 16px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-color);
+  scrollbar-width: thin;
+}
+.category-tabs-row::-webkit-scrollbar { height: 4px; }
+.category-tabs-row::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+.category-tab-pill {
+  flex: 0 0 auto;
+  display: inline-block;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.category-tab-pill:hover {
+  border-color: var(--gold);
+  color: var(--text-primary);
+}
+.category-tab-pill.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text-on);
+  font-family: var(--font-display);
+  box-shadow: 0 0 0 1px var(--gold) inset;
+}
 
 /* ---- Filters ---- */
 .filters {

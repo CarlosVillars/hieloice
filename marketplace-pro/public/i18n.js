@@ -4,19 +4,32 @@
 // fiction/bestsellers first, then the highest-volume genre categories,
 // textbooks (very high turnover among students), then steadier backlist
 // categories, ending with niche/collectible.
+// Expanded to Amazon Kindle Store / Goodreads-shelf granularity - the
+// genre breakdown readers on the world's biggest book platforms actually
+// browse by - still ordered by C2C used-book resale demand.
 const CATEGORY_LIST = [
   { slug: "bestsellers-fiction", icon: "\u{1F4D6}", en: "Fiction & Bestsellers", es: "Ficcion y Mas Vendidos" },
   { slug: "mystery-thriller", icon: "\u{1F50D}", en: "Mystery & Thriller", es: "Misterio y Suspenso" },
   { slug: "romance", icon: "\u{1F495}", en: "Romance", es: "Romance" },
-  { slug: "fantasy-scifi", icon: "\u{1F409}", en: "Fantasy & Sci-Fi", es: "Fantasia y Ciencia Ficcion" },
+  { slug: "fantasy", icon: "\u{1F409}", en: "Fantasy", es: "Fantasia" },
+  { slug: "science-fiction", icon: "\u{1F680}", en: "Science Fiction", es: "Ciencia Ficcion" },
+  { slug: "horror", icon: "\u{1F47B}", en: "Horror", es: "Terror" },
   { slug: "textbooks-academic", icon: "\u{1F393}", en: "Textbooks & Academic", es: "Libros de Texto y Academicos" },
-  { slug: "self-help-nonfiction", icon: "\u{1F331}", en: "Self-Help & Non-Fiction", es: "Desarrollo Personal y No Ficcion" },
-  { slug: "children-ya", icon: "\u{1F9D2}", en: "Children's & YA", es: "Infantil y Juvenil" },
+  { slug: "self-help", icon: "\u{1F331}", en: "Self-Help", es: "Desarrollo Personal" },
+  { slug: "nonfiction", icon: "\u{1F4F0}", en: "Non-Fiction", es: "No Ficcion" },
+  { slug: "children", icon: "\u{1F9D2}", en: "Children's", es: "Infantil" },
+  { slug: "young-adult", icon: "\u{2728}", en: "Teen & Young Adult", es: "Juvenil" },
   { slug: "comics-manga", icon: "\u{1F9B8}", en: "Comics & Manga", es: "Comics y Manga" },
-  { slug: "biography-history", icon: "\u{1F3DB}\u{FE0F}", en: "Biography & History", es: "Biografias e Historia" },
+  { slug: "biography-memoir", icon: "\u{1F464}", en: "Biography & Memoir", es: "Biografias y Memorias" },
+  { slug: "history", icon: "\u{1F3DB}\u{FE0F}", en: "History", es: "Historia" },
   { slug: "classics-literature", icon: "\u{1F56F}\u{FE0F}", en: "Classics & Literature", es: "Clasicos y Literatura" },
-  { slug: "cooking-lifestyle", icon: "\u{1F373}", en: "Cooking & Lifestyle", es: "Cocina y Estilo de Vida" },
+  { slug: "poetry", icon: "\u{1FAB6}", en: "Poetry", es: "Poesia" },
+  { slug: "cooking", icon: "\u{1F373}", en: "Cooking", es: "Cocina" },
+  { slug: "health-wellness", icon: "\u{1F9D8}", en: "Health & Wellness", es: "Salud y Bienestar" },
+  { slug: "business-finance", icon: "\u{1F4BC}", en: "Business & Finance", es: "Negocios y Finanzas" },
   { slug: "religion-spirituality", icon: "\u{1F54A}\u{FE0F}", en: "Religion & Spirituality", es: "Religion y Espiritualidad" },
+  { slug: "art-photography", icon: "\u{1F3A8}", en: "Art & Photography", es: "Arte y Fotografia" },
+  { slug: "travel", icon: "\u{1F5FA}\u{FE0F}", en: "Travel", es: "Viajes" },
   { slug: "rare-collectible", icon: "\u{1F4DC}", en: "Rare & Collectible", es: "Coleccionables y Primeras Ediciones" },
   { slug: "other-books", icon: "\u{1F4E6}", en: "Other Books", es: "Otros Libros" },
 ];
@@ -36,6 +49,7 @@ const STRINGS = {
     "home.categoriesHeading": "Browse Categories",
     "home.searchPlaceholder": "Search products...",
     "home.searchBtn": "Search",
+    "category.allTab": "All Books",
     "category.back": "Back to Home",
     "category.resultsFor": "Results in",
     "category.noResults": "No listings in this category yet. Be the first to post one!",
@@ -483,6 +497,7 @@ const STRINGS = {
     "home.categoriesHeading": "Explorar Categorias",
     "home.searchPlaceholder": "Buscar productos...",
     "home.searchBtn": "Buscar",
+    "category.allTab": "Todos los Libros",
     "category.back": "Volver al Inicio",
     "category.resultsFor": "Resultados en",
     "category.noResults": "Todavia no hay avisos en esta categoria. Se el primero en publicar!",
