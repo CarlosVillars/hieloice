@@ -284,7 +284,7 @@ function ownUser(u) {
 
 function toCamelUser(u) {
   if (!u) return u;
-  const { created_at, cover_photo, chat_privacy, is_page, page_category, subscription_mode, suspended_reason, suspended_at, ...rest } = u;
+  const { created_at, cover_photo, chat_privacy, is_page, page_category, subscription_mode, suspended_reason, suspended_at, is_premium, ...rest } = u;
   return {
     ...rest,
     createdAt: created_at,
@@ -296,6 +296,7 @@ function toCamelUser(u) {
     role: u.role || "user",
     suspendedReason: suspended_reason || "",
     suspendedAt: suspended_at || null,
+    isPremium: !!is_premium,
   };
 }
 
