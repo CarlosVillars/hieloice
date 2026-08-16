@@ -1,9 +1,68 @@
 // Marketplace Pro - frontend app (vanilla JS, hash-based routing)
 
+// ---------------- Account-tier theme (normal / premium) ----------------
+// Theme has two independent layers:
+//  1. Account tier - derived automatically from the logged-in account's
+//     is_premium flag (a paid upgrade). Premium accounts get the exclusive
+//     black+gold [data-theme="premium"] skin and this is NOT user-toggleable.
+//  2. Normal-tier appearance preference - for everyone else, a user choice
+//     between the :root light+blue theme and the [data-theme="dark"]
+//     dark+blue theme, persisted in localStorage under "hieloice-theme-pref".
+// applyUserTheme() is called wherever the current-user object is set or
+// updated (login, register, session restore, logout, profile refresh) so
+// the skin always reflects the account's current tier. It also shows/hides
+// the normal-tier toggle UI (#theme-toggle-wrap) since premium users don't
+// get a choice.
+function applyTheme(tier) {
+  document.documentElement.setAttribute("data-theme", tier);
+}
+
+function applyNormalThemePref(pref) {
+  document.documentElement.setAttribute("data-theme", pref);
+  localStorage.setItem("hieloice-theme-pref", pref);
+  const lightBtn = document.getElementById("theme-normal-light");
+  const darkBtn = document.getElementById("theme-normal-dark");
+  if (lightBtn && darkBtn) {
+    lightBtn.classList.toggle("active", pref === "light");
+    darkBtn.classList.toggle("active", pref === "dark");
+  }
+}
+
+function applyUserTheme(user) {
+  const toggleWrap = document.getElementById("theme-toggle-wrap");
+  if (user && user.isPremium) {
+    applyTheme("premium");
+    if (toggleWrap) toggleWrap.style.display = "none";
+  } else {
+    if (toggleWrap) toggleWrap.style.display = "";
+    const pref = localStorage.getItem("hieloice-theme-pref") || "light";
+    const lightBtn = document.getElementById("theme-normal-light");
+    const darkBtn = document.getElementById("theme-normal-dark");
+    if (lightBtn && darkBtn) {
+      lightBtn.classList.toggle("active", pref === "light");
+      darkBtn.classList.toggle("active", pref === "dark");
+    }
+    if (pref === "dark") {
+      document.documentElement.setAttribute("data-theme", "dark");
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+    }
+  }
+}
+
 const state = {
   token: localStorage.getItem("authToken") || null,
   user: JSON.parse(localStorage.getItem("authUser") || "null"),
 };
+
+// Set the initial skin as early as possible based on whatever user object
+// was restored from localStorage - anonymous browsing / logged-out falls
+// through to the normal tier, which in turn honors any saved
+// "hieloice-theme-pref" (light/dark) so a returning normal-tier user with a
+// saved dark preference doesn't flash light-then-dark. app.js is loaded via
+// a <script> tag at the end of <body> (see index.html), so the toggle
+// button markup already exists in the DOM at this point.
+applyUserTheme(state.user);
 
 const viewEl = document.getElementById("view");
 
@@ -84,6 +143,7 @@ function setAuth(token, user) {
     localStorage.removeItem("authToken");
     localStorage.removeItem("authUser");
   }
+  applyUserTheme(state.user);
   updateNavUI();
   pollUnread();
 }
@@ -94,6 +154,7 @@ async function refreshMe() {
     const data = await api("/api/auth/me", { auth: true });
     state.user = data.user;
     localStorage.setItem("authUser", JSON.stringify(data.user));
+    applyUserTheme(state.user);
   } catch (e) {
     // Only clear the session on a genuine "not authenticated" rejection
     // (HTTP 401) from the server. A network hiccup - e.g. right after a
@@ -217,6 +278,16 @@ document.getElementById("lang-es").addEventListener("click", () => {
   I18N.setLang("es");
   applyStaticI18n();
   router();
+});
+
+// Normal-tier dark mode toggle (hidden for premium accounts - see
+// applyUserTheme()). Clicking these when hidden is harmless since the
+// wrapper is display:none for premium users.
+document.getElementById("theme-normal-light").addEventListener("click", () => {
+  applyNormalThemePref("light");
+});
+document.getElementById("theme-normal-dark").addEventListener("click", () => {
+  applyNormalThemePref("dark");
 });
 
 // ---------------- Topbar "..." menu (language + logout) ----------------
@@ -4390,6 +4461,7 @@ function openEditProfileModal(profile) {
       });
       state.user = { ...state.user, ...data.user };
       localStorage.setItem("authUser", JSON.stringify(state.user));
+      applyUserTheme(state.user);
       overlay.remove();
       router();
     } catch (e) {
