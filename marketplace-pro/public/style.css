@@ -1,22 +1,22 @@
 :root {
-  --bg-page: #F5EFE0;
-  --bg-surface: #FBF7EE;
-  --bg-surface-alt: #F0E8D5;
-  --text-primary: #2b1f16;
-  --text-secondary: #6b5847;
-  --text-muted: #9c8b78;
-  --border-color: rgba(43,24,16,0.12);
-  --accent: #6E1423;
-  --accent-strong: #8A1C2D;
-  --accent-text: #6E1423;
-  --accent-text-on: #F5EFE0;
+  --bg-page: #FFFFFF;
+  --bg-surface: #FFFFFF;
+  --bg-surface-alt: #F2F2F0;
+  --text-primary: #1a1a1a;
+  --text-secondary: #5a5a5a;
+  --text-muted: #8a8a8a;
+  --border-color: rgba(0,0,0,0.1);
+  --accent: #0F3D2E;
+  --accent-strong: #17573F;
+  --accent-text: #0F3D2E;
+  --accent-text-on: #FFFFFF;
   --gold: #d99a12;
   --gold-text-on: #2b1810;
   --danger: #C0392B;
   --danger-bg: rgba(192,57,43,0.08);
   --success: #1F8F5A;
-  --card-shadow: 0 1px 3px rgba(43,24,16,0.12);
-  --font-display: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  --card-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
 }
 
 /* Premium account tier: exclusive black + gold skin, applied automatically
@@ -48,21 +48,21 @@
    distinct from [data-theme="premium"] (pure black bg, no burgundy) so
    premium still reads as exclusive. */
 [data-theme="dark"] {
-  --bg-page: #0F0F0F;
-  --bg-surface: #181818;
-  --bg-surface-alt: #212121;
-  --text-primary: #FFFFFF;
-  --text-secondary: #AAAAAA;
-  --text-muted: #717171;
-  --border-color: rgba(255,255,255,0.14);
-  --accent: #242424;
-  --accent-strong: #333333;
-  --accent-text: #FFFFFF;
+  --bg-page: #0D1F17;
+  --bg-surface: #123324;
+  --bg-surface-alt: #0A1811;
+  --text-primary: #F0F0EC;
+  --text-secondary: #B8C4BD;
+  --text-muted: #7C8A82;
+  --border-color: rgba(240,240,236,0.12);
+  --accent: #1F6B47;
+  --accent-strong: #278058;
+  --accent-text: #4FAE7C;
   --accent-text-on: #FFFFFF;
-  --gold: #242424;
-  --gold-text-on: #FFFFFF;
-  --danger: #FF4B44;
-  --danger-bg: rgba(255,0,0,0.14);
+  --gold: #e6a81c;
+  --gold-text-on: #2b1810;
+  --danger: #E5484D;
+  --danger-bg: rgba(229,72,77,0.14);
   --success: #3FBF7F;
   --card-shadow: 0 1px 3px rgba(0,0,0,0.4);
 }
@@ -1039,12 +1039,3 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .notif-category-grid { display: flex; flex-wrap: wrap; gap: 8px; }
 .notif-category-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 20px; padding: 5px 12px; cursor: pointer; }
 .notif-category-chip input { width: 13px; height: 13px; }
-
-/* ---- Dark mode: red reserved for the primary action + capture button only.
-   Everything else that used to fill with --accent (topbar, avatars, chat
-   bubbles, active tabs, chatbot) now uses the neutral dark-gray/white pairing
-   defined on --accent in [data-theme="dark"], so black/white dominate and
-   red stays a rare, deliberate accent (YouTube-style). */
-[data-theme="dark"] .btn-primary { background: #FF0000; color: #FFFFFF; }
-[data-theme="dark"] .btn-primary:hover { background: #CC0000; }
-[data-theme="dark"] .wizard-capture-btn { background: #FF0000; color: #FFFFFF; }
