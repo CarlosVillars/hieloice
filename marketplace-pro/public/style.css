@@ -332,15 +332,19 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .wizard-fs-icon-btn {
   width: 40px; height: 40px; border-radius: 50%; border: none;
   background: rgba(0,0,0,0.4); color: #fff; font-size: 18px;
-  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; flex: 0 0 auto;
 }
 .wizard-fs-icon-btn.active { background: var(--gold); color: #2b1810; }
 .wizard-fs-icon-btn:disabled { opacity: 0.35; cursor: default; }
-.wizard-fs-side-rail { position: absolute; top: 60px; right: 12px; display: flex; flex-direction: column; gap: 12px; z-index: 2; }
+.wizard-fs-sound-pill {
+  flex: 1; max-width: 220px; margin: 0 10px; height: 34px; border-radius: 999px; border: none;
+  background: rgba(0,0,0,0.4); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+}
 .wizard-fs-rec-badge {
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
   background: #E5484D; color: #fff; font-size: 12px; font-weight: 700;
-  padding: 4px 12px; border-radius: 999px; display: flex; align-items: center; gap: 6px; z-index: 2;
+  padding: 4px 12px; border-radius: 999px; display: flex; align-items: center; gap: 6px; z-index: 3;
 }
 .wizard-fs-rec-dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: wizardRecPulse 1s infinite; }
 @keyframes wizardRecPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
@@ -348,8 +352,32 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-size: 96px; font-weight: 800; color: #fff; text-shadow: 0 2px 10px rgba(0,0,0,0.6); z-index: 3; pointer-events: none;
 }
+.wizard-fs-toast {
+  position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.75); color: #fff; font-size: 12px; padding: 8px 16px;
+  border-radius: 999px; z-index: 4; white-space: nowrap;
+}
+
+/* Right-side labeled options rail, YouTube-Shorts-style layout with our own icon glyphs */
+.wizard-fs-rail {
+  position: absolute; top: 64px; right: 0; bottom: 150px; width: 128px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.5), rgba(0,0,0,0.15));
+  border-radius: 22px 0 0 22px; display: flex; flex-direction: column;
+  padding: 8px 0; overflow-y: auto; z-index: 2;
+}
+.wizard-fs-rail-item {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  padding: 9px 14px; background: none; border: none; cursor: pointer; color: #fff;
+}
+.wizard-fs-rail-item .rail-label { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
+.wizard-fs-rail-item .rail-icon { font-size: 17px; width: 24px; text-align: center; flex: 0 0 auto; }
+.wizard-fs-rail-item.active .rail-icon, .wizard-fs-rail-item.active .rail-label { color: var(--gold); }
+.wizard-fs-rail-item[data-tier="2"] { display: none; }
+.wizard-fs-rail.expanded [data-tier="2"] { display: flex; }
+.wizard-fs-rail.expanded [data-rail="toggle"] .rail-label { }
 .wizard-fs-bottom { padding: 10px 0 18px; display: flex; flex-direction: column; gap: 10px; z-index: 2; }
 .wizard-fs-filter-rail { display: flex; gap: 12px; overflow-x: auto; padding: 2px 16px; scrollbar-width: none; }
+.wizard-fs-filter-rail[hidden] { display: none; }
 .wizard-fs-filter-rail::-webkit-scrollbar { display: none; }
 .wizard-fs-filter-item { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; background: none; border: none; }
 .wizard-fs-filter-thumb { width: 48px; height: 48px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.5); background: var(--accent-strong); }
@@ -364,12 +392,12 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .wizard-fs-capture-wrap { position: relative; width: 76px; height: 76px; display: flex; align-items: center; justify-content: center; }
 .wizard-fs-capture-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
 .wizard-fs-capture-btn {
-  width: 66px; height: 66px; border-radius: 50%; background: #fff;
-  border: 4px solid rgba(255,255,255,0.4); cursor: pointer; padding: 0;
-  transition: transform 0.1s;
+  width: 62px; height: 62px; border-radius: 50%; background: #E5484D;
+  border: 4px solid #fff; cursor: pointer; padding: 0;
+  transition: transform 0.1s, border-radius 0.15s;
 }
 .wizard-fs-capture-btn.pressed { transform: scale(0.9); }
-.wizard-fs-capture-btn.recording { background: #E5484D; }
+.wizard-fs-capture-btn.recording { border-radius: 14px; width: 40px; height: 40px; }
 .wizard-fs-done-btn {
   width: 46px; height: 46px; border-radius: 50%; border: none; background: var(--gold);
   color: #2b1810; font-size: 20px; font-weight: 800; cursor: pointer;

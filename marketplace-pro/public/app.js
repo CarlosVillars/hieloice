@@ -3403,12 +3403,10 @@ function startWizardRing() {
 
 function updateWizardSideRailEnabled() {
   const locked = createWizard.recordAccumMs > 0 || createWizard.recording;
-  const flip = document.getElementById("wizard-fs-flip-btn");
-  const flash = document.getElementById("wizard-fs-flash-btn");
-  const timer = document.getElementById("wizard-fs-timer-btn");
-  if (flip) flip.disabled = locked;
-  if (flash) flash.disabled = locked;
-  if (timer) timer.disabled = locked;
+  ["flip", "flash", "timer"].forEach((a) => {
+    const el = document.getElementById("wizard-rail-" + a);
+    if (el) el.disabled = locked;
+  });
 }
 
 function showWizardRecBadge(show) {
@@ -3422,7 +3420,7 @@ function updateWizardHint(text) {
 }
 
 function updateWizardFlashSupport() {
-  const btn = document.getElementById("wizard-fs-flash-btn");
+  const btn = document.getElementById("wizard-rail-flash");
   if (!btn || !createWizard.stream) return;
   const track = createWizard.stream.getVideoTracks()[0];
   const caps = track && track.getCapabilities ? track.getCapabilities() : {};
@@ -3436,16 +3434,90 @@ function wizardToggleFlash() {
   if (!track || !track.getCapabilities || !track.getCapabilities().torch) return;
   createWizard.flashOn = !createWizard.flashOn;
   track.applyConstraints({ advanced: [{ torch: createWizard.flashOn }] }).catch(() => {});
-  const btn = document.getElementById("wizard-fs-flash-btn");
+  const btn = document.getElementById("wizard-rail-flash");
   if (btn) btn.classList.toggle("active", createWizard.flashOn);
 }
 
 function wizardCycleTimer() {
   createWizard.timerMode = createWizard.timerMode === 0 ? 3 : createWizard.timerMode === 3 ? 10 : 0;
-  const btn = document.getElementById("wizard-fs-timer-btn");
+  const btn = document.getElementById("wizard-rail-timer");
   if (btn) {
     btn.classList.toggle("active", createWizard.timerMode !== 0);
-    btn.innerHTML = createWizard.timerMode === 0 ? "&#9201;" : createWizard.timerMode + "s";
+    const icon = btn.querySelector(".rail-icon");
+    if (icon) icon.innerHTML = createWizard.timerMode === 0 ? "&#9201;" : createWizard.timerMode + "s";
+  }
+}
+
+function wizardShowToast(text) {
+  const wrap = document.getElementById("wizard-fs-video-wrap");
+  if (!wrap) return;
+  const existing = wrap.querySelector(".wizard-fs-toast");
+  if (existing) existing.remove();
+  const el = document.createElement("div");
+  el.className = "wizard-fs-toast";
+  el.textContent = text;
+  wrap.appendChild(el);
+  setTimeout(() => el.remove(), 1600);
+}
+
+function wizardToggleFilterStrip() {
+  const strip = document.querySelector(".wizard-fs-filter-rail");
+  if (strip) strip.hidden = !strip.hidden;
+}
+
+// Right-hand options rail: layout inspired by mainstream camera apps but
+// built from our own generic Unicode glyphs (not copied icon assets).
+// Tier 1 items show by default; tier 2 items reveal via the "more" toggle,
+// matching the collapsed/expanded pattern of similar camera UIs.
+const CREATE_WIZARD_RAIL_ITEMS = [
+  { action: "flip", tier: 1, icon: "&#8635;" },
+  { action: "timer", tier: 1, icon: "&#9201;" },
+  { action: "duration", tier: 1, icon: "&#9203;" },
+  { action: "templates", tier: 1, icon: "&#9638;" },
+  { action: "effects", tier: 1, icon: "&#10024;" },
+  { action: "speed", tier: 1, icon: "1x" },
+  { action: "greenscreen", tier: 2, icon: "&#9635;" },
+  { action: "retouch", tier: 2, icon: "&#128142;" },
+  { action: "filters", tier: 2, icon: "&#127912;" },
+  { action: "lighting", tier: 2, icon: "&#9788;" },
+  { action: "flash", tier: 2, icon: "&#9889;" },
+];
+
+function wizardRailItemsHtml() {
+  const items = CREATE_WIZARD_RAIL_ITEMS.map((it) => {
+    const hiddenStyle = it.action === "flash" ? ' style="display:none;"' : "";
+    return `<button class="wizard-fs-rail-item" data-tier="${it.tier}" data-action="${it.action}" id="wizard-rail-${it.action}"${hiddenStyle}>
+      <span class="rail-label">${I18N.t("create.rail_" + it.action)}</span>
+      <span class="rail-icon">${it.icon}</span>
+    </button>`;
+  }).join("");
+  const toggle = `<button class="wizard-fs-rail-item" data-rail="toggle" id="wizard-rail-toggle">
+      <span class="rail-label" id="wizard-rail-toggle-label">${I18N.t("create.rail_more")}</span>
+      <span class="rail-icon" id="wizard-rail-toggle-icon">&#9662;</span>
+    </button>`;
+  return items + toggle;
+}
+
+function wireWizardRail() {
+  document.querySelectorAll(".wizard-fs-rail-item[data-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const action = btn.dataset.action;
+      if (action === "flip") wizardFlipCamera();
+      else if (action === "timer") wizardCycleTimer();
+      else if (action === "flash") wizardToggleFlash();
+      else if (action === "effects" || action === "filters") wizardToggleFilterStrip();
+      else if (action === "duration") wizardShowToast(I18N.t("create.durationHint"));
+      else wizardShowToast(I18N.t("create.comingSoon"));
+    });
+  });
+  const toggleBtn = document.getElementById("wizard-rail-toggle");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      const rail = document.getElementById("wizard-fs-rail");
+      const expanded = rail.classList.toggle("expanded");
+      document.getElementById("wizard-rail-toggle-label").textContent = I18N.t(expanded ? "create.rail_close" : "create.rail_more");
+      document.getElementById("wizard-rail-toggle-icon").innerHTML = expanded ? "&#9652;" : "&#9662;";
+    });
   }
 }
 
@@ -3750,18 +3822,15 @@ function drawCreateWizard() {
         </div>
         <div class="wizard-fs-topbar">
           <button class="wizard-fs-icon-btn" id="wizard-fs-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
-          <div class="wizard-fs-rec-badge" id="wizard-fs-rec-badge" style="display:none;"><span class="wizard-fs-rec-dot"></span><span id="wizard-fs-rec-time">0:00</span></div>
-          <div style="width:40px;"></div>
+          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${I18N.t("create.addSound")}</button>
+          <button class="wizard-fs-icon-btn" id="wizard-fs-effects-btn" title="${I18N.t("create.rail_effects")}">&#10024;</button>
         </div>
-        <div class="wizard-fs-side-rail">
-          <button class="wizard-fs-icon-btn" id="wizard-fs-flip-btn" title="${I18N.t("create.flipCamera")}">&#8635;</button>
-          <button class="wizard-fs-icon-btn" id="wizard-fs-flash-btn" style="display:none;" title="${I18N.t("create.flash")}">&#9889;</button>
-          <button class="wizard-fs-icon-btn" id="wizard-fs-timer-btn" title="${I18N.t("create.timer")}">&#9201;</button>
-        </div>
+        <div class="wizard-fs-rec-badge" id="wizard-fs-rec-badge" style="display:none;"><span class="wizard-fs-rec-dot"></span><span id="wizard-fs-rec-time">0:00</span></div>
+        <div class="wizard-fs-rail" id="wizard-fs-rail">${wizardRailItemsHtml()}</div>
       </div>
       <div class="wizard-fs-bottom">
         <p class="wizard-fs-hint" id="wizard-fs-hint">${I18N.t("create.tapHoldHint")}</p>
-        <div class="wizard-fs-filter-rail">${CREATE_WIZARD_FILTERS.map(
+        <div class="wizard-fs-filter-rail" hidden>${CREATE_WIZARD_FILTERS.map(
           (f) => `<button class="wizard-fs-filter-item ${createWizard.filter === f.id ? "active" : ""}" data-filter="${f.id}">
             <span class="wizard-fs-filter-thumb" style="filter:${f.css};"></span>
             <span class="wizard-fs-filter-label">${I18N.t("create.filter_" + f.id)}</span>
@@ -3793,15 +3862,14 @@ function drawCreateWizard() {
     });
 
     document.getElementById("wizard-fs-close").addEventListener("click", closeCreateWizard);
-    document.getElementById("wizard-fs-flip-btn").addEventListener("click", wizardFlipCamera);
-    document.getElementById("wizard-fs-flash-btn").addEventListener("click", wizardToggleFlash);
-    document.getElementById("wizard-fs-timer-btn").addEventListener("click", wizardCycleTimer);
+    document.getElementById("wizard-fs-sound-pill").addEventListener("click", () => wizardShowToast(I18N.t("create.comingSoon")));
+    document.getElementById("wizard-fs-effects-btn").addEventListener("click", wizardToggleFilterStrip);
     document.getElementById("wizard-fs-gallery-btn").addEventListener("click", () => document.getElementById("wizard-file-media").click());
     document.getElementById("wizard-file-media").addEventListener("change", (e) => wizardHandleMediaFile(e.target.files[0]));
     document.getElementById("wizard-fs-done-btn").addEventListener("click", () => {
       if (createWizard.recordAccumMs > 0) finalizeWizardRecording();
     });
-
+    wireWizardRail();
     wireWizardCaptureGesture();
     return;
   }
