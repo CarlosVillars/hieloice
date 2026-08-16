@@ -15,6 +15,8 @@
   --danger-bg: rgba(192,57,43,0.08);
   --success: #1F8F5A;
   --card-shadow: 0 1px 3px rgba(43,24,16,0.12);
+  --font-display: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.09'/%3E%3C/svg%3E");
 }
 
 /* Premium account tier: exclusive black + gold skin, applied automatically
@@ -68,7 +70,8 @@ html { color-scheme: light; }
 html, body { margin: 0; padding: 0; overflow-x: hidden; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  background: var(--bg-page);
+  background-color: var(--bg-page);
+  background-image: var(--texture);
   color: var(--text-primary);
   width: 100%;
 }
@@ -105,7 +108,8 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
    -> nav links row. The "..." menu holds language + logout so the top row
    stays clean at any screen size instead of wrapping awkwardly. */
 .topbar {
-  background: var(--accent);
+  background-color: var(--accent);
+  background-image: var(--texture);
   color: var(--accent-text-on);
   position: sticky;
   top: 0;
@@ -128,10 +132,12 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .brand {
   font-size: 20px;
   font-weight: 800;
+  font-family: var(--font-display);
   display: flex;
   align-items: center;
   gap: 8px;
   white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.35);
 }
 .brand-logo-img { display: block; height: 34px; width: auto; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.25)); }
 
@@ -327,8 +333,8 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 
 /* ---- Layout ---- */
 .view { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
-.section-heading { font-size: 20px; margin: 0 0 16px; color: var(--accent); }
-.section-subheading { font-size: 15px; margin: 22px 0 10px; color: var(--accent); }
+.section-heading { font-size: 22px; margin: 0 0 16px; color: var(--accent); font-family: var(--font-display); font-weight: 800; }
+.section-subheading { font-size: 16px; margin: 22px 0 10px; color: var(--accent); font-family: var(--font-display); font-weight: 700; }
 .back-link { display: inline-block; margin-bottom: 16px; font-size: 14px; font-weight: 600; color: var(--accent); }
 .back-link:hover { text-decoration: underline; }
 
