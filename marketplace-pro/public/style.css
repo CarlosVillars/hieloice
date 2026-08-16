@@ -64,6 +64,7 @@
 }
 
 * { box-sizing: border-box; }
+html { color-scheme: light; }
 html, body { margin: 0; padding: 0; overflow-x: hidden; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
