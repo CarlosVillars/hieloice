@@ -343,6 +343,30 @@ async function userRatingSummary(userId) {
   return { ratingAvg: Math.round(avg * 10) / 10, ratingCount: count };
 }
 
+// Batched version of userRatingSummary for lists of sellers (product grids,
+// profile listings) - does ONE query instead of one query per seller, which
+// was previously causing multi-second load times on pages with many sellers.
+async function userRatingSummariesBatch(userIds) {
+  const ids = [...new Set(userIds)];
+  const out = {};
+  if (!ids.length) return out;
+  const reviews = await db.select("mkt_reviews", {
+    target_user_id: "in.(" + ids.map(enc).join(",") + ")",
+    select: "target_user_id,rating",
+  });
+  const bySeller = {};
+  for (const r of reviews) {
+    (bySeller[r.target_user_id] = bySeller[r.target_user_id] || []).push(r.rating);
+  }
+  for (const id of ids) {
+    const list = bySeller[id] || [];
+    const count = list.length;
+    const avg = count ? list.reduce((s, r) => s + r, 0) / count : 0;
+    out[id] = { ratingAvg: Math.round(avg * 10) / 10, ratingCount: count };
+  }
+  return out;
+}
+
 // LinkedIn-style trust profile: sales history (completed = seller marked the
 // listing "sold", the strongest signal we have without an escrow system yet)
 // plus a small "recent sales" preview for the profile page.
@@ -793,6 +817,49 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { user: { ...ownUser(u), ...rating } });
   }
 
+  // Account deletion (Google Play "Data safety" account-deletion requirement).
+  // Scrubs personally identifying fields, invalidates the password/social login,
+  // and logs the user out everywhere. Non-identifying content that other users
+  // can already see (e.g. a review someone left about a transaction) is left in
+  // place attributed to "Usuario eliminado" rather than hard-deleted, so we don't
+  // silently break other people's chat history/records.
+  if (method === "DELETE" && pathname === "/api/users/me") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req).catch(() => ({}));
+    // Accounts created via Google/Facebook never have a password the user
+    // knows (they get a random unusable one at signup - see findOrCreateOAuthUser),
+    // so only require re-entering the password for email/password accounts.
+    // A valid session token from the OAuth login flow is proof enough for those.
+    const isOAuthOnly = !!(me.google_id || me.facebook_id);
+    if (!isOAuthOnly && !verifyPassword(body.password || "", me.password_hash)) {
+      return sendJson(res, 403, { error: "Incorrect password" });
+    }
+    const anonEmail = "deleted-" + me.id + "@hieloice.deleted";
+    await db.update("mkt_users", { id: "eq." + enc(me.id) }, {
+      name: "Usuario eliminado",
+      email: anonEmail,
+      phone: null,
+      photo: null,
+      cover_photo: null,
+      bio: "",
+      location: "",
+      hometown: "",
+      interests: "",
+      education: "",
+      work: "",
+      password_hash: hashPassword(crypto.randomBytes(24).toString("hex")),
+      google_id: null,
+      facebook_id: null,
+      suspended: true,
+      suspended_reason: "Account deleted by user request",
+      suspended_at: Date.now(),
+    });
+    await db.remove("mkt_sessions", { user_id: "eq." + enc(me.id) });
+    await db.remove("mkt_push_subscriptions", { user_id: "eq." + enc(me.id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
   // ---- PUSH NOTIFICATIONS (opt-in, always revocable) ----
   if (method === "GET" && pathname === "/api/push/vapid-public-key") {
     return sendJson(res, 200, { publicKey: VAPID_PUBLIC_KEY });
@@ -975,8 +1042,9 @@ async function handleApi(req, res, pathname, query) {
   // ---- PRODUCTS ----
   if (method === "GET" && pathname === "/api/products") {
     const me = await getAuthUser(req);
-    const { category, q, country, state, city, minPrice, maxPrice, sort } = query;
+    const { category, q, country, state, city, minPrice, maxPrice, sort, sellerId } = query;
     const params = { select: "*" };
+    if (sellerId) params.seller_id = "eq." + enc(sellerId);
     if (category && category !== "all") params.category = "eq." + enc(category);
     if (country) params.country = "ilike." + enc(country);
     if (state) params.state = "ilike." + enc(state);
@@ -1010,8 +1078,7 @@ async function handleApi(req, res, pathname, query) {
         select: "id,name,photo",
       });
     }
-    const ratings = {};
-    for (const id of sellerIds) ratings[id] = await userRatingSummary(id);
+    const ratings = await userRatingSummariesBatch(sellerIds);
 
     const safe = products.map((p) => {
       const seller = sellers.find((u) => u.id === p.seller_id);
