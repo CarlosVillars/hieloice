@@ -48,15 +48,15 @@
    distinct from [data-theme="premium"] (pure black bg, no burgundy) so
    premium still reads as exclusive. */
 [data-theme="dark"] {
-  --bg-page: #0D1F17;
-  --bg-surface: #123324;
-  --bg-surface-alt: #0A1811;
+  --bg-page: #0A0A0A;
+  --bg-surface: #141414;
+  --bg-surface-alt: #000000;
   --text-primary: #F0F0EC;
   --text-secondary: #B8C4BD;
   --text-muted: #7C8A82;
   --border-color: rgba(240,240,236,0.12);
-  --accent: #1F6B47;
-  --accent-strong: #278058;
+  --accent: #0F3D2E;
+  --accent-strong: #17573F;
   --accent-text: #4FAE7C;
   --accent-text-on: #FFFFFF;
   --gold: #e6a81c;
