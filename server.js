@@ -605,11 +605,12 @@ function isEmail(s) {
 // Book genres, ordered by C2C used-book resale demand (see CATEGORY_LIST
 // in public/i18n.js, which must stay in sync with these slugs).
 const CATEGORIES = [
-  "bestsellers-fiction", "mystery-thriller", "romance", "fantasy-scifi",
-  "textbooks-academic", "self-help-nonfiction", "children-ya",
-  "comics-manga", "biography-history", "classics-literature",
-  "cooking-lifestyle", "religion-spirituality", "rare-collectible",
-  "other-books",
+  "bestsellers-fiction", "mystery-thriller", "romance", "fantasy",
+  "science-fiction", "horror", "textbooks-academic", "self-help",
+  "nonfiction", "children", "young-adult", "comics-manga",
+  "biography-memoir", "history", "classics-literature", "poetry",
+  "cooking", "health-wellness", "business-finance", "religion-spirituality",
+  "art-photography", "travel", "rare-collectible", "other-books",
 ];
 
 const REPORT_REASONS = ["spam", "prohibited", "inappropriate", "fraud", "other"];
