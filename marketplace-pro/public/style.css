@@ -55,11 +55,11 @@
   --text-secondary: #AAAAAA;
   --text-muted: #717171;
   --border-color: rgba(255,255,255,0.14);
-  --accent: #FF0000;
-  --accent-strong: #CC0000;
-  --accent-text: #FF4B44;
+  --accent: #242424;
+  --accent-strong: #333333;
+  --accent-text: #FFFFFF;
   --accent-text-on: #FFFFFF;
-  --gold: #FF0000;
+  --gold: #242424;
   --gold-text-on: #FFFFFF;
   --danger: #FF4B44;
   --danger-bg: rgba(255,0,0,0.14);
@@ -1039,3 +1039,12 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .notif-category-grid { display: flex; flex-wrap: wrap; gap: 8px; }
 .notif-category-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 20px; padding: 5px 12px; cursor: pointer; }
 .notif-category-chip input { width: 13px; height: 13px; }
+
+/* ---- Dark mode: red reserved for the primary action + capture button only.
+   Everything else that used to fill with --accent (topbar, avatars, chat
+   bubbles, active tabs, chatbot) now uses the neutral dark-gray/white pairing
+   defined on --accent in [data-theme="dark"], so black/white dominate and
+   red stays a rare, deliberate accent (YouTube-style). */
+[data-theme="dark"] .btn-primary { background: #FF0000; color: #FFFFFF; }
+[data-theme="dark"] .btn-primary:hover { background: #CC0000; }
+[data-theme="dark"] .wizard-capture-btn { background: #FF0000; color: #FFFFFF; }
