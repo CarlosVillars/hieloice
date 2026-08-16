@@ -247,7 +247,7 @@ function setText(id, text) {
 function applyStaticI18n() {
   setText("brand-name", I18N.t("site.name"));
   const searchEl = document.getElementById("global-search");
-  if (searchEl) searchEl.placeholder = I18N.t("home.searchPlaceholder");
+  if (searchEl) searchEl.placeholder = I18N.t("topbar.searchPlaceholder");
   setText("nav-messages", I18N.t("nav.messages"));
   setText("nav-profile", I18N.t("nav.profile"));
   setText("nav-post", I18N.t("nav.postAd"));
