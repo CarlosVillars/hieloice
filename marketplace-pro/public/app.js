@@ -3304,6 +3304,11 @@ const CREATE_WIZARD_FILTERS = [
   { id: "vintage", css: "sepia(0.4) contrast(0.9) brightness(1.05) saturate(0.85)" },
 ];
 
+const CREATE_WIZARD_STICKERS = ["\u{1F600}", "\u{1F602}", "\u{1F60D}", "\u{1F525}", "\u{1F389}", "\u{1F4DA}", "❤️", "\u{1F44D}", "\u{1F60E}", "✨", "\u{1F973}", "\u{1F4D6}"];
+
+const WIZARD_HOLD_THRESHOLD_MS = 280;
+const WIZARD_RING_TARGET_MS = MAX_MOMENT_VIDEO_SECONDS * 1000;
+
 function createWizardFilterCss(id) {
   const f = CREATE_WIZARD_FILTERS.find((x) => x.id === id);
   return f ? f.css : "";
@@ -3312,6 +3317,7 @@ function createWizardFilterCss(id) {
 let createWizard = null;
 
 function stopCreateWizardCamera() {
+  if (createWizard) stopWizardRing();
   if (createWizard && createWizard.stream) {
     createWizard.stream.getTracks().forEach((t) => t.stop());
     createWizard.stream = null;
@@ -3335,9 +3341,14 @@ function openCreateWizard() {
     location.hash = "#/login";
     return;
   }
-  createWizard = { step: 1, filter: "none", mediaType: null, rawDataUrl: null, recording: false, stream: null, recorder: null, chunks: [], durationSeconds: null };
+  createWizard = {
+    step: 1, filter: "none", mediaType: null, rawDataUrl: null, recording: false,
+    stream: null, recorder: null, chunks: [], durationSeconds: null,
+    facingMode: "user", flashOn: false, timerMode: 0,
+    recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
+    overlays: [],
+  };
   const overlay = document.createElement("div");
-  overlay.className = "modal-overlay create-wizard-overlay";
   overlay.id = "create-wizard-overlay";
   document.body.appendChild(overlay);
   drawCreateWizard();
@@ -3358,161 +3369,453 @@ function wireCreateWizardFilterRow(onChange) {
   });
 }
 
+function wizardFormatTime(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m + ":" + String(r).padStart(2, "0");
+}
+
+function stopWizardRing() {
+  if (createWizard.ringRaf) cancelAnimationFrame(createWizard.ringRaf);
+  createWizard.ringRaf = null;
+}
+
+function startWizardRing() {
+  const circle = document.getElementById("wizard-fs-ring-circle");
+  const timeLabel = document.getElementById("wizard-fs-rec-time");
+  const R = 30;
+  const C = 2 * Math.PI * R;
+  const tick = () => {
+    if (!createWizard || !createWizard.recording) return;
+    const elapsed = createWizard.recordAccumMs + (Date.now() - createWizard.segmentStartTs);
+    const frac = Math.min(1, elapsed / WIZARD_RING_TARGET_MS);
+    if (circle) circle.style.strokeDashoffset = String(C * (1 - frac));
+    if (timeLabel) timeLabel.textContent = wizardFormatTime(elapsed);
+    if (frac >= 1) {
+      finalizeWizardRecording();
+      return;
+    }
+    createWizard.ringRaf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function updateWizardSideRailEnabled() {
+  const locked = createWizard.recordAccumMs > 0 || createWizard.recording;
+  const flip = document.getElementById("wizard-fs-flip-btn");
+  const flash = document.getElementById("wizard-fs-flash-btn");
+  const timer = document.getElementById("wizard-fs-timer-btn");
+  if (flip) flip.disabled = locked;
+  if (flash) flash.disabled = locked;
+  if (timer) timer.disabled = locked;
+}
+
+function showWizardRecBadge(show) {
+  const el = document.getElementById("wizard-fs-rec-badge");
+  if (el) el.style.display = show ? "flex" : "none";
+}
+
+function updateWizardHint(text) {
+  const el = document.getElementById("wizard-fs-hint");
+  if (el) el.textContent = text;
+}
+
+function updateWizardFlashSupport() {
+  const btn = document.getElementById("wizard-fs-flash-btn");
+  if (!btn || !createWizard.stream) return;
+  const track = createWizard.stream.getVideoTracks()[0];
+  const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+  btn.style.display = caps && caps.torch ? "flex" : "none";
+  if (!(caps && caps.torch)) createWizard.flashOn = false;
+}
+
+function wizardToggleFlash() {
+  if (!createWizard.stream) return;
+  const track = createWizard.stream.getVideoTracks()[0];
+  if (!track || !track.getCapabilities || !track.getCapabilities().torch) return;
+  createWizard.flashOn = !createWizard.flashOn;
+  track.applyConstraints({ advanced: [{ torch: createWizard.flashOn }] }).catch(() => {});
+  const btn = document.getElementById("wizard-fs-flash-btn");
+  if (btn) btn.classList.toggle("active", createWizard.flashOn);
+}
+
+function wizardCycleTimer() {
+  createWizard.timerMode = createWizard.timerMode === 0 ? 3 : createWizard.timerMode === 3 ? 10 : 0;
+  const btn = document.getElementById("wizard-fs-timer-btn");
+  if (btn) {
+    btn.classList.toggle("active", createWizard.timerMode !== 0);
+    btn.innerHTML = createWizard.timerMode === 0 ? "&#9201;" : createWizard.timerMode + "s";
+  }
+}
+
+function wizardRunCountdown(seconds) {
+  return new Promise((resolve) => {
+    const wrap = document.getElementById("wizard-fs-video-wrap");
+    if (!wrap) { resolve(); return; }
+    const el = document.createElement("div");
+    el.className = "wizard-fs-countdown";
+    wrap.appendChild(el);
+    let n = seconds;
+    el.textContent = String(n);
+    const iv = setInterval(() => {
+      n -= 1;
+      if (n <= 0) {
+        clearInterval(iv);
+        el.remove();
+        resolve();
+      } else {
+        el.textContent = String(n);
+      }
+    }, 1000);
+  });
+}
+
+function startWizardCameraStream() {
+  const video = document.getElementById("wizard-fs-video");
+  const fallback = document.getElementById("wizard-fs-fallback");
+  if (!video) return;
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    video.style.display = "none";
+    if (fallback) fallback.style.display = "flex";
+    return;
+  }
+  navigator.mediaDevices
+    .getUserMedia({ video: { facingMode: createWizard.facingMode }, audio: true })
+    .then((stream) => {
+      createWizard.stream = stream;
+      video.srcObject = stream;
+      video.style.display = "";
+      if (fallback) fallback.style.display = "none";
+      updateWizardFlashSupport();
+    })
+    .catch(() => {
+      video.style.display = "none";
+      if (fallback) fallback.style.display = "flex";
+    });
+}
+
+function wizardFlipCamera() {
+  if (createWizard.recordAccumMs > 0 || createWizard.recording) return;
+  const wrap = document.getElementById("wizard-fs-video-wrap");
+  createWizard.facingMode = createWizard.facingMode === "user" ? "environment" : "user";
+  if (createWizard.stream) createWizard.stream.getTracks().forEach((t) => t.stop());
+  if (wrap) wrap.classList.toggle("mirrored", createWizard.facingMode === "user");
+  startWizardCameraStream();
+}
+
+function finalizeWizardRecording() {
+  stopWizardRing();
+  if (createWizard.recorder && createWizard.recorder.state !== "inactive") {
+    createWizard.recorder.stop();
+  }
+}
+
+function finalizeWizardVideo() {
+  const blob = new Blob(createWizard.chunks, { type: "video/webm" });
+  createWizard.durationSeconds = createWizard.recordAccumMs / 1000;
+  const reader = new FileReader();
+  reader.onload = () => {
+    createWizard.rawDataUrl = reader.result;
+    createWizard.mediaType = "video";
+    createWizard.step = 2;
+    stopCreateWizardCamera();
+    drawCreateWizard();
+  };
+  reader.readAsDataURL(blob);
+}
+
+function wireWizardCaptureGesture() {
+  const btn = document.getElementById("wizard-fs-capture-btn");
+  const video = document.getElementById("wizard-fs-video");
+  if (!btn) return;
+
+  const beginHoldRecording = () => {
+    if (!createWizard.stream) return;
+    if (!createWizard.recorder) {
+      try {
+        createWizard.recorder = new MediaRecorder(createWizard.stream);
+      } catch (e) {
+        alert(I18N.t("create.cameraUnavailable"));
+        return;
+      }
+      createWizard.chunks = [];
+      createWizard.recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size) createWizard.chunks.push(e.data);
+      };
+      createWizard.recorder.onstop = finalizeWizardVideo;
+      createWizard.recorder.start(250);
+    } else if (createWizard.recorder.state === "paused") {
+      createWizard.recorder.resume();
+    }
+    createWizard.recording = true;
+    createWizard.segmentStartTs = Date.now();
+    btn.classList.add("recording");
+    showWizardRecBadge(true);
+    startWizardRing();
+    updateWizardSideRailEnabled();
+    updateWizardHint(I18N.t("create.recordingHint"));
+  };
+
+  const pauseHoldRecording = () => {
+    if (!createWizard.recording) return;
+    createWizard.recording = false;
+    createWizard.recordAccumMs += Date.now() - createWizard.segmentStartTs;
+    if (createWizard.recorder && createWizard.recorder.state === "recording") {
+      createWizard.recorder.pause();
+    }
+    btn.classList.remove("recording");
+    showWizardRecBadge(false);
+    stopWizardRing();
+    const doneBtn = document.getElementById("wizard-fs-done-btn");
+    if (doneBtn) doneBtn.removeAttribute("disabled");
+    updateWizardHint(I18N.t("create.addMoreOrDone"));
+    if (createWizard.recordAccumMs >= WIZARD_RING_TARGET_MS) {
+      finalizeWizardRecording();
+    }
+  };
+
+  const takePhoto = () => {
+    if (!video || !video.srcObject) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 720;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext("2d");
+    if (createWizard.facingMode === "user") {
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    createWizard.rawDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    createWizard.mediaType = "image";
+    createWizard.step = 2;
+    stopCreateWizardCamera();
+    drawCreateWizard();
+  };
+
+  const runCaptureFlow = async (isHoldPath) => {
+    if (createWizard.timerMode > 0 && createWizard.recordAccumMs === 0) {
+      btn.disabled = true;
+      await wizardRunCountdown(createWizard.timerMode);
+      btn.disabled = false;
+      takePhoto();
+      return;
+    }
+    if (isHoldPath) beginHoldRecording();
+    else takePhoto();
+  };
+
+  btn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    btn.classList.add("pressed");
+    createWizard.holdArmed = true;
+    createWizard.holdTimer = setTimeout(() => {
+      if (createWizard.holdArmed) runCaptureFlow(true);
+    }, WIZARD_HOLD_THRESHOLD_MS);
+  });
+
+  const release = () => {
+    btn.classList.remove("pressed");
+    if (!createWizard.holdArmed) return;
+    createWizard.holdArmed = false;
+    if (createWizard.holdTimer) {
+      clearTimeout(createWizard.holdTimer);
+      createWizard.holdTimer = null;
+    }
+    if (createWizard.recording) {
+      pauseHoldRecording();
+    } else if (createWizard.recordAccumMs === 0) {
+      runCaptureFlow(false);
+    }
+  };
+  btn.addEventListener("pointerup", release);
+  btn.addEventListener("pointerleave", () => { if (createWizard.recording) release(); });
+  btn.addEventListener("pointercancel", release);
+}
+
+function wizardHandleMediaFile(file) {
+  if (!file) return;
+  const isVideo = file.type.startsWith("video/");
+  if (!isVideo) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      createWizard.rawDataUrl = reader.result;
+      createWizard.mediaType = "image";
+      createWizard.step = 2;
+      stopCreateWizardCamera();
+      drawCreateWizard();
+    };
+    reader.readAsDataURL(file);
+    return;
+  }
+  const probe = document.createElement("video");
+  probe.preload = "metadata";
+  const objectUrl = URL.createObjectURL(file);
+  probe.onloadedmetadata = () => {
+    URL.revokeObjectURL(objectUrl);
+    if (probe.duration && probe.duration > MAX_MOMENT_VIDEO_SECONDS) {
+      alert(I18N.t("moments.videoTooLong"));
+      return;
+    }
+    createWizard.durationSeconds = probe.duration || null;
+    const reader = new FileReader();
+    reader.onload = () => {
+      createWizard.rawDataUrl = reader.result;
+      createWizard.mediaType = "video";
+      createWizard.step = 2;
+      stopCreateWizardCamera();
+      drawCreateWizard();
+    };
+    reader.readAsDataURL(file);
+  };
+  probe.src = objectUrl;
+}
+
+function renderWizardOverlays(interactive) {
+  const wrap = document.getElementById("wizard-preview-wrap");
+  if (!wrap) return;
+  wrap.querySelectorAll(".wizard-overlay-item").forEach((el) => el.remove());
+  createWizard.overlays.forEach((ov) => {
+    const el = document.createElement("div");
+    el.className = "wizard-overlay-item " + ov.type;
+    el.style.left = ov.xPct + "%";
+    el.style.top = ov.yPct + "%";
+    el.textContent = ov.value;
+    if (ov.type === "text") el.style.color = ov.color;
+    if (interactive) wireWizardOverlayDrag(el, wrap, ov);
+    wrap.appendChild(el);
+  });
+}
+
+function wireWizardOverlayDrag(el, wrap, ov) {
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    el.classList.add("dragging");
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+    const move = (ev) => {
+      const rect = wrap.getBoundingClientRect();
+      let xPct = ((ev.clientX - rect.left) / rect.width) * 100;
+      let yPct = ((ev.clientY - rect.top) / rect.height) * 100;
+      xPct = Math.max(4, Math.min(96, xPct));
+      yPct = Math.max(4, Math.min(96, yPct));
+      ov.xPct = xPct;
+      ov.yPct = yPct;
+      el.style.left = xPct + "%";
+      el.style.top = yPct + "%";
+    };
+    const up = () => {
+      el.classList.remove("dragging");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+}
+
+function drawWizardStickerPicker() {
+  let picker = document.getElementById("wizard-sticker-picker");
+  if (picker) {
+    picker.remove();
+    return;
+  }
+  picker = document.createElement("div");
+  picker.className = "wizard-sticker-picker";
+  picker.id = "wizard-sticker-picker";
+  picker.innerHTML = CREATE_WIZARD_STICKERS.map((s) => `<button data-emoji="${s}">${s}</button>`).join("");
+  const toolbar = document.querySelector(".wizard-edit-toolbar");
+  if (!toolbar) return;
+  toolbar.insertAdjacentElement("afterend", picker);
+  picker.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard.overlays.push({ id: "s" + Date.now(), type: "sticker", value: btn.dataset.emoji, xPct: 50, yPct: 50 });
+      renderWizardOverlays(true);
+      picker.remove();
+    });
+  });
+}
+
 function drawCreateWizard() {
   const overlay = document.getElementById("create-wizard-overlay");
   if (!overlay || !createWizard) return;
 
   if (createWizard.step === 1) {
+    overlay.className = "wizard-fs-overlay";
+    const ringC = 2 * Math.PI * 30;
     overlay.innerHTML = `
-      <div class="modal-box wizard-box">
-        <h2 class="section-heading">${I18N.t("create.step1Title")}</h2>
-        <div class="wizard-camera-wrap">
-          <video id="wizard-camera-video" autoplay playsinline muted style="filter:${createWizardFilterCss(createWizard.filter)};"></video>
-          <div class="wizard-camera-fallback" id="wizard-camera-fallback" style="display:none;">
-            <p>${I18N.t("create.cameraUnavailable")}</p>
-          </div>
+      <div class="wizard-fs-video-wrap ${createWizard.facingMode === "user" ? "mirrored" : ""}" id="wizard-fs-video-wrap">
+        <video id="wizard-fs-video" autoplay playsinline muted style="filter:${createWizardFilterCss(createWizard.filter)};"></video>
+        <div class="wizard-fs-fallback" id="wizard-fs-fallback" style="display:none;">
+          <p>${I18N.t("create.cameraUnavailable")}</p>
         </div>
-        ${createWizardFilterRow()}
-        <div class="wizard-capture-row">
-          <button class="btn btn-secondary" id="wizard-upload-photo-btn">${I18N.t("moments.uploadPhoto")}</button>
-          <button class="btn wizard-capture-btn" id="wizard-capture-btn">${I18N.t("create.capturePhoto")}</button>
-          <button class="btn btn-secondary" id="wizard-record-btn">${I18N.t("create.startVideo")}</button>
-          <button class="btn btn-secondary" id="wizard-upload-video-btn">${I18N.t("create.uploadVideo")}</button>
+        <div class="wizard-fs-topbar">
+          <button class="wizard-fs-icon-btn" id="wizard-fs-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+          <div class="wizard-fs-rec-badge" id="wizard-fs-rec-badge" style="display:none;"><span class="wizard-fs-rec-dot"></span><span id="wizard-fs-rec-time">0:00</span></div>
+          <div style="width:40px;"></div>
         </div>
-        <p class="field-hint" id="wizard-record-hint"></p>
-        <input type="file" id="wizard-file-photo" accept="image/*" style="display:none;" />
-        <input type="file" id="wizard-file-video" accept="video/*" style="display:none;" />
-        <div class="action-row">
-          <button class="btn btn-secondary" id="wizard-cancel">${I18N.t("common.cancel")}</button>
+        <div class="wizard-fs-side-rail">
+          <button class="wizard-fs-icon-btn" id="wizard-fs-flip-btn" title="${I18N.t("create.flipCamera")}">&#8635;</button>
+          <button class="wizard-fs-icon-btn" id="wizard-fs-flash-btn" style="display:none;" title="${I18N.t("create.flash")}">&#9889;</button>
+          <button class="wizard-fs-icon-btn" id="wizard-fs-timer-btn" title="${I18N.t("create.timer")}">&#9201;</button>
         </div>
       </div>
+      <div class="wizard-fs-bottom">
+        <p class="wizard-fs-hint" id="wizard-fs-hint">${I18N.t("create.tapHoldHint")}</p>
+        <div class="wizard-fs-filter-rail">${CREATE_WIZARD_FILTERS.map(
+          (f) => `<button class="wizard-fs-filter-item ${createWizard.filter === f.id ? "active" : ""}" data-filter="${f.id}">
+            <span class="wizard-fs-filter-thumb" style="filter:${f.css};"></span>
+            <span class="wizard-fs-filter-label">${I18N.t("create.filter_" + f.id)}</span>
+          </button>`
+        ).join("")}</div>
+        <div class="wizard-fs-controls-row">
+          <button class="wizard-fs-gallery-btn" id="wizard-fs-gallery-btn" title="${I18N.t("create.uploadFromGallery")}">&#128247;</button>
+          <div class="wizard-fs-capture-wrap">
+            <svg class="wizard-fs-capture-ring" viewBox="0 0 70 70" width="76" height="76">
+              <circle cx="35" cy="35" r="30" fill="none" stroke="var(--gold)" stroke-width="4" stroke-dasharray="${ringC}" stroke-dashoffset="${ringC}" id="wizard-fs-ring-circle" stroke-linecap="round"></circle>
+            </svg>
+            <button class="wizard-fs-capture-btn" id="wizard-fs-capture-btn" aria-label="${I18N.t("create.capturePhoto")}"></button>
+          </div>
+          <button class="wizard-fs-done-btn" id="wizard-fs-done-btn" disabled title="${I18N.t("create.next")}">&#10003;</button>
+        </div>
+      </div>
+      <input type="file" id="wizard-file-media" accept="image/*,video/*" style="display:none;" />
     `;
 
-    const video = document.getElementById("wizard-camera-video");
-    const fallback = document.getElementById("wizard-camera-fallback");
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices
-        .getUserMedia({ video: true, audio: true })
-        .then((stream) => {
-          createWizard.stream = stream;
-          video.srcObject = stream;
-        })
-        .catch(() => {
-          video.style.display = "none";
-          fallback.style.display = "block";
-        });
-    } else {
-      video.style.display = "none";
-      fallback.style.display = "block";
-    }
+    startWizardCameraStream();
 
-    wireCreateWizardFilterRow(() => {
-      if (video) video.style.filter = createWizardFilterCss(createWizard.filter);
+    document.querySelectorAll(".wizard-fs-filter-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        createWizard.filter = btn.dataset.filter;
+        document.querySelectorAll(".wizard-fs-filter-item").forEach((b) => b.classList.toggle("active", b.dataset.filter === createWizard.filter));
+        const v = document.getElementById("wizard-fs-video");
+        if (v) v.style.filter = createWizardFilterCss(createWizard.filter);
+      });
     });
 
-    document.getElementById("wizard-capture-btn").addEventListener("click", () => {
-      if (!video || !video.srcObject) return;
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth || 720;
-      canvas.height = video.videoHeight || 720;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      createWizard.rawDataUrl = canvas.toDataURL("image/jpeg", 0.92);
-      createWizard.mediaType = "image";
-      createWizard.step = 2;
-      stopCreateWizardCamera();
-      drawCreateWizard();
+    document.getElementById("wizard-fs-close").addEventListener("click", closeCreateWizard);
+    document.getElementById("wizard-fs-flip-btn").addEventListener("click", wizardFlipCamera);
+    document.getElementById("wizard-fs-flash-btn").addEventListener("click", wizardToggleFlash);
+    document.getElementById("wizard-fs-timer-btn").addEventListener("click", wizardCycleTimer);
+    document.getElementById("wizard-fs-gallery-btn").addEventListener("click", () => document.getElementById("wizard-file-media").click());
+    document.getElementById("wizard-file-media").addEventListener("change", (e) => wizardHandleMediaFile(e.target.files[0]));
+    document.getElementById("wizard-fs-done-btn").addEventListener("click", () => {
+      if (createWizard.recordAccumMs > 0) finalizeWizardRecording();
     });
 
-    const recordBtn = document.getElementById("wizard-record-btn");
-    const recordHint = document.getElementById("wizard-record-hint");
-    recordBtn.addEventListener("click", () => {
-      if (!createWizard.stream) return;
-      if (!createWizard.recording) {
-        createWizard.chunks = [];
-        try {
-          createWizard.recorder = new MediaRecorder(createWizard.stream);
-        } catch (e) {
-          alert(I18N.t("create.cameraUnavailable"));
-          return;
-        }
-        createWizard.recorder.ondataavailable = (e) => {
-          if (e.data && e.data.size) createWizard.chunks.push(e.data);
-        };
-        createWizard.recordStart = Date.now();
-        createWizard.recorder.onstop = () => {
-          const blob = new Blob(createWizard.chunks, { type: "video/webm" });
-          createWizard.durationSeconds = (Date.now() - createWizard.recordStart) / 1000;
-          const reader = new FileReader();
-          reader.onload = () => {
-            createWizard.rawDataUrl = reader.result;
-            createWizard.mediaType = "video";
-            createWizard.step = 2;
-            stopCreateWizardCamera();
-            drawCreateWizard();
-          };
-          reader.readAsDataURL(blob);
-        };
-        createWizard.recorder.start();
-        createWizard.recording = true;
-        recordBtn.textContent = I18N.t("create.stopVideo");
-        recordHint.textContent = I18N.t("create.recordingHint");
-      } else {
-        createWizard.recording = false;
-        if (createWizard.recorder) createWizard.recorder.stop();
-      }
-    });
-
-    document.getElementById("wizard-upload-photo-btn").addEventListener("click", () => document.getElementById("wizard-file-photo").click());
-    document.getElementById("wizard-upload-video-btn").addEventListener("click", () => document.getElementById("wizard-file-video").click());
-    document.getElementById("wizard-file-photo").addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        createWizard.rawDataUrl = reader.result;
-        createWizard.mediaType = "image";
-        createWizard.step = 2;
-        stopCreateWizardCamera();
-        drawCreateWizard();
-      };
-      reader.readAsDataURL(file);
-    });
-    document.getElementById("wizard-file-video").addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const probe = document.createElement("video");
-      probe.preload = "metadata";
-      const objectUrl = URL.createObjectURL(file);
-      probe.onloadedmetadata = () => {
-        URL.revokeObjectURL(objectUrl);
-        if (probe.duration && probe.duration > MAX_MOMENT_VIDEO_SECONDS) {
-          alert(I18N.t("moments.videoTooLong"));
-          return;
-        }
-        createWizard.durationSeconds = probe.duration || null;
-        const reader = new FileReader();
-        reader.onload = () => {
-          createWizard.rawDataUrl = reader.result;
-          createWizard.mediaType = "video";
-          createWizard.step = 2;
-          stopCreateWizardCamera();
-          drawCreateWizard();
-        };
-        reader.readAsDataURL(file);
-      };
-      probe.src = objectUrl;
-    });
-
-    document.getElementById("wizard-cancel").addEventListener("click", closeCreateWizard);
+    wireWizardCaptureGesture();
     return;
   }
 
   if (createWizard.step === 2) {
+    overlay.className = "modal-overlay create-wizard-overlay";
     overlay.innerHTML = `
       <div class="modal-box wizard-box">
         <h2 class="section-heading">${I18N.t("create.step2Title")}</h2>
-        <div class="wizard-preview-wrap">
+        <div class="wizard-edit-toolbar">
+          <button class="wizard-edit-tool-btn" id="wizard-add-text-btn" title="${I18N.t("create.addText")}">Aa</button>
+          <button class="wizard-edit-tool-btn" id="wizard-add-sticker-btn" title="${I18N.t("create.addSticker")}">&#128512;</button>
+        </div>
+        <div class="wizard-preview-wrap" id="wizard-preview-wrap">
           ${
             createWizard.mediaType === "video"
               ? `<video class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" controls></video>`
@@ -3528,6 +3831,7 @@ function drawCreateWizard() {
         <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel2">${I18N.t("common.cancel")}</a></p>
       </div>
     `;
+    renderWizardOverlays(true);
     document.getElementById("wizard-cancel2").addEventListener("click", (e) => {
       e.preventDefault();
       closeCreateWizard();
@@ -3538,10 +3842,21 @@ function drawCreateWizard() {
       if (img) img.style.filter = createWizardFilterCss(createWizard.filter);
       else if (vid) vid.style.filter = createWizardFilterCss(createWizard.filter);
     });
+    document.getElementById("wizard-add-text-btn").addEventListener("click", () => {
+      const val = prompt(I18N.t("create.addTextPrompt"));
+      if (!val) return;
+      createWizard.overlays.push({ id: "t" + Date.now(), type: "text", value: val.slice(0, 60), color: "#FFD84D", xPct: 50, yPct: 35 });
+      renderWizardOverlays(true);
+    });
+    document.getElementById("wizard-add-sticker-btn").addEventListener("click", drawWizardStickerPicker);
     document.getElementById("wizard-back").addEventListener("click", () => {
       createWizard.step = 1;
       createWizard.rawDataUrl = null;
       createWizard.mediaType = null;
+      createWizard.overlays = [];
+      createWizard.recordAccumMs = 0;
+      createWizard.recorder = null;
+      createWizard.chunks = [];
       drawCreateWizard();
     });
     document.getElementById("wizard-next").addEventListener("click", () => {
@@ -3603,8 +3918,13 @@ function drawCreateWizard() {
     msgEl.className = "form-msg";
     try {
       let finalMedia = createWizard.rawDataUrl;
-      if (createWizard.mediaType === "image" && createWizard.filter !== "none") {
-        finalMedia = await bakeImageFilter(createWizard.rawDataUrl, createWizardFilterCss(createWizard.filter));
+      if (createWizard.mediaType === "image") {
+        if (createWizard.filter !== "none") {
+          finalMedia = await bakeImageFilter(finalMedia, createWizardFilterCss(createWizard.filter));
+        }
+        if (createWizard.overlays.length) {
+          finalMedia = await bakeWizardOverlays(finalMedia, createWizard.overlays);
+        }
       }
       const hashtagsRaw = document.getElementById("wizard-hashtags").value.trim();
       const hashtags = hashtagsRaw
@@ -3652,6 +3972,44 @@ function bakeImageFilter(dataUrl, cssFilter) {
       const ctx = canvas.getContext("2d");
       ctx.filter = cssFilter;
       ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/jpeg", 0.92));
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+// Draws text/sticker overlays (added in the create-wizard edit step) onto the
+// final image so they're part of the published file, not just a DOM overlay.
+function bakeWizardOverlays(dataUrl, overlays) {
+  if (!overlays || !overlays.length) return Promise.resolve(dataUrl);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      overlays.forEach((ov) => {
+        const x = (ov.xPct / 100) * canvas.width;
+        const y = (ov.yPct / 100) * canvas.height;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        if (ov.type === "text") {
+          const fontSize = Math.round(canvas.width * 0.06);
+          ctx.font = `800 ${fontSize}px sans-serif`;
+          ctx.fillStyle = ov.color || "#FFD84D";
+          ctx.shadowColor = "rgba(0,0,0,0.5)";
+          ctx.shadowBlur = 6;
+          ctx.fillText(ov.value, x, y);
+          ctx.shadowBlur = 0;
+        } else {
+          const fontSize = Math.round(canvas.width * 0.12);
+          ctx.font = `${fontSize}px sans-serif`;
+          ctx.fillText(ov.value, x, y);
+        }
+      });
       resolve(canvas.toDataURL("image/jpeg", 0.92));
     };
     img.onerror = reject;

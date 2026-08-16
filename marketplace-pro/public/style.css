@@ -317,18 +317,92 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 
 /* ---- Create wizard (nav "+": camera capture -> edit/filters -> caption+hashtags) ---- */
 .wizard-box { max-width: 420px; }
-.wizard-camera-wrap { position: relative; width: 100%; aspect-ratio: 3/4; background: #111; border-radius: 10px; overflow: hidden; margin-bottom: 10px; }
-.wizard-camera-wrap video { width: 100%; height: 100%; object-fit: cover; }
-.wizard-camera-fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; text-align: center; padding: 20px; font-size: 13px; }
+
+/* Step 1: immersive full-screen camera (Instagram/TikTok/Snapchat-style) */
+.wizard-fs-overlay {
+  position: fixed; inset: 0; background: #000; z-index: 300;
+  display: flex; flex-direction: column; overflow: hidden;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.wizard-fs-video-wrap { position: relative; flex: 1; overflow: hidden; background: #000; }
+.wizard-fs-video-wrap video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.wizard-fs-video-wrap.mirrored video { transform: scaleX(-1); }
+.wizard-fs-fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; text-align: center; padding: 24px; font-size: 14px; }
+.wizard-fs-topbar { position: absolute; top: 10px; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; z-index: 2; }
+.wizard-fs-icon-btn {
+  width: 40px; height: 40px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,0.4); color: #fff; font-size: 18px;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.wizard-fs-icon-btn.active { background: var(--gold); color: #2b1810; }
+.wizard-fs-icon-btn:disabled { opacity: 0.35; cursor: default; }
+.wizard-fs-side-rail { position: absolute; top: 60px; right: 12px; display: flex; flex-direction: column; gap: 12px; z-index: 2; }
+.wizard-fs-rec-badge {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  background: #E5484D; color: #fff; font-size: 12px; font-weight: 700;
+  padding: 4px 12px; border-radius: 999px; display: flex; align-items: center; gap: 6px; z-index: 2;
+}
+.wizard-fs-rec-dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: wizardRecPulse 1s infinite; }
+@keyframes wizardRecPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+.wizard-fs-countdown {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 96px; font-weight: 800; color: #fff; text-shadow: 0 2px 10px rgba(0,0,0,0.6); z-index: 3; pointer-events: none;
+}
+.wizard-fs-bottom { padding: 10px 0 18px; display: flex; flex-direction: column; gap: 10px; z-index: 2; }
+.wizard-fs-filter-rail { display: flex; gap: 12px; overflow-x: auto; padding: 2px 16px; scrollbar-width: none; }
+.wizard-fs-filter-rail::-webkit-scrollbar { display: none; }
+.wizard-fs-filter-item { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; background: none; border: none; }
+.wizard-fs-filter-thumb { width: 48px; height: 48px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.5); background: var(--accent-strong); }
+.wizard-fs-filter-item.active .wizard-fs-filter-thumb { border-color: var(--gold); border-width: 3px; }
+.wizard-fs-filter-label { font-size: 10px; color: #fff; opacity: 0.85; }
+.wizard-fs-controls-row { display: flex; align-items: center; justify-content: space-between; padding: 0 28px; }
+.wizard-fs-gallery-btn {
+  width: 46px; height: 46px; border-radius: 10px; border: 2px solid rgba(255,255,255,0.6);
+  background: rgba(255,255,255,0.15); color: #fff; font-size: 18px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.wizard-fs-capture-wrap { position: relative; width: 76px; height: 76px; display: flex; align-items: center; justify-content: center; }
+.wizard-fs-capture-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+.wizard-fs-capture-btn {
+  width: 66px; height: 66px; border-radius: 50%; background: #fff;
+  border: 4px solid rgba(255,255,255,0.4); cursor: pointer; padding: 0;
+  transition: transform 0.1s;
+}
+.wizard-fs-capture-btn.pressed { transform: scale(0.9); }
+.wizard-fs-capture-btn.recording { background: #E5484D; }
+.wizard-fs-done-btn {
+  width: 46px; height: 46px; border-radius: 50%; border: none; background: var(--gold);
+  color: #2b1810; font-size: 20px; font-weight: 800; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.wizard-fs-done-btn[disabled] { visibility: hidden; }
+.wizard-fs-hint { text-align: center; font-size: 11px; color: rgba(255,255,255,0.75); padding: 0 20px; }
+
+/* Step 2/3: preview + filters + edit tools */
 .wizard-filter-row { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0 10px; }
 .wizard-filter-swatch { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--border-color); background: var(--accent-strong); cursor: pointer; }
 .wizard-filter-swatch.active { border-color: var(--gold); }
 .wizard-capture-row { display: flex; gap: 8px; align-items: center; justify-content: center; margin-bottom: 6px; flex-wrap: wrap; }
 .wizard-capture-btn { background: var(--accent); color: var(--accent-text-on); border-radius: 30px; padding: 10px 22px; font-weight: 800; }
-.wizard-preview-wrap { width: 100%; border-radius: 10px; overflow: hidden; background: #111; margin-bottom: 10px; }
+.wizard-preview-wrap { position: relative; width: 100%; border-radius: 10px; overflow: hidden; background: #111; margin-bottom: 10px; }
 .wizard-preview-wrap.wizard-preview-small { max-height: 220px; }
 .wizard-preview-media { width: 100%; max-height: 380px; object-fit: contain; display: block; margin: 0 auto; background: #111; }
 .wizard-preview-small .wizard-preview-media { max-height: 220px; }
+.wizard-edit-toolbar { display: flex; gap: 10px; justify-content: center; margin-bottom: 8px; }
+.wizard-edit-tool-btn {
+  width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--border-color);
+  background: var(--bg-surface); color: var(--text-primary); font-size: 16px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.wizard-overlay-item {
+  position: absolute; cursor: grab; user-select: none; touch-action: none;
+  padding: 4px 8px; white-space: nowrap; transform: translate(-50%, -50%);
+}
+.wizard-overlay-item.text { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); border-radius: 6px; }
+.wizard-overlay-item.sticker { font-size: 36px; }
+.wizard-overlay-item.dragging { cursor: grabbing; outline: 1px dashed var(--gold); }
+.wizard-sticker-picker { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; padding: 8px 0; }
+.wizard-sticker-picker button { font-size: 24px; background: none; border: none; cursor: pointer; padding: 4px; }
 @media (max-width: 640px) {
   .icon-nav { justify-content: space-between; }
   .icon-nav-btn { padding: 8px 6px 6px; flex: 1; }
