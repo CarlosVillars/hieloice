@@ -140,7 +140,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   color: var(--accent-text-on);
   text-shadow: 0 1px 2px rgba(0,0,0,0.35);
 }
-.brand-logo-img { display: block; height: 34px; width: auto; border-radius: 8px; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.25)); }
+.brand-logo-img { display: block; height: 48px; width: auto; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.25)); }
 .brand-logo-dark { display: none; }
 [data-theme="dark"] .brand-logo-light { display: none; }
 [data-theme="dark"] .brand-logo-dark { display: block; }
