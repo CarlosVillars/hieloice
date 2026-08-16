@@ -1,23 +1,24 @@
 // Simple i18n: English primary, Spanish secondary. No build step, plain objects.
 
+// Book genres, ordered by real-world C2C used-book resale demand: broad
+// fiction/bestsellers first, then the highest-volume genre categories,
+// textbooks (very high turnover among students), then steadier backlist
+// categories, ending with niche/collectible.
 const CATEGORY_LIST = [
-  { slug: "vehicles", icon: "\u{1F697}", en: "Vehicles", es: "Vehiculos" },
-  { slug: "auto-parts", icon: "\u{1F529}", en: "Auto Parts", es: "Repuestos" },
-  { slug: "heavy-machinery", icon: "\u{1F69C}", en: "Heavy Machinery", es: "Maquinaria Pesada" },
-  { slug: "food", icon: "\u{1F34E}", en: "Food", es: "Comida" },
-  { slug: "clothing", icon: "\u{1F455}", en: "Clothing", es: "Ropa" },
-  { slug: "video-games", icon: "\u{1F3AE}", en: "Video Games", es: "Videojuegos" },
-  { slug: "cell-phones", icon: "\u{1F4F1}", en: "Cell Phones", es: "Celulares" },
-  { slug: "computers-tech", icon: "\u{1F4BB}", en: "Computers & Technology", es: "Computadoras y Tecnologia" },
-  { slug: "real-estate", icon: "\u{1F3E0}", en: "Real Estate", es: "Bienes Raices" },
-  { slug: "generators-solar", icon: "\u{2600}\u{FE0F}", img: "icon-generators-solar.svg?v=2", en: "Generators & Solar Panels", es: "Generadores y Paneles Solares" },
-  { slug: "art-crafts", icon: "\u{1F3A8}", en: "Art & Crafts", es: "Arte y Manualidades" },
-  { slug: "airplanes-jets", icon: "\u{2708}\u{FE0F}", en: "Airplanes & Jets", es: "Aviones y Jets" },
-  { slug: "construction-materials", icon: "\u{1F9F1}", en: "Construction Materials", es: "Materiales de Construccion" },
-  { slug: "appliances", icon: "\u{1F9FA}", img: "icon-appliances.svg?v=2", en: "Appliances", es: "Electrodomesticos" },
-  { slug: "jewelry", icon: "\u{1F48D}", en: "Jewelry", es: "Joyas" },
-  { slug: "toys", icon: "\u{1F9F8}", en: "Toys", es: "Juguetes" },
-  { slug: "other", icon: "\u{1F4E6}", en: "Other", es: "Otros" },
+  { slug: "bestsellers-fiction", icon: "\u{1F4D6}", en: "Fiction & Bestsellers", es: "Ficcion y Mas Vendidos" },
+  { slug: "mystery-thriller", icon: "\u{1F50D}", en: "Mystery & Thriller", es: "Misterio y Suspenso" },
+  { slug: "romance", icon: "\u{1F495}", en: "Romance", es: "Romance" },
+  { slug: "fantasy-scifi", icon: "\u{1F409}", en: "Fantasy & Sci-Fi", es: "Fantasia y Ciencia Ficcion" },
+  { slug: "textbooks-academic", icon: "\u{1F393}", en: "Textbooks & Academic", es: "Libros de Texto y Academicos" },
+  { slug: "self-help-nonfiction", icon: "\u{1F331}", en: "Self-Help & Non-Fiction", es: "Desarrollo Personal y No Ficcion" },
+  { slug: "children-ya", icon: "\u{1F9D2}", en: "Children's & YA", es: "Infantil y Juvenil" },
+  { slug: "comics-manga", icon: "\u{1F9B8}", en: "Comics & Manga", es: "Comics y Manga" },
+  { slug: "biography-history", icon: "\u{1F3DB}\u{FE0F}", en: "Biography & History", es: "Biografias e Historia" },
+  { slug: "classics-literature", icon: "\u{1F56F}\u{FE0F}", en: "Classics & Literature", es: "Clasicos y Literatura" },
+  { slug: "cooking-lifestyle", icon: "\u{1F373}", en: "Cooking & Lifestyle", es: "Cocina y Estilo de Vida" },
+  { slug: "religion-spirituality", icon: "\u{1F54A}\u{FE0F}", en: "Religion & Spirituality", es: "Religion y Espiritualidad" },
+  { slug: "rare-collectible", icon: "\u{1F4DC}", en: "Rare & Collectible", es: "Coleccionables y Primeras Ediciones" },
+  { slug: "other-books", icon: "\u{1F4E6}", en: "Other Books", es: "Otros Libros" },
 ];
 
 const STRINGS = {
