@@ -104,8 +104,8 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
    -> nav links row. The "..." menu holds language + logout so the top row
    stays clean at any screen size instead of wrapping awkwardly. */
 .topbar {
-  background: var(--bg-surface);
-  color: var(--text-primary);
+  background: var(--accent);
+  color: var(--accent-text-on);
   position: sticky;
   top: 0;
   z-index: 50;
@@ -136,9 +136,9 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 
 .topbar-menu-wrap { position: relative; flex-shrink: 0; }
 .topbar-menu-btn {
-  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  background: color-mix(in srgb, var(--accent-text-on) 18%, transparent);
   border: none;
-  color: var(--text-primary);
+  color: var(--accent-text-on);
   width: 38px;
   height: 38px;
   border-radius: 50%;
@@ -149,7 +149,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   align-items: center;
   justify-content: center;
 }
-.topbar-menu-btn:hover { background: color-mix(in srgb, var(--text-primary) 22%, transparent); }
+.topbar-menu-btn:hover { background: color-mix(in srgb, var(--accent-text-on) 30%, transparent); }
 .topbar-menu-dropdown {
   position: absolute;
   top: calc(100% + 8px);
@@ -192,7 +192,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .topbar-search button {
   border: none;
-  background: var(--accent);
+  background: var(--accent-strong);
   color: var(--accent-text-on);
   padding: 0 14px;
   border-radius: 0 6px 6px 0;
@@ -206,25 +206,26 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   flex-wrap: wrap;
 }
 .nav-link {
-  color: var(--text-secondary);
+  color: color-mix(in srgb, var(--accent-text-on) 88%, transparent);
   font-size: 14px;
   font-weight: 600;
 }
-.nav-link:hover { color: var(--text-primary); text-decoration: underline; }
+.nav-link:hover { color: var(--accent-text-on); text-decoration: underline; }
 .nav-link-btn {
   background: none;
   border: none;
-  color: var(--text-secondary);
+  color: color-mix(in srgb, var(--accent-text-on) 88%, transparent);
   font-size: 14px;
   font-weight: 600;
 }
 .nav-post-btn {
-  background: var(--accent);
-  color: var(--accent-text-on);
+  background: var(--accent-text-on);
+  color: var(--accent);
   padding: 7px 12px;
   border-radius: 6px;
+  font-weight: 700;
 }
-.nav-post-btn:hover { color: var(--accent-text-on); background: color-mix(in srgb, var(--accent) 85%, black); }
+.nav-post-btn:hover { color: var(--accent); background: color-mix(in srgb, var(--accent-text-on) 85%, transparent); }
 
 .nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; margin-left: 5px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; vertical-align: middle; }
 
