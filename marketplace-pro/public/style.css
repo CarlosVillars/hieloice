@@ -1,20 +1,20 @@
 :root {
-  --bg-page: #e3e0d8;
-  --bg-surface: #FFFFFF;
-  --bg-surface-alt: #F0EDE4;
-  --text-primary: #1a1a1a;
-  --text-secondary: #5f5b52;
-  --text-muted: #8f8b81;
-  --border-color: rgba(0,0,0,0.08);
-  --accent: #0f3d2e;
-  --accent-strong: #1c6b4f;
-  --accent-text-on: #FFFFFF;
-  --gold: #d4a017;
-  --gold-text-on: #1a1a1a;
+  --bg-page: #ECDECC;
+  --bg-surface: #FAF7F0;
+  --bg-surface-alt: #F4ECE0;
+  --text-primary: #2b1810;
+  --text-secondary: #6b5847;
+  --text-muted: #9c8b78;
+  --border-color: rgba(43,24,16,0.12);
+  --accent: #491829;
+  --accent-strong: #632038;
+  --accent-text-on: #F3E9D8;
+  --gold: #d99a12;
+  --gold-text-on: #2b1810;
   --danger: #C0392B;
   --danger-bg: rgba(192,57,43,0.08);
   --success: #1F8F5A;
-  --card-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  --card-shadow: 0 1px 3px rgba(43,24,16,0.12);
 }
 
 /* Premium account tier: exclusive black + gold skin, applied automatically
@@ -39,24 +39,24 @@
   --card-shadow: 0 1px 3px rgba(0,0,0,0.5);
 }
 
-/* Normal tier, optional dark mode: same green + gold brand colors as :root
-   light, just a dark background. User-toggleable via #theme-toggle-wrap
-   (see applyNormalThemePref() in app.js). Deliberately distinct from
-   [data-theme="premium"] (pure black bg, brighter gold, no green) so
+/* Normal tier, optional dark mode: same burgundy + gold brand colors as
+   :root light, just a dark wine background. User-toggleable via
+   #theme-toggle-wrap (see applyNormalThemePref() in app.js). Deliberately
+   distinct from [data-theme="premium"] (pure black bg, no burgundy) so
    premium still reads as exclusive. */
 [data-theme="dark"] {
-  --bg-page: #14201a;
-  --bg-surface: #1c2b22;
-  --bg-surface-alt: #24352a;
-  --text-primary: #F2F3F5;
-  --text-secondary: #a3aba4;
-  --text-muted: #7a8279;
-  --border-color: rgba(255,255,255,0.10);
-  --accent: #2f8f66;
-  --accent-strong: #45c98a;
-  --accent-text-on: #FFFFFF;
-  --gold: #e6c34d;
-  --gold-text-on: #1a1400;
+  --bg-page: #390F21;
+  --bg-surface: #49172C;
+  --bg-surface-alt: #350F1E;
+  --text-primary: #F3E9D8;
+  --text-secondary: #C9AF9C;
+  --text-muted: #8f7362;
+  --border-color: rgba(243,233,216,0.12);
+  --accent: #5A1627;
+  --accent-strong: #7a1f34;
+  --accent-text-on: #F3E9D8;
+  --gold: #e6a81c;
+  --gold-text-on: #2b1810;
   --danger: #E5484D;
   --danger-bg: rgba(229,72,77,0.12);
   --success: #3FBF7F;
