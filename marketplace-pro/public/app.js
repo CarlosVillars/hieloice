@@ -3595,7 +3595,7 @@ async function renderProfile(userId) {
   const [profile, reviews, products, photos, moments] = await Promise.all([
     api("/api/users/" + userId),
     api("/api/users/" + userId + "/reviews"),
-    api("/api/products?category=all").then((list) => list.filter((p) => p.sellerId === userId)),
+    api("/api/products?sellerId=" + encodeURIComponent(userId)),
     api("/api/users/" + userId + "/photos"),
     api("/api/moments/user/" + userId),
   ]);
@@ -3604,18 +3604,14 @@ async function renderProfile(userId) {
   let followStatus = null;
   let isBlocked = false;
   if (state.token && !isMe) {
-    try {
-      friendStatus = await api("/api/friends/status/" + userId, { auth: true });
-    } catch (e) {}
-    if (profile.isPage) {
-      try {
-        followStatus = await api("/api/follow/status/" + userId, { auth: true });
-      } catch (e) {}
-    }
-    try {
-      const bs = await api("/api/users/" + userId + "/block-status", { auth: true });
-      isBlocked = !!bs.blocked;
-    } catch (e) {}
+    const [friendRes, followRes, blockRes] = await Promise.allSettled([
+      api("/api/friends/status/" + userId, { auth: true }),
+      profile.isPage ? api("/api/follow/status/" + userId, { auth: true }) : Promise.resolve(null),
+      api("/api/users/" + userId + "/block-status", { auth: true }),
+    ]);
+    if (friendRes.status === "fulfilled") friendStatus = friendRes.value;
+    if (followRes.status === "fulfilled") followStatus = followRes.value;
+    if (blockRes.status === "fulfilled") isBlocked = !!(blockRes.value && blockRes.value.blocked);
   }
 
   const aboutRows = [
