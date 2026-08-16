@@ -3591,31 +3591,43 @@ async function renderProfile(userId) {
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
 
   const isMe = state.user && state.user.id === userId;
+  const wantsSocialStatus = !!(state.token && !isMe);
 
-  const [profile, reviews, products, photos, moments] = await Promise.all([
-    api("/api/users/" + userId),
-    api("/api/users/" + userId + "/reviews"),
-    api("/api/products?category=all").then((list) => list.filter((p) => p.sellerId === userId)),
-    api("/api/users/" + userId + "/photos"),
-    api("/api/moments/user/" + userId),
-  ]);
+  // Everything fires in ONE parallel wave - including friend/follow/block
+  // status, which previously waited for `profile` to resolve first (adding
+  // a full extra round-trip of latency on top of the main 5 calls). Follow
+  // status doesn't actually need to wait for profile.isPage - it's cheap to
+  // just always ask and ignore the result if it turns out not to apply.
+  const [profileRes, reviewsRes, productsRes, photosRes, momentsRes, friendRes, followRes, blockRes] =
+    await Promise.allSettled([
+      api("/api/users/" + userId),
+      api("/api/users/" + userId + "/reviews"),
+      api("/api/products?sellerId=" + encodeURIComponent(userId)),
+      api("/api/users/" + userId + "/photos"),
+      api("/api/moments/user/" + userId),
+      wantsSocialStatus ? api("/api/friends/status/" + userId, { auth: true }) : Promise.resolve(null),
+      wantsSocialStatus ? api("/api/follow/status/" + userId, { auth: true }) : Promise.resolve(null),
+      wantsSocialStatus ? api("/api/users/" + userId + "/block-status", { auth: true }) : Promise.resolve(null),
+    ]);
+
+  const profile = profileRes.status === "fulfilled" ? profileRes.value : null;
+  const reviews = reviewsRes.status === "fulfilled" ? reviewsRes.value : [];
+  const products = productsRes.status === "fulfilled" ? productsRes.value : [];
+  const photos = photosRes.status === "fulfilled" ? photosRes.value : [];
+  const moments = momentsRes.status === "fulfilled" ? momentsRes.value : [];
 
   let friendStatus = null;
   let followStatus = null;
   let isBlocked = false;
-  if (state.token && !isMe) {
-    try {
-      friendStatus = await api("/api/friends/status/" + userId, { auth: true });
-    } catch (e) {}
-    if (profile.isPage) {
-      try {
-        followStatus = await api("/api/follow/status/" + userId, { auth: true });
-      } catch (e) {}
-    }
-    try {
-      const bs = await api("/api/users/" + userId + "/block-status", { auth: true });
-      isBlocked = !!bs.blocked;
-    } catch (e) {}
+  if (wantsSocialStatus) {
+    if (friendRes.status === "fulfilled") friendStatus = friendRes.value;
+    if (followRes.status === "fulfilled" && profile && profile.isPage) followStatus = followRes.value;
+    if (blockRes.status === "fulfilled") isBlocked = !!(blockRes.value && blockRes.value.blocked);
+  }
+
+  if (!profile) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")}</p>`;
+    return;
   }
 
   const aboutRows = [
