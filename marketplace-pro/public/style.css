@@ -402,16 +402,14 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 
 /* Right-side labeled options rail, YouTube-Shorts-style layout with our own icon glyphs */
 .wizard-fs-rail {
-  position: absolute; top: 64px; right: 0; bottom: 150px; width: 66px;
-  background: rgba(0,0,0,0.38);
-  border-radius: 22px 0 0 22px; display: flex; flex-direction: column;
-  padding: 8px 0; overflow-y: auto; overflow-x: visible; z-index: 2;
-  /* Flat, uniform fill on purpose - not a top-to-bottom gradient. A fading
-     gradient made the rail look like it "ended" partway down (it faded to
-     near-invisible well before the last icons), which is what looked short.
-     Width is sized to the icon itself (46px) plus tight padding - there's no
-     spare/unused strip to the left of each icon anymore, matching the tight
-     YouTube-style rail instead of a wide mostly-empty panel.
+  position: absolute; top: 70px; right: 6px; width: 62px; max-height: calc(100% - 230px);
+  background: rgba(20,20,20,0.55);
+  border-radius: 30px; display: flex; flex-direction: column;
+  padding: 10px 0; overflow-y: auto; overflow-x: visible; z-index: 2;
+  /* One flat, fully-rounded pill sized to the icons themselves and floating
+     a few px off the screen edge - matches the real YouTube Shorts rail
+     (reference screenshot) instead of a tall panel stretched down the
+     screen with a fading gradient and per-icon circular backgrounds.
      overflow-x must stay "visible" (not the default/unset) - setting only
      overflow-y implicitly clips the X axis too (same class of bug fixed on
      .icon-nav), which would cut off the tap-to-reveal rail-label bubble
@@ -419,7 +417,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .wizard-fs-rail-item {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
-  padding: 9px 10px; background: none; border: none; cursor: pointer; color: #fff;
+  padding: 7px 8px; background: none; border: none; cursor: pointer; color: #fff;
 }
 .wizard-fs-rail-item .rail-label {
   font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; text-shadow: 0 1px 3px rgba(0,0,0,0.7);
@@ -430,11 +428,13 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .wizard-fs-rail-item.show-label .rail-label { opacity: 1; transform: translateX(0); }
 .wizard-fs-rail-item .rail-icon {
   font-size: 22px; width: 46px; height: 46px; line-height: 46px; text-align: center; flex: 0 0 auto;
-  background: rgba(255,255,255,0.16); border-radius: 50%; backdrop-filter: blur(2px);
-  transition: background 0.15s ease, transform 0.1s ease;
+  background: none; border-radius: 50%;
+  transition: transform 0.1s ease, opacity 0.15s ease;
+  /* No circular backdrop per icon on purpose - the reference rail shows
+     plain glyphs sitting directly on the one shared pill background. */
 }
-.wizard-fs-rail-item:active .rail-icon { transform: scale(0.9); background: rgba(255,255,255,0.28); }
-.wizard-fs-rail-item.show-label .rail-icon { background: rgba(255,255,255,0.3); }
+.wizard-fs-rail-item:active .rail-icon { transform: scale(0.88); opacity: 0.65; }
+.wizard-fs-rail-item.show-label .rail-icon { opacity: 0.85; }
 .wizard-fs-rail-item.active .rail-icon, .wizard-fs-rail-item.active .rail-label { color: var(--gold); }
 .wizard-fs-rail-item[data-tier="2"] { display: none; }
 .wizard-fs-rail.expanded [data-tier="2"] { display: flex; }
