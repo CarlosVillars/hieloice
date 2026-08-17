@@ -22,6 +22,48 @@ Pinterest and LinkedIn effective — filtered through "does this help someone bu
 or sell with more trust and better discovery," not feature-for-feature parity
 with any one app.
 
+### Strategy — the wedge-product playbook (read this before building anything)
+
+This is the north star for every product decision on HieloIce. Set explicitly
+by Carlos on 2026-08-17; any AI session or developer picking this project up
+should internalize this before making feature calls.
+
+The real product is two things built together, on purpose, in this order:
+
+1. **A social network for readers** — profiles, friends, Moments, followable
+   Pages, communities, messaging. This is the retention/discovery engine a
+   plain marketplace never has.
+2. **A C2C marketplace, with books as the deliberate first product category**
+   — the Amazon/Bezos playbook. Books are the wedge because they're
+   universally in demand, standardized by ISBN, low logistical complexity per
+   unit, and let us prove out trust mechanics (condition grading, commission,
+   escrow-style payment protection, seller reputation) on a simple catalog
+   before touching anything harder.
+
+**Sequencing**: focus is 100% on books C2C and connecting readers with shared
+interests until HieloIce clearly leads the used/C2C book market. Only then
+does phase 2 begin: a second product category, which will bring its own
+second audience into the social network (mirroring how Amazon expanded
+category by category after owning books).
+
+**What this means for how features get built, right now:**
+
+- Anything built for "books" (categories, condition/product schema,
+  commission/escrow, seller verification, moderation, search/discovery)
+  should be architected generically enough to reuse for product 2 later —
+  not hardcoded to books in ways that would require a rewrite.
+- The social layer (profiles, Moments, communities, follow) is the permanent
+  differentiator and should keep improving in parallel with the marketplace,
+  not be treated as secondary.
+- Two things matter above all else and should be the lens for every UX/product
+  decision: the app has to be **easy to use**, and the **logistics** (how a
+  book actually gets from seller to buyer, safely and simply) have to be
+  excellent. When in doubt between a flashier feature and simplifying
+  onboarding/listing/checkout/shipping, simplicity and logistics win.
+- Continuous improvement is expected — this isn't a "build it once" project;
+  treat every session as a chance to push the book-C2C + reader-social core
+  forward, even absent a new explicit request.
+
 ## 2. Tech stack & architecture
 
 - **Backend**: Plain Node.js (`http` module, no framework) — `marketplace-pro/server.js`.
