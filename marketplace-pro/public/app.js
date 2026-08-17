@@ -96,6 +96,77 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// Automatic, free, client-side photo "cleanup" for listing photos: an
+// auto-levels contrast/brightness stretch (per RGB channel, clipped at the
+// 1st/99th percentile) that fixes the most common problem with phone
+// snapshots of a book - dim, washed-out, or slightly yellow-tinted lighting.
+// This runs entirely in the browser with no AI/paid API involved, so it's
+// applied automatically to every photo with no extra cost or user action.
+// It is not full AI photo editing (no background removal/retouching) - that
+// would require a separate paid image-editing service.
+function clamp255(v) {
+  return v < 0 ? 0 : v > 255 ? 255 : v;
+}
+function autoEnhanceImage(dataUrl) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          if (!canvas.width || !canvas.height) return resolve(dataUrl);
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const data = imgData.data;
+          const histR = new Array(256).fill(0);
+          const histG = new Array(256).fill(0);
+          const histB = new Array(256).fill(0);
+          for (let i = 0; i < data.length; i += 4) {
+            histR[data[i]]++;
+            histG[data[i + 1]]++;
+            histB[data[i + 2]]++;
+          }
+          const total = data.length / 4;
+          function bounds(hist) {
+            const cut = total * 0.01;
+            let sum = 0, lo = 0, hi = 255;
+            for (let v = 0; v < 256; v++) {
+              sum += hist[v];
+              if (sum >= cut) { lo = v; break; }
+            }
+            sum = 0;
+            for (let v = 255; v >= 0; v--) {
+              sum += hist[v];
+              if (sum >= cut) { hi = v; break; }
+            }
+            if (hi <= lo) hi = lo + 1;
+            return [lo, hi];
+          }
+          const [rLo, rHi] = bounds(histR);
+          const [gLo, gHi] = bounds(histG);
+          const [bLo, bHi] = bounds(histB);
+          for (let i = 0; i < data.length; i += 4) {
+            data[i] = clamp255(((data[i] - rLo) / (rHi - rLo)) * 255);
+            data[i + 1] = clamp255(((data[i + 1] - gLo) / (gHi - gLo)) * 255);
+            data[i + 2] = clamp255(((data[i + 2] - bLo) / (bHi - bLo)) * 255);
+          }
+          ctx.putImageData(imgData, 0, 0);
+          resolve(canvas.toDataURL("image/jpeg", 0.9));
+        } catch (e) {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    } catch (e) {
+      resolve(dataUrl);
+    }
+  });
+}
+
 function fmtPrice(price) {
   if (!price) return "$0";
   return "$" + Number(price).toLocaleString("en-US");
@@ -552,19 +623,55 @@ function openBarcodeScanner(onDetected) {
 
   const videoEl = document.getElementById("barcode-scanner-video");
   const codeReader = new window.ZXingBrowser.BrowserMultiFormatReader();
+  // A book usually has more than one barcode on the back cover (the main
+  // ISBN/EAN-13 barcode, and sometimes a second price/add-on barcode) - any
+  // one of them decoding successfully is a valid result, so no format
+  // restriction is applied here (BrowserMultiFormatReader tries all
+  // supported 1D/2D formats by default).
+  let detected = false; // guard: the decode callback fires on every frame, so
+                         // without this a near-simultaneous double-decode
+                         // could call onDetected() twice for one scan.
   codeReader
-    .decodeFromConstraints({ video: { facingMode: "environment" } }, videoEl, (result, err, controls) => {
-      barcodeScannerControls = controls;
-      if (result) {
-        const text = result.getText();
-        try {
-          controls.stop();
-        } catch (e2) {}
-        closeBarcodeScanner();
-        onDetected(text);
+    .decodeFromConstraints(
+      {
+        video: {
+          facingMode: { ideal: "environment" },
+          // Higher resolution + continuous autofocus so the camera can
+          // actually resolve fine barcode lines up close, instead of
+          // defaulting to a low-res, fixed-focus stream that only happens
+          // to work when the phone's default focus distance lines up.
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          advanced: [{ focusMode: "continuous" }],
+        },
+      },
+      videoEl,
+      (result, err, controls) => {
+        barcodeScannerControls = controls;
+        if (result && !detected) {
+          detected = true;
+          const text = result.getText();
+          try {
+            controls.stop();
+          } catch (e2) {}
+          closeBarcodeScanner();
+          onDetected(text);
+        }
       }
-    })
+    )
     .catch(() => showUnavailable());
+
+  // Tap anywhere on the video to re-trigger autofocus - phone cameras often
+  // focus on whatever was in frame when the stream opened, which can leave
+  // a close-up barcode blurry until something asks it to refocus.
+  videoEl.addEventListener("click", () => {
+    try {
+      const track = videoEl.srcObject && videoEl.srcObject.getVideoTracks && videoEl.srcObject.getVideoTracks()[0];
+      if (track && track.getCapabilities && track.getCapabilities().focusMode) {
+        track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+      }
+    } catch (e3) {}
+  });
 }
 
 // "#/marketplace": the classic category-grid landing page, also reachable by
@@ -581,6 +688,14 @@ function renderMarketplaceHome() {
       <button type="button" class="market-scan-btn" id="marketplace-scan-btn" title="${I18N.t("market.scanBarcode")}">&#128247;</button>
       <button id="marketplace-search-btn">${I18N.t("home.searchBtn")}</button>
     </div>
+    <a href="#/post" class="sell-books-banner">
+      <span class="sell-books-banner-icon">&#128230;</span>
+      <span class="ai-listing-banner-text">
+        <strong>${I18N.t("home.sellBannerTitle")}</strong>
+        <span>${I18N.t("home.sellBannerSubtitle")}</span>
+      </span>
+      <span class="sell-books-banner-arrow">&#8250;</span>
+    </a>
     ${categoryTabsHtml("all")}
     <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
     <div class="category-grid">${categoryCardsHtml()}</div>
@@ -1408,6 +1523,13 @@ async function renderPostAd(editId) {
   viewEl.innerHTML = `
     <div class="form-panel wide">
       <h2 class="section-heading">${I18N.t("postAd.title")}</h2>
+      <button type="button" class="ai-listing-banner" id="ai-listing-banner">
+        <span class="ai-listing-banner-icon">&#10024;</span>
+        <span class="ai-listing-banner-text">
+          <strong>${I18N.t("postAd.aiBannerTitle")}</strong>
+          <span>${I18N.t("postAd.aiBannerSubtitle")}</span>
+        </span>
+      </button>
       <div class="form-group">
         <label>${I18N.t("postAd.isbnField")}</label>
         <div class="post-isbn-row">
@@ -1460,6 +1582,8 @@ async function renderPostAd(editId) {
         <label>${I18N.t("postAd.photosField")}</label>
         <div class="photo-upload-grid" id="photo-grid"></div>
         <input type="file" id="p-photos" accept="image/*" multiple style="font-size:12px;" />
+        <button type="button" class="btn btn-ai-suggest" id="p-ai-suggest" style="margin-top:8px;">&#10024; ${I18N.t("postAd.aiSuggest")}</button>
+        <p class="post-isbn-lookup-hint" id="p-ai-hint"></p>
       </div>
       <button class="btn btn-primary" id="p-submit" style="width:100%;margin-top:10px;">${I18N.t("postAd.publish")}</button>
       <p class="form-msg" id="p-msg"></p>
@@ -1501,15 +1625,76 @@ async function renderPostAd(editId) {
   });
   document.getElementById("p-isbn").addEventListener("blur", (e) => isbnLookupAndFill(e.target.value.trim()));
 
+  const aiHintEl = document.getElementById("p-ai-hint");
+  const aiSuggestBtn = document.getElementById("p-ai-suggest");
+  const aiBanner = document.getElementById("ai-listing-banner");
+  let aiPendingAfterUpload = false;
+
+  async function runAiSuggest() {
+    if (!photoBuffer.length) {
+      aiHintEl.textContent = I18N.t("postAd.aiNeedsPhoto");
+      aiHintEl.className = "post-isbn-lookup-hint error";
+      return;
+    }
+    aiSuggestBtn.disabled = true;
+    aiBanner.disabled = true;
+    aiHintEl.textContent = I18N.t("postAd.aiThinking");
+    aiHintEl.className = "post-isbn-lookup-hint";
+    try {
+      const data = await api("/api/ai/analyze-book-photo", {
+        method: "POST",
+        auth: true,
+        body: { image: photoBuffer[0], locale: I18N.lang },
+      });
+      if (data.title) document.getElementById("p-title").value = data.title;
+      if (data.description) document.getElementById("p-description").value = data.description;
+      if (data.category) document.getElementById("p-category").value = data.category;
+      if (data.suggestedPrice) document.getElementById("p-price").value = data.suggestedPrice;
+      let hint = data.title ? I18N.t("postAd.aiSuggestedReview") : I18N.t("postAd.aiNoMatch");
+      if (data.suggestedPrice && data.priceReasoning) hint += " " + data.priceReasoning;
+      aiHintEl.textContent = hint;
+      aiHintEl.className = "post-isbn-lookup-hint " + (data.title ? "ok" : "error");
+      aiHintEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch (err) {
+      aiHintEl.textContent = err.message || I18N.t("postAd.aiError");
+      aiHintEl.className = "post-isbn-lookup-hint error";
+    } finally {
+      aiSuggestBtn.disabled = false;
+      aiBanner.disabled = false;
+    }
+  }
+  aiSuggestBtn.addEventListener("click", runAiSuggest);
+
+  // Big, impossible-to-miss entry point at the top of the form: if there's
+  // already a photo, run the AI right away; if not, open the photo picker
+  // first and run automatically as soon as a photo comes back.
+  aiBanner.addEventListener("click", () => {
+    if (photoBuffer.length) {
+      runAiSuggest();
+    } else {
+      aiPendingAfterUpload = true;
+      document.getElementById("p-photos").click();
+    }
+  });
+
   document.getElementById("p-photos").addEventListener("change", (e) => {
     const files = Array.from(e.target.files).slice(0, MAX_PHOTOS - photoBuffer.length);
     let remaining = files.length;
     if (remaining === 0) return;
+    let loaded = 0;
     files.forEach((file) => {
       const reader = new FileReader();
-      reader.onload = () => {
-        if (photoBuffer.length < MAX_PHOTOS) photoBuffer.push(reader.result);
+      reader.onload = async () => {
+        // Automatically clean up the photo (auto contrast/brightness) before
+        // it's stored - no button, no wait, it just happens.
+        const cleaned = await autoEnhanceImage(reader.result);
+        if (photoBuffer.length < MAX_PHOTOS) photoBuffer.push(cleaned);
         renderPhotoGrid();
+        loaded++;
+        if (loaded === files.length && aiPendingAfterUpload) {
+          aiPendingAfterUpload = false;
+          runAiSuggest();
+        }
       };
       reader.readAsDataURL(file);
     });
