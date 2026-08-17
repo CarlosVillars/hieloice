@@ -46,6 +46,7 @@
 
       <div class="topbar-search">
         <input type="text" id="global-search" placeholder="Search friends, people, books, groups..." />
+        <button type="button" class="market-scan-btn" id="global-search-scan-btn" title="Scan barcode">&#128247;</button>
         <button id="global-search-btn">🔍</button>
       </div>
 
@@ -83,6 +84,19 @@
       </svg>
       <span class="icon-nav-label" id="icon-nav-shorts-label">Moments</span>
     </a>
+    <div class="icon-nav-dropdown-wrap">
+      <button class="icon-nav-btn icon-nav-btn-plain" id="icon-nav-books">
+        <span class="icon-nav-emoji">📚</span><span class="icon-nav-label" id="icon-nav-books-label">Books</span>
+      </button>
+      <div class="icon-nav-dropdown" id="icon-nav-books-dropdown" style="display:none;">
+        <a href="#/post" id="icon-nav-books-sell">💰 <span id="icon-nav-books-sell-label">Sell</span></a>
+        <a href="#/marketplace" id="icon-nav-books-search">🔍 <span id="icon-nav-books-search-label">Search</span></a>
+        <a href="#/post" id="icon-nav-books-publish">📤 <span id="icon-nav-books-publish-label">Publish a listing</span></a>
+        <a href="#" id="icon-nav-books-exchange">🔄 <span id="icon-nav-books-exchange-label">Exchange</span> <em class="icon-nav-soon" id="icon-nav-books-exchange-soon">Soon</em></a>
+        <a href="#" id="icon-nav-books-recommend">⭐ <span id="icon-nav-books-recommend-label">Recommend</span> <em class="icon-nav-soon" id="icon-nav-books-recommend-soon">Soon</em></a>
+        <a href="#" id="icon-nav-books-auction">🔨 <span id="icon-nav-books-auction-label">Auction</span> <em class="icon-nav-soon" id="icon-nav-books-auction-soon">Soon</em></a>
+      </div>
+    </div>
     <div class="icon-nav-dropdown-wrap">
       <button class="icon-nav-btn icon-nav-btn-plain" id="icon-nav-create">
         <span class="icon-nav-create-plus">+</span><span class="icon-nav-label" id="icon-nav-create-label">Create</span>

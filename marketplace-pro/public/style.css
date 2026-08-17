@@ -201,13 +201,17 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   border-radius: 6px 0 0 6px;
   font-size: 14px;
 }
-.topbar-search button {
+.topbar-search button:last-child {
   border: none;
   background: var(--gold);
   color: var(--gold-text-on);
   padding: 0 14px;
   border-radius: 0 6px 6px 0;
   font-size: 15px;
+}
+.topbar-search .market-scan-btn {
+  flex: 0 0 auto; width: auto; height: auto; border-radius: 0; border: none;
+  border-left: 1px solid rgba(0,0,0,0.12); background: var(--bg-surface); padding: 0 12px; font-size: 15px;
 }
 
 .topbar-nav {
@@ -314,6 +318,15 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .icon-nav-dropdown a { display: block; padding: 9px 12px; border-radius: 6px; font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .icon-nav-dropdown a:hover { background: var(--bg-surface-alt); color: var(--accent-text); }
 .icon-nav-create-plus { font-size: 34px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; font-weight: 800; color: var(--gold); }
+.icon-nav-soon {
+  font-style: normal; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--gold); background: rgba(201,162,75,0.15); border-radius: 999px; padding: 2px 6px; margin-left: 4px;
+}
+.app-toast {
+  position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: var(--text-primary);
+  color: var(--bg-surface); padding: 10px 18px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.28); z-index: 400; max-width: 85vw; text-align: center;
+}
 
 /* ---- Create wizard (nav "+": camera capture -> edit/filters -> caption+hashtags) ---- */
 .wizard-box { max-width: 420px; }

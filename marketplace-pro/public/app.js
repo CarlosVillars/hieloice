@@ -167,6 +167,19 @@ function autoEnhanceImage(dataUrl) {
   });
 }
 
+// Small reusable "coming soon" / status toast, shown bottom-center for a
+// couple seconds then removed - used by nav features that aren't built yet.
+function showAppToast(msg) {
+  const existing = document.getElementById("app-toast");
+  if (existing) existing.remove();
+  const el = document.createElement("div");
+  el.id = "app-toast";
+  el.className = "app-toast";
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2400);
+}
+
 function fmtPrice(price) {
   if (!price) return "$0";
   return "$" + Number(price).toLocaleString("en-US");
@@ -317,8 +330,7 @@ function setText(id, text) {
 
 function applyStaticI18n() {
   setText("brand-name", I18N.t("site.name"));
-  const searchEl = document.getElementById("global-search");
-  if (searchEl) searchEl.placeholder = I18N.t("topbar.searchPlaceholder");
+  updateGlobalSearchPlaceholder();
   setText("nav-messages", I18N.t("nav.messages"));
   setText("nav-profile", I18N.t("nav.profile"));
   setText("nav-post", I18N.t("nav.postAd"));
@@ -338,6 +350,16 @@ function applyStaticI18n() {
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
   setText("icon-nav-create-moment-label", I18N.t("iconnav.createMoment"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
+  setText("icon-nav-books-label", I18N.t("iconnav.books"));
+  setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
+  setText("icon-nav-books-search-label", I18N.t("iconnav.booksSearch"));
+  setText("icon-nav-books-publish-label", I18N.t("iconnav.booksPublish"));
+  setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
+  setText("icon-nav-books-recommend-label", I18N.t("iconnav.booksRecommend"));
+  setText("icon-nav-books-auction-label", I18N.t("iconnav.booksAuction"));
+  setText("icon-nav-books-exchange-soon", I18N.t("iconnav.booksSoonTag"));
+  setText("icon-nav-books-recommend-soon", I18N.t("iconnav.booksSoonTag"));
+  setText("icon-nav-books-auction-soon", I18N.t("iconnav.booksSoonTag"));
 }
 
 document.getElementById("lang-en").addEventListener("click", () => {
@@ -384,9 +406,28 @@ document.getElementById("global-search-btn").addEventListener("click", doGlobalS
 document.getElementById("global-search").addEventListener("keydown", (e) => {
   if (e.key === "Enter") doGlobalSearch();
 });
+document.getElementById("global-search-scan-btn").addEventListener("click", () => {
+  openBarcodeScanner((code) => {
+    document.getElementById("global-search").value = code;
+    doGlobalSearch();
+  });
+});
 function doGlobalSearch() {
   const q = document.getElementById("global-search").value.trim();
   location.hash = "#/category/all" + (q ? "?q=" + encodeURIComponent(q) : "");
+}
+
+// One physical search bar in the topbar, everywhere - only its placeholder
+// text changes depending on the section, instead of duplicating a second
+// search bar inside Marketplace. "Books section" = anywhere browsing/buying/
+// selling books; everywhere else keeps the general people/books placeholder.
+const BOOKS_SECTION_ROUTES = ["marketplace", "category", "product", "post", "edit"];
+function updateGlobalSearchPlaceholder() {
+  const searchEl = document.getElementById("global-search");
+  if (!searchEl) return;
+  const { parts } = parseHash();
+  const inBooksSection = BOOKS_SECTION_ROUTES.includes(parts[0]);
+  searchEl.placeholder = I18N.t(inBooksSection ? "home.searchPlaceholder" : "topbar.searchPlaceholder");
 }
 
 // ---------------- Icon nav (Home / Friends / Marketplace / Notifications) ----------------
@@ -396,11 +437,20 @@ function doGlobalSearch() {
   const dropdown = document.getElementById("icon-nav-marketplace-dropdown");
   const createBtn = document.getElementById("icon-nav-create");
   const createDropdown = document.getElementById("icon-nav-create-dropdown");
+  const booksBtn = document.getElementById("icon-nav-books");
+  const booksDropdown = document.getElementById("icon-nav-books-dropdown");
+  const allDropdowns = [dropdown, createDropdown, booksDropdown];
+  function closeAllDropdowns(except) {
+    allDropdowns.forEach((d) => {
+      if (d && d !== except) d.style.display = "none";
+    });
+  }
   if (marketplaceBtn && dropdown) {
     marketplaceBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (createDropdown) createDropdown.style.display = "none";
-      dropdown.style.display = dropdown.style.display === "block" ? "none" : "block";
+      const willOpen = dropdown.style.display !== "block";
+      closeAllDropdowns();
+      dropdown.style.display = willOpen ? "block" : "none";
     });
     dropdown.addEventListener("click", (e) => e.stopPropagation());
   }
@@ -411,8 +461,9 @@ function doGlobalSearch() {
         location.hash = "#/login";
         return;
       }
-      dropdown.style.display = "none";
-      createDropdown.style.display = createDropdown.style.display === "block" ? "none" : "block";
+      const willOpen = createDropdown.style.display !== "block";
+      closeAllDropdowns();
+      createDropdown.style.display = willOpen ? "block" : "none";
     });
     createDropdown.addEventListener("click", (e) => e.stopPropagation());
     const momentLink = document.getElementById("icon-nav-create-moment");
@@ -430,10 +481,32 @@ function doGlobalSearch() {
       });
     }
   }
-  document.addEventListener("click", () => {
-    if (dropdown) dropdown.style.display = "none";
-    if (createDropdown) createDropdown.style.display = "none";
-  });
+  if (booksBtn && booksDropdown) {
+    booksBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = booksDropdown.style.display !== "block";
+      closeAllDropdowns();
+      booksDropdown.style.display = willOpen ? "block" : "none";
+    });
+    booksDropdown.addEventListener("click", (e) => e.stopPropagation());
+    // These three are on the roadmap but not built yet - show a friendly
+    // "coming soon" toast instead of a dead link.
+    ["exchange", "recommend", "auction"].forEach((key) => {
+      const link = document.getElementById("icon-nav-books-" + key);
+      if (link) {
+        link.addEventListener("click", (e) => {
+          e.preventDefault();
+          booksDropdown.style.display = "none";
+          showAppToast(I18N.t("iconnav.booksComingSoon"));
+        });
+      }
+    });
+    ["sell", "search", "publish"].forEach((key) => {
+      const link = document.getElementById("icon-nav-books-" + key);
+      if (link) link.addEventListener("click", () => { booksDropdown.style.display = "none"; });
+    });
+  }
+  document.addEventListener("click", () => closeAllDropdowns());
 })();
 
 function setIconNavBadge(count) {
@@ -466,6 +539,7 @@ function parseHash() {
 async function router() {
   const { parts, query } = parseHash();
   window.scrollTo(0, 0);
+  updateGlobalSearchPlaceholder();
 
   try {
     if (parts.length === 0) return renderHome();
@@ -683,13 +757,8 @@ function renderMarketplaceHome() {
       <h1>${escapeHtml(I18N.t("site.name"))}</h1>
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
     </div>
-    <div class="filters" id="marketplace-search-row">
-      <input type="text" id="marketplace-search-input" placeholder="${I18N.t("home.searchPlaceholder")}" />
-      <button type="button" class="market-scan-btn" id="marketplace-scan-btn" title="${I18N.t("market.scanBarcode")}">&#128247;</button>
-      <button id="marketplace-search-btn">${I18N.t("home.searchBtn")}</button>
-    </div>
     <a href="#/post" class="sell-books-banner">
-      <span class="sell-books-banner-icon">&#128230;</span>
+      <span class="sell-books-banner-icon">&#128218;</span>
       <span class="ai-listing-banner-text">
         <strong>${I18N.t("home.sellBannerTitle")}</strong>
         <span>${I18N.t("home.sellBannerSubtitle")}</span>
@@ -700,20 +769,6 @@ function renderMarketplaceHome() {
     <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
     <div class="category-grid">${categoryCardsHtml()}</div>
   `;
-  const doMarketplaceSearch = () => {
-    const q = document.getElementById("marketplace-search-input").value.trim();
-    location.hash = "#/category/all" + (q ? "?q=" + encodeURIComponent(q) : "");
-  };
-  document.getElementById("marketplace-search-btn").addEventListener("click", doMarketplaceSearch);
-  document.getElementById("marketplace-search-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") doMarketplaceSearch();
-  });
-  document.getElementById("marketplace-scan-btn").addEventListener("click", () => {
-    openBarcodeScanner((code) => {
-      document.getElementById("marketplace-search-input").value = code;
-      doMarketplaceSearch();
-    });
-  });
   loadAdCarousel();
 }
 
