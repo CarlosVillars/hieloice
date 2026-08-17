@@ -378,7 +378,10 @@ function applyStaticI18n() {
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
-  setText("icon-nav-create-moment-label", I18N.t("iconnav.createMoment"));
+  setText("icon-nav-create-camera-label", I18N.t("iconnav.createCamera"));
+  setText("icon-nav-create-record-label", I18N.t("iconnav.createRecord"));
+  setText("icon-nav-create-upload-moment-label", I18N.t("iconnav.createUploadMoment"));
+  setText("icon-nav-create-upload-picture-label", I18N.t("iconnav.createUploadPicture"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
   setText("icon-nav-books-publish-label", I18N.t("iconnav.booksPublish"));
@@ -532,12 +535,53 @@ function updateGlobalSearchPlaceholder() {
       createDropdown.style.display = willOpen ? "block" : "none";
     });
     createDropdown.addEventListener("click", (e) => e.stopPropagation());
-    const momentLink = document.getElementById("icon-nav-create-moment");
-    if (momentLink) {
-      momentLink.addEventListener("click", (e) => {
+    // "Camera" and "Record a Moment" both open the same live-camera screen:
+    // it already supports tap-for-photo / hold-for-video in one shutter
+    // button (see the "tap and hold" hint shown there), so there's no
+    // separate photo-only vs video-only capture mode to route to.
+    const cameraLink = document.getElementById("icon-nav-create-camera");
+    if (cameraLink) {
+      cameraLink.addEventListener("click", (e) => {
         e.preventDefault();
         createDropdown.style.display = "none";
         openCreateWizard();
+      });
+    }
+    const recordLink = document.getElementById("icon-nav-create-record");
+    if (recordLink) {
+      recordLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+      });
+    }
+    // "Upload a Moment" / "Upload a Picture" open the same wizard but skip
+    // straight to the device's file picker instead of the live camera,
+    // pre-filtered to video or image files respectively.
+    const uploadMomentLink = document.getElementById("icon-nav-create-upload-moment");
+    if (uploadMomentLink) {
+      uploadMomentLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+        const fileInput = document.getElementById("wizard-file-media");
+        if (fileInput) {
+          fileInput.accept = "video/*";
+          fileInput.click();
+        }
+      });
+    }
+    const uploadPictureLink = document.getElementById("icon-nav-create-upload-picture");
+    if (uploadPictureLink) {
+      uploadPictureLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+        const fileInput = document.getElementById("wizard-file-media");
+        if (fileInput) {
+          fileInput.accept = "image/*";
+          fileInput.click();
+        }
       });
     }
     const productLink = document.getElementById("icon-nav-create-product");

@@ -16,6 +16,8 @@ const CATEGORY_LIST = [
   { slug: "horror", icon: "\u{1F47B}", en: "Horror", es: "Terror" },
   { slug: "textbooks-academic", icon: "\u{1F393}", en: "Textbooks & Academic", es: "Libros de Texto y Academicos" },
   { slug: "self-help", icon: "\u{1F331}", en: "Self-Help", es: "Desarrollo Personal" },
+  { slug: "test-prep", icon: "\u{1F4DD}", en: "Test Prep & Exam Guides", es: "Preparacion de Examenes" },
+  { slug: "language-learning", icon: "\u{1F5E3}\u{FE0F}", en: "Language Learning", es: "Aprendizaje de Idiomas" },
   { slug: "nonfiction", icon: "\u{1F4F0}", en: "Non-Fiction", es: "No Ficcion" },
   { slug: "children", icon: "\u{1F9D2}", en: "Children's", es: "Infantil" },
   { slug: "young-adult", icon: "\u{2728}", en: "Teen & Young Adult", es: "Juvenil" },
@@ -31,6 +33,7 @@ const CATEGORY_LIST = [
   { slug: "art-photography", icon: "\u{1F3A8}", en: "Art & Photography", es: "Arte y Fotografia" },
   { slug: "travel", icon: "\u{1F5FA}\u{FE0F}", en: "Travel", es: "Viajes" },
   { slug: "rare-collectible", icon: "\u{1F4DC}", en: "Rare & Collectible", es: "Coleccionables y Primeras Ediciones" },
+  { slug: "signed-vintage", icon: "\u{2712}\u{FE0F}", en: "Signed & Vintage Editions", es: "Ediciones Firmadas y Vintage" },
   { slug: "other-books", icon: "\u{1F4E6}", en: "Other Books", es: "Otros Libros" },
 ];
 
@@ -426,6 +429,10 @@ const STRINGS = {
     "friendsPage.viewProfile": "View profile",
 
     "iconnav.create": "Create",
+    "iconnav.createCamera": "Camera",
+    "iconnav.createRecord": "Record a Moment",
+    "iconnav.createUploadMoment": "Upload a Moment",
+    "iconnav.createUploadPicture": "Upload a Picture",
     "iconnav.createMoment": "Moment / Photo",
     "iconnav.createProduct": "Product",
     "iconnav.books": "Books",
@@ -938,6 +945,10 @@ const STRINGS = {
     "friendsPage.viewProfile": "Ver perfil",
 
     "iconnav.create": "Crear",
+    "iconnav.createCamera": "Camara",
+    "iconnav.createRecord": "Grabar un Moment",
+    "iconnav.createUploadMoment": "Subir un Moment",
+    "iconnav.createUploadPicture": "Subir una Foto",
     "iconnav.createMoment": "Moment / Foto",
     "iconnav.createProduct": "Producto",
     "iconnav.books": "Libros",

@@ -402,8 +402,13 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
   padding: 9px 14px; background: none; border: none; cursor: pointer; color: #fff;
 }
-.wizard-fs-rail-item .rail-label { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
-.wizard-fs-rail-item .rail-icon { font-size: 17px; width: 24px; text-align: center; flex: 0 0 auto; }
+.wizard-fs-rail-item .rail-label { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+.wizard-fs-rail-item .rail-icon {
+  font-size: 17px; width: 36px; height: 36px; line-height: 36px; text-align: center; flex: 0 0 auto;
+  background: rgba(255,255,255,0.16); border-radius: 50%; backdrop-filter: blur(2px);
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.wizard-fs-rail-item:active .rail-icon { transform: scale(0.9); background: rgba(255,255,255,0.28); }
 .wizard-fs-rail-item.active .rail-icon, .wizard-fs-rail-item.active .rail-label { color: var(--gold); }
 .wizard-fs-rail-item[data-tier="2"] { display: none; }
 .wizard-fs-rail.expanded [data-tier="2"] { display: flex; }
@@ -425,8 +430,9 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .wizard-fs-capture-wrap { position: relative; width: 76px; height: 76px; display: flex; align-items: center; justify-content: center; }
 .wizard-fs-capture-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
 .wizard-fs-capture-btn {
-  width: 62px; height: 62px; border-radius: 50%; background: #E5484D;
+  width: 62px; height: 62px; border-radius: 50%; background: #FF3B30;
   border: 4px solid #fff; cursor: pointer; padding: 0;
+  box-shadow: 0 2px 8px rgba(255,59,48,0.5);
   transition: transform 0.1s, border-radius 0.15s;
 }
 .wizard-fs-capture-btn.pressed { transform: scale(0.9); }
