@@ -350,9 +350,7 @@ function applyStaticI18n() {
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
   setText("icon-nav-create-moment-label", I18N.t("iconnav.createMoment"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
-  setText("icon-nav-books-label", I18N.t("iconnav.books"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
-  setText("icon-nav-books-search-label", I18N.t("iconnav.booksSearch"));
   setText("icon-nav-books-publish-label", I18N.t("iconnav.booksPublish"));
   setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
   setText("icon-nav-books-recommend-label", I18N.t("iconnav.booksRecommend"));
@@ -437,9 +435,7 @@ function updateGlobalSearchPlaceholder() {
   const dropdown = document.getElementById("icon-nav-marketplace-dropdown");
   const createBtn = document.getElementById("icon-nav-create");
   const createDropdown = document.getElementById("icon-nav-create-dropdown");
-  const booksBtn = document.getElementById("icon-nav-books");
-  const booksDropdown = document.getElementById("icon-nav-books-dropdown");
-  const allDropdowns = [dropdown, createDropdown, booksDropdown];
+  const allDropdowns = [dropdown, createDropdown];
   function closeAllDropdowns(except) {
     allDropdowns.forEach((d) => {
       if (d && d !== except) d.style.display = "none";
@@ -453,6 +449,23 @@ function updateGlobalSearchPlaceholder() {
       dropdown.style.display = willOpen ? "block" : "none";
     });
     dropdown.addEventListener("click", (e) => e.stopPropagation());
+    // Vender/Publicar close and navigate normally; Exchange/Recommend/Auction
+    // are on the roadmap but not built yet - show a friendly "coming soon"
+    // toast instead of a dead link.
+    ["exchange", "recommend", "auction"].forEach((key) => {
+      const link = document.getElementById("icon-nav-books-" + key);
+      if (link) {
+        link.addEventListener("click", (e) => {
+          e.preventDefault();
+          dropdown.style.display = "none";
+          showAppToast(I18N.t("iconnav.booksComingSoon"));
+        });
+      }
+    });
+    ["sell", "publish"].forEach((key) => {
+      const link = document.getElementById("icon-nav-books-" + key);
+      if (link) link.addEventListener("click", () => { dropdown.style.display = "none"; });
+    });
   }
   if (createBtn && createDropdown) {
     createBtn.addEventListener("click", (e) => {
@@ -480,31 +493,6 @@ function updateGlobalSearchPlaceholder() {
         createDropdown.style.display = "none";
       });
     }
-  }
-  if (booksBtn && booksDropdown) {
-    booksBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const willOpen = booksDropdown.style.display !== "block";
-      closeAllDropdowns();
-      booksDropdown.style.display = willOpen ? "block" : "none";
-    });
-    booksDropdown.addEventListener("click", (e) => e.stopPropagation());
-    // These three are on the roadmap but not built yet - show a friendly
-    // "coming soon" toast instead of a dead link.
-    ["exchange", "recommend", "auction"].forEach((key) => {
-      const link = document.getElementById("icon-nav-books-" + key);
-      if (link) {
-        link.addEventListener("click", (e) => {
-          e.preventDefault();
-          booksDropdown.style.display = "none";
-          showAppToast(I18N.t("iconnav.booksComingSoon"));
-        });
-      }
-    });
-    ["sell", "search", "publish"].forEach((key) => {
-      const link = document.getElementById("icon-nav-books-" + key);
-      if (link) link.addEventListener("click", () => { booksDropdown.style.display = "none"; });
-    });
   }
   document.addEventListener("click", () => closeAllDropdowns());
 })();
