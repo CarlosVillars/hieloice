@@ -304,6 +304,15 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .icon-nav-btn-plain { cursor: pointer; }
 .icon-nav-btn-center { font-weight: 800; }
 .icon-nav-icecube { display: block; margin: 0 auto; height: 27px; width: 27px; }
+.icon-nav-cartbooks { display: block; margin: 0 auto; transition: transform 0.15s ease; }
+.icon-nav-btn:active .icon-nav-cartbooks { transform: scale(0.85); }
+@keyframes iconBagPop {
+  0% { transform: scale(1) rotate(0deg); }
+  35% { transform: scale(1.22) rotate(-4deg); }
+  60% { transform: scale(0.92) rotate(2deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+.icon-nav-cartbooks.pop { animation: iconBagPop 0.4s ease; }
 .icon-nav-btn:hover { color: var(--accent-text); border-bottom-color: var(--gold); }
 .icon-nav-emoji { font-size: 21px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; }
 .icon-nav-label { white-space: nowrap; }

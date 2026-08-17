@@ -447,6 +447,12 @@ function updateGlobalSearchPlaceholder() {
       const willOpen = dropdown.style.display !== "block";
       closeAllDropdowns();
       dropdown.style.display = willOpen ? "block" : "none";
+      const icon = marketplaceBtn.querySelector(".icon-nav-cartbooks");
+      if (icon) {
+        icon.classList.remove("pop");
+        void icon.offsetWidth; // restart the animation even on rapid re-clicks
+        icon.classList.add("pop");
+      }
     });
     dropdown.addEventListener("click", (e) => e.stopPropagation());
     // Vender/Publicar close and navigate normally; Exchange/Recommend/Auction
