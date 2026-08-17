@@ -1,9 +1,87 @@
 // Marketplace Pro - frontend app (vanilla JS, hash-based routing)
 
+// ---------------- Account-tier theme (normal / premium) ----------------
+// Theme has two independent layers:
+//  1. Account tier - derived automatically from the logged-in account's
+//     is_premium flag (a paid upgrade). Premium accounts get the exclusive
+//     black+gold [data-theme="premium"] skin and this is NOT user-toggleable.
+//  2. Normal-tier appearance preference - for everyone else, a user choice
+//     between the :root light+blue theme and the [data-theme="dark"]
+//     dark+blue theme, persisted in localStorage under "hieloice-theme-pref".
+// applyUserTheme() is called wherever the current-user object is set or
+// updated (login, register, session restore, logout, profile refresh) so
+// the skin always reflects the account's current tier. It also shows/hides
+// the normal-tier toggle UI (#theme-toggle-wrap) since premium users don't
+// get a choice.
+function applyTheme(tier) {
+  document.documentElement.setAttribute("data-theme", tier);
+}
+
+function applyNormalThemePref(pref) {
+  document.documentElement.setAttribute("data-theme", pref);
+  localStorage.setItem("hieloice-theme-pref", pref);
+  const lightBtn = document.getElementById("theme-normal-light");
+  const darkBtn = document.getElementById("theme-normal-dark");
+  if (lightBtn && darkBtn) {
+    lightBtn.classList.toggle("active", pref === "light");
+    darkBtn.classList.toggle("active", pref === "dark");
+  }
+}
+
+function applyUserTheme(user) {
+  const toggleWrap = document.getElementById("theme-toggle-wrap");
+  if (user && user.isPremium) {
+    applyTheme("premium");
+    if (toggleWrap) toggleWrap.style.display = "none";
+  } else {
+    if (toggleWrap) toggleWrap.style.display = "";
+    const pref = localStorage.getItem("hieloice-theme-pref") || "light";
+    const lightBtn = document.getElementById("theme-normal-light");
+    const darkBtn = document.getElementById("theme-normal-dark");
+    if (lightBtn && darkBtn) {
+      lightBtn.classList.toggle("active", pref === "light");
+      darkBtn.classList.toggle("active", pref === "dark");
+    }
+    if (pref === "dark") {
+      document.documentElement.setAttribute("data-theme", "dark");
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+    }
+  }
+}
+
+function safeParseStoredUser() {
+  // If a stale/corrupted value ever ends up in localStorage under
+  // "authUser" (e.g. leftover from an older app version), an unguarded
+  // JSON.parse() throws synchronously at script load time and silently
+  // aborts the ENTIRE app.js execution - every click handler wired further
+  // down (including the "+" create button and the Marketplace dropdown)
+  // simply never gets attached, with no visible error to the user. Clearing
+  // browser cache/cookies does NOT clear localStorage, so that bug survives
+  // a cache clear. Guard against it here so a bad value just logs the user
+  // out instead of breaking the whole page.
+  try {
+    return JSON.parse(localStorage.getItem("authUser") || "null");
+  } catch (e) {
+    localStorage.removeItem("authUser");
+    localStorage.removeItem("authToken");
+    return null;
+  }
+}
+
 const state = {
   token: localStorage.getItem("authToken") || null,
-  user: JSON.parse(localStorage.getItem("authUser") || "null"),
+  user: safeParseStoredUser(),
 };
+
+// Set the initial skin as early as possible based on whatever user object
+// was restored from localStorage - anonymous browsing / logged-out falls
+// through to the normal tier, which in turn honors any saved
+// "hieloice-theme-pref" (light/dark) so a returning normal-tier user with a
+// saved dark preference doesn't flash light-then-dark. app.js is loaded via
+// a <script> tag at the end of <body> (see index.html), so the toggle
+// button markup already exists in the DOM at this point.
+applyUserTheme(state.user);
 
 const viewEl = document.getElementById("view");
 
@@ -35,6 +113,90 @@ function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str == null ? "" : String(str);
   return div.innerHTML;
+}
+
+// Automatic, free, client-side photo "cleanup" for listing photos: an
+// auto-levels contrast/brightness stretch (per RGB channel, clipped at the
+// 1st/99th percentile) that fixes the most common problem with phone
+// snapshots of a book - dim, washed-out, or slightly yellow-tinted lighting.
+// This runs entirely in the browser with no AI/paid API involved, so it's
+// applied automatically to every photo with no extra cost or user action.
+// It is not full AI photo editing (no background removal/retouching) - that
+// would require a separate paid image-editing service.
+function clamp255(v) {
+  return v < 0 ? 0 : v > 255 ? 255 : v;
+}
+function autoEnhanceImage(dataUrl) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          if (!canvas.width || !canvas.height) return resolve(dataUrl);
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const data = imgData.data;
+          const histR = new Array(256).fill(0);
+          const histG = new Array(256).fill(0);
+          const histB = new Array(256).fill(0);
+          for (let i = 0; i < data.length; i += 4) {
+            histR[data[i]]++;
+            histG[data[i + 1]]++;
+            histB[data[i + 2]]++;
+          }
+          const total = data.length / 4;
+          function bounds(hist) {
+            const cut = total * 0.01;
+            let sum = 0, lo = 0, hi = 255;
+            for (let v = 0; v < 256; v++) {
+              sum += hist[v];
+              if (sum >= cut) { lo = v; break; }
+            }
+            sum = 0;
+            for (let v = 255; v >= 0; v--) {
+              sum += hist[v];
+              if (sum >= cut) { hi = v; break; }
+            }
+            if (hi <= lo) hi = lo + 1;
+            return [lo, hi];
+          }
+          const [rLo, rHi] = bounds(histR);
+          const [gLo, gHi] = bounds(histG);
+          const [bLo, bHi] = bounds(histB);
+          for (let i = 0; i < data.length; i += 4) {
+            data[i] = clamp255(((data[i] - rLo) / (rHi - rLo)) * 255);
+            data[i + 1] = clamp255(((data[i + 1] - gLo) / (gHi - gLo)) * 255);
+            data[i + 2] = clamp255(((data[i + 2] - bLo) / (bHi - bLo)) * 255);
+          }
+          ctx.putImageData(imgData, 0, 0);
+          resolve(canvas.toDataURL("image/jpeg", 0.9));
+        } catch (e) {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    } catch (e) {
+      resolve(dataUrl);
+    }
+  });
+}
+
+// Small reusable "coming soon" / status toast, shown bottom-center for a
+// couple seconds then removed - used by nav features that aren't built yet.
+function showAppToast(msg) {
+  const existing = document.getElementById("app-toast");
+  if (existing) existing.remove();
+  const el = document.createElement("div");
+  el.id = "app-toast";
+  el.className = "app-toast";
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2400);
 }
 
 function fmtPrice(price) {
@@ -84,6 +246,7 @@ function setAuth(token, user) {
     localStorage.removeItem("authToken");
     localStorage.removeItem("authUser");
   }
+  applyUserTheme(state.user);
   updateNavUI();
   pollUnread();
 }
@@ -94,6 +257,7 @@ async function refreshMe() {
     const data = await api("/api/auth/me", { auth: true });
     state.user = data.user;
     localStorage.setItem("authUser", JSON.stringify(data.user));
+    applyUserTheme(state.user);
   } catch (e) {
     // Only clear the session on a genuine "not authenticated" rejection
     // (HTTP 401) from the server. A network hiccup - e.g. right after a
@@ -106,13 +270,18 @@ async function refreshMe() {
   updateNavUI();
 }
 
+function setDisplay(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = value;
+}
+
 function updateNavUI() {
   const loggedIn = !!state.token;
-  document.getElementById("nav-login").style.display = loggedIn ? "none" : "inline";
-  document.getElementById("nav-register").style.display = loggedIn ? "none" : "inline";
-  document.getElementById("nav-logout").style.display = loggedIn ? "inline" : "none";
-  document.getElementById("nav-profile").style.display = loggedIn ? "inline" : "none";
-  document.getElementById("nav-messages").style.display = loggedIn ? "inline" : "none";
+  setDisplay("nav-login", loggedIn ? "none" : "inline");
+  setDisplay("nav-register", loggedIn ? "none" : "inline");
+  setDisplay("nav-logout", loggedIn ? "inline" : "none");
+  setDisplay("nav-profile", loggedIn ? "inline" : "none");
+  setDisplay("nav-messages", loggedIn ? "inline" : "none");
   const navAdmin = document.getElementById("nav-admin");
   if (navAdmin) {
     const canAdmin = loggedIn && state.user && (state.user.role === "admin" || state.user.isOwner);
@@ -126,13 +295,16 @@ function updateNavUI() {
   }
 }
 
-document.getElementById("nav-logout").addEventListener("click", async () => {
-  try {
-    await api("/api/auth/logout", { method: "POST", auth: true });
-  } catch (e) {}
-  setAuth(null, null);
-  location.hash = "#/";
-});
+const navLogoutBtn = document.getElementById("nav-logout");
+if (navLogoutBtn) {
+  navLogoutBtn.addEventListener("click", async () => {
+    try {
+      await api("/api/auth/logout", { method: "POST", auth: true });
+    } catch (e) {}
+    setAuth(null, null);
+    location.hash = "#/";
+  });
+}
 
 // ---------------- Unread messages badge ----------------
 
@@ -185,16 +357,18 @@ function setText(id, text) {
 
 function applyStaticI18n() {
   setText("brand-name", I18N.t("site.name"));
-  const searchEl = document.getElementById("global-search");
-  if (searchEl) searchEl.placeholder = I18N.t("home.searchPlaceholder");
+  setText("brand-tagline", I18N.t("site.tagline"));
+  updateGlobalSearchPlaceholder();
   setText("nav-messages", I18N.t("nav.messages"));
   setText("nav-profile", I18N.t("nav.profile"));
   setText("nav-post", I18N.t("nav.postAd"));
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
   setText("nav-logout", I18N.t("nav.logout"));
-  document.getElementById("lang-en").classList.toggle("active", I18N.lang === "en");
-  document.getElementById("lang-es").classList.toggle("active", I18N.lang === "es");
+  const langEnBtnEl = document.getElementById("lang-en");
+  if (langEnBtnEl) langEnBtnEl.classList.toggle("active", I18N.lang === "en");
+  const langEsBtnEl = document.getElementById("lang-es");
+  if (langEsBtnEl) langEsBtnEl.classList.toggle("active", I18N.lang === "es");
   setText("icon-nav-home-label", I18N.t("iconnav.home"));
   setText("icon-nav-friends-label", I18N.t("iconnav.friends"));
   setText("icon-nav-shorts-label", I18N.t("iconnav.shorts"));
@@ -206,18 +380,44 @@ function applyStaticI18n() {
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
   setText("icon-nav-create-moment-label", I18N.t("iconnav.createMoment"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
+  setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
+  setText("icon-nav-books-publish-label", I18N.t("iconnav.booksPublish"));
+  setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
+  setText("icon-nav-books-recommend-label", I18N.t("iconnav.booksRecommend"));
+  setText("icon-nav-books-auction-label", I18N.t("iconnav.booksAuction"));
+  setText("icon-nav-books-exchange-soon", I18N.t("iconnav.booksSoonTag"));
+  setText("icon-nav-books-recommend-soon", I18N.t("iconnav.booksSoonTag"));
+  setText("icon-nav-books-auction-soon", I18N.t("iconnav.booksSoonTag"));
 }
 
-document.getElementById("lang-en").addEventListener("click", () => {
-  I18N.setLang("en");
-  applyStaticI18n();
-  router();
-});
-document.getElementById("lang-es").addEventListener("click", () => {
-  I18N.setLang("es");
-  applyStaticI18n();
-  router();
-});
+const langEnBtn = document.getElementById("lang-en");
+if (langEnBtn) {
+  langEnBtn.addEventListener("click", () => {
+    I18N.setLang("en");
+    applyStaticI18n();
+    router();
+  });
+}
+const langEsBtn = document.getElementById("lang-es");
+if (langEsBtn) {
+  langEsBtn.addEventListener("click", () => {
+    I18N.setLang("es");
+    applyStaticI18n();
+    router();
+  });
+}
+
+// Normal-tier dark mode toggle (hidden for premium accounts - see
+// applyUserTheme()). Clicking these when hidden is harmless since the
+// wrapper is display:none for premium users.
+const themeNormalLightBtn = document.getElementById("theme-normal-light");
+if (themeNormalLightBtn) {
+  themeNormalLightBtn.addEventListener("click", () => applyNormalThemePref("light"));
+}
+const themeNormalDarkBtn = document.getElementById("theme-normal-dark");
+if (themeNormalDarkBtn) {
+  themeNormalDarkBtn.addEventListener("click", () => applyNormalThemePref("dark"));
+}
 
 // ---------------- Topbar "..." menu (language + logout) ----------------
 // Same open/close-on-outside-click pattern as the icon-nav dropdowns below.
@@ -238,13 +438,41 @@ document.getElementById("lang-es").addEventListener("click", () => {
   });
 })();
 
-document.getElementById("global-search-btn").addEventListener("click", doGlobalSearch);
-document.getElementById("global-search").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") doGlobalSearch();
-});
+const globalSearchBtn = document.getElementById("global-search-btn");
+if (globalSearchBtn) globalSearchBtn.addEventListener("click", doGlobalSearch);
+const globalSearchInput = document.getElementById("global-search");
+if (globalSearchInput) {
+  globalSearchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doGlobalSearch();
+  });
+}
+const globalSearchScanBtn = document.getElementById("global-search-scan-btn");
+if (globalSearchScanBtn) {
+  globalSearchScanBtn.addEventListener("click", () => {
+    openBarcodeScanner((code) => {
+      const searchInput = document.getElementById("global-search");
+      if (searchInput) searchInput.value = code;
+      doGlobalSearch();
+    });
+  });
+}
 function doGlobalSearch() {
-  const q = document.getElementById("global-search").value.trim();
+  const searchInput = document.getElementById("global-search");
+  const q = searchInput ? searchInput.value.trim() : "";
   location.hash = "#/category/all" + (q ? "?q=" + encodeURIComponent(q) : "");
+}
+
+// One physical search bar in the topbar, everywhere - only its placeholder
+// text changes depending on the section, instead of duplicating a second
+// search bar inside Marketplace. "Books section" = anywhere browsing/buying/
+// selling books; everywhere else keeps the general people/books placeholder.
+const BOOKS_SECTION_ROUTES = ["marketplace", "category", "product", "post", "edit"];
+function updateGlobalSearchPlaceholder() {
+  const searchEl = document.getElementById("global-search");
+  if (!searchEl) return;
+  const { parts } = parseHash();
+  const inBooksSection = BOOKS_SECTION_ROUTES.includes(parts[0]);
+  searchEl.placeholder = I18N.t(inBooksSection ? "home.searchPlaceholder" : "topbar.searchPlaceholder");
 }
 
 // ---------------- Icon nav (Home / Friends / Marketplace / Notifications) ----------------
@@ -254,13 +482,43 @@ function doGlobalSearch() {
   const dropdown = document.getElementById("icon-nav-marketplace-dropdown");
   const createBtn = document.getElementById("icon-nav-create");
   const createDropdown = document.getElementById("icon-nav-create-dropdown");
+  const allDropdowns = [dropdown, createDropdown];
+  function closeAllDropdowns(except) {
+    allDropdowns.forEach((d) => {
+      if (d && d !== except) d.style.display = "none";
+    });
+  }
   if (marketplaceBtn && dropdown) {
     marketplaceBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (createDropdown) createDropdown.style.display = "none";
-      dropdown.style.display = dropdown.style.display === "block" ? "none" : "block";
+      const willOpen = dropdown.style.display !== "block";
+      closeAllDropdowns();
+      dropdown.style.display = willOpen ? "block" : "none";
+      const icon = marketplaceBtn.querySelector(".icon-nav-cartbooks");
+      if (icon) {
+        icon.classList.remove("pop");
+        void icon.offsetWidth; // restart the animation even on rapid re-clicks
+        icon.classList.add("pop");
+      }
     });
     dropdown.addEventListener("click", (e) => e.stopPropagation());
+    // Vender/Publicar close and navigate normally; Exchange/Recommend/Auction
+    // are on the roadmap but not built yet - show a friendly "coming soon"
+    // toast instead of a dead link.
+    ["exchange", "recommend", "auction"].forEach((key) => {
+      const link = document.getElementById("icon-nav-books-" + key);
+      if (link) {
+        link.addEventListener("click", (e) => {
+          e.preventDefault();
+          dropdown.style.display = "none";
+          showAppToast(I18N.t("iconnav.booksComingSoon"));
+        });
+      }
+    });
+    ["sell", "publish"].forEach((key) => {
+      const link = document.getElementById("icon-nav-books-" + key);
+      if (link) link.addEventListener("click", () => { dropdown.style.display = "none"; });
+    });
   }
   if (createBtn && createDropdown) {
     createBtn.addEventListener("click", (e) => {
@@ -269,8 +527,9 @@ function doGlobalSearch() {
         location.hash = "#/login";
         return;
       }
-      dropdown.style.display = "none";
-      createDropdown.style.display = createDropdown.style.display === "block" ? "none" : "block";
+      const willOpen = createDropdown.style.display !== "block";
+      closeAllDropdowns();
+      createDropdown.style.display = willOpen ? "block" : "none";
     });
     createDropdown.addEventListener("click", (e) => e.stopPropagation());
     const momentLink = document.getElementById("icon-nav-create-moment");
@@ -288,10 +547,7 @@ function doGlobalSearch() {
       });
     }
   }
-  document.addEventListener("click", () => {
-    if (dropdown) dropdown.style.display = "none";
-    if (createDropdown) createDropdown.style.display = "none";
-  });
+  document.addEventListener("click", () => closeAllDropdowns());
 })();
 
 function setIconNavBadge(count) {
@@ -324,6 +580,7 @@ function parseHash() {
 async function router() {
   const { parts, query } = parseHash();
   window.scrollTo(0, 0);
+  updateGlobalSearchPlaceholder();
 
   try {
     if (parts.length === 0) return renderHome();
@@ -362,6 +619,18 @@ async function router() {
 window.addEventListener("hashchange", router);
 
 // ---------------- Home ----------------
+
+// Horizontal genre-tab row shown above marketplace results (like a
+// bookstore's shelf tabs) - all categories scroll sideways, the one being
+// browsed is underlined. activeSlug is "all" on the unfiltered/search view.
+function categoryTabsHtml(activeSlug) {
+  const allTab = `
+    <a class="category-tab-pill${activeSlug === "all" ? " active" : ""}" href="#/category/all">${I18N.t("category.allTab")}</a>`;
+  return `<div class="category-tabs-row">${allTab}${CATEGORY_LIST.map(
+    (c) => `
+    <a class="category-tab-pill${activeSlug === c.slug ? " active" : ""}" href="#/category/${c.slug}">${c.icon} ${I18N.lang === "es" ? c.es : c.en}</a>`
+  ).join("")}</div>`;
+}
 
 function categoryCardsHtml() {
   return CATEGORY_LIST.map(
@@ -407,6 +676,119 @@ function renderHome() {
   loadHomeFeed();
 }
 
+// ---------------- Barcode / ISBN scanner (Marketplace search + listing form) ----------------
+// Shared full-screen scanner reused from two places: the Marketplace search
+// bar (scan a book's barcode to search for it) and the "Post a listing" form
+// (scan a book's ISBN barcode to auto-fill the title via Open Library).
+// Uses the ZXing browser library (loaded in index.html) since the native
+// BarcodeDetector API isn't available on iOS Safari.
+let barcodeScannerControls = null;
+
+function closeBarcodeScanner() {
+  if (barcodeScannerControls) {
+    try {
+      barcodeScannerControls.stop();
+    } catch (e) {}
+    barcodeScannerControls = null;
+  }
+  const overlay = document.getElementById("barcode-scanner-overlay");
+  if (overlay) overlay.remove();
+}
+
+function openBarcodeScanner(onDetected) {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  const overlay = document.createElement("div");
+  overlay.className = "barcode-scanner-overlay";
+  overlay.id = "barcode-scanner-overlay";
+  overlay.innerHTML = `
+    <div class="barcode-scanner-video-wrap">
+      <video id="barcode-scanner-video" autoplay playsinline muted></video>
+      <div class="barcode-scanner-frame"></div>
+      <div class="barcode-scanner-topbar">
+        <button class="wizard-fs-icon-btn" id="barcode-scanner-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+      </div>
+    </div>
+    <div class="barcode-scanner-bottom">
+      <p class="barcode-scanner-hint">${I18N.t("market.scanHint")}</p>
+      <a href="#" class="barcode-scanner-manual-link" id="barcode-scanner-manual">${I18N.t("market.enterManually")}</a>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  document.getElementById("barcode-scanner-close").addEventListener("click", closeBarcodeScanner);
+  document.getElementById("barcode-scanner-manual").addEventListener("click", (e) => {
+    e.preventDefault();
+    closeBarcodeScanner();
+    const manual = prompt(I18N.t("market.enterIsbnPrompt"));
+    if (manual && manual.trim()) onDetected(manual.trim());
+  });
+
+  const showUnavailable = () => {
+    const wrap = overlay.querySelector(".barcode-scanner-video-wrap");
+    if (wrap) wrap.insertAdjacentHTML("beforeend", `<div class="wizard-fs-fallback">${I18N.t("market.scannerUnavailable")}</div>`);
+  };
+
+  if (!window.ZXingBrowser || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showUnavailable();
+    return;
+  }
+
+  const videoEl = document.getElementById("barcode-scanner-video");
+  const codeReader = new window.ZXingBrowser.BrowserMultiFormatReader();
+  // A book usually has more than one barcode on the back cover (the main
+  // ISBN/EAN-13 barcode, and sometimes a second price/add-on barcode) - any
+  // one of them decoding successfully is a valid result, so no format
+  // restriction is applied here (BrowserMultiFormatReader tries all
+  // supported 1D/2D formats by default).
+  let detected = false; // guard: the decode callback fires on every frame, so
+                         // without this a near-simultaneous double-decode
+                         // could call onDetected() twice for one scan.
+  codeReader
+    .decodeFromConstraints(
+      {
+        video: {
+          facingMode: { ideal: "environment" },
+          // Higher resolution + continuous autofocus so the camera can
+          // actually resolve fine barcode lines up close, instead of
+          // defaulting to a low-res, fixed-focus stream that only happens
+          // to work when the phone's default focus distance lines up.
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          advanced: [{ focusMode: "continuous" }],
+        },
+      },
+      videoEl,
+      (result, err, controls) => {
+        barcodeScannerControls = controls;
+        if (result && !detected) {
+          detected = true;
+          const text = result.getText();
+          try {
+            controls.stop();
+          } catch (e2) {}
+          closeBarcodeScanner();
+          onDetected(text);
+        }
+      }
+    )
+    .catch(() => showUnavailable());
+
+  // Tap anywhere on the video to re-trigger autofocus - phone cameras often
+  // focus on whatever was in frame when the stream opened, which can leave
+  // a close-up barcode blurry until something asks it to refocus.
+  videoEl.addEventListener("click", () => {
+    try {
+      const track = videoEl.srcObject && videoEl.srcObject.getVideoTracks && videoEl.srcObject.getVideoTracks()[0];
+      if (track && track.getCapabilities && track.getCapabilities().focusMode) {
+        track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+      }
+    } catch (e3) {}
+  });
+}
+
 // "#/marketplace": the classic category-grid landing page, also reachable by
 // guests at "#/" and by logged-in users via the Marketplace icon-nav button.
 function renderMarketplaceHome() {
@@ -416,21 +798,18 @@ function renderMarketplaceHome() {
       <h1>${escapeHtml(I18N.t("site.name"))}</h1>
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
     </div>
-    <div class="filters" id="marketplace-search-row">
-      <input type="text" id="marketplace-search-input" placeholder="${I18N.t("home.searchPlaceholder")}" />
-      <button id="marketplace-search-btn">${I18N.t("home.searchBtn")}</button>
-    </div>
+    <a href="#/post" class="sell-books-banner">
+      <span class="sell-books-banner-icon">&#128218;</span>
+      <span class="ai-listing-banner-text">
+        <strong>${I18N.t("home.sellBannerTitle")}</strong>
+        <span>${I18N.t("home.sellBannerSubtitle")}</span>
+      </span>
+      <span class="sell-books-banner-arrow">&#8250;</span>
+    </a>
+    ${categoryTabsHtml("all")}
     <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
     <div class="category-grid">${categoryCardsHtml()}</div>
   `;
-  const doMarketplaceSearch = () => {
-    const q = document.getElementById("marketplace-search-input").value.trim();
-    location.hash = "#/category/all" + (q ? "?q=" + encodeURIComponent(q) : "");
-  };
-  document.getElementById("marketplace-search-btn").addEventListener("click", doMarketplaceSearch);
-  document.getElementById("marketplace-search-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") doMarketplaceSearch();
-  });
   loadAdCarousel();
 }
 
@@ -716,6 +1095,7 @@ async function renderCategory(slug, query) {
 
   viewEl.innerHTML = `
     <a class="back-link" href="#/">&larr; ${I18N.t("category.back")}</a>
+    ${categoryTabsHtml(slug)}
     <h2 class="section-heading">${I18N.t("category.resultsFor")} ${escapeHtml(heading)}</h2>
     <div class="filters">
       <input type="text" id="f-country" placeholder="${I18N.t("category.filterCountry")}" value="${escapeHtml(query.country || "")}" />
@@ -1239,6 +1619,21 @@ async function renderPostAd(editId) {
   viewEl.innerHTML = `
     <div class="form-panel wide">
       <h2 class="section-heading">${I18N.t("postAd.title")}</h2>
+      <button type="button" class="ai-listing-banner" id="ai-listing-banner">
+        <span class="ai-listing-banner-icon">&#10024;</span>
+        <span class="ai-listing-banner-text">
+          <strong>${I18N.t("postAd.aiBannerTitle")}</strong>
+          <span>${I18N.t("postAd.aiBannerSubtitle")}</span>
+        </span>
+      </button>
+      <div class="form-group">
+        <label>${I18N.t("postAd.isbnField")}</label>
+        <div class="post-isbn-row">
+          <input type="text" id="p-isbn" maxlength="17" placeholder="${I18N.t("postAd.isbnPlaceholder")}" value="${existing && existing.isbn ? escapeHtml(existing.isbn) : ""}" />
+          <button type="button" class="market-scan-btn" id="p-isbn-scan" title="${I18N.t("market.scanBarcode")}">&#128247;</button>
+        </div>
+        <p class="post-isbn-lookup-hint" id="p-isbn-hint"></p>
+      </div>
       <div class="form-group">
         <label>${I18N.t("postAd.titleField")}</label>
         <input type="text" id="p-title" maxlength="140" value="${existing ? escapeHtml(existing.title) : ""}" />
@@ -1283,6 +1678,8 @@ async function renderPostAd(editId) {
         <label>${I18N.t("postAd.photosField")}</label>
         <div class="photo-upload-grid" id="photo-grid"></div>
         <input type="file" id="p-photos" accept="image/*" multiple style="font-size:12px;" />
+        <button type="button" class="btn btn-ai-suggest" id="p-ai-suggest" style="margin-top:8px;">&#10024; ${I18N.t("postAd.aiSuggest")}</button>
+        <p class="post-isbn-lookup-hint" id="p-ai-hint"></p>
       </div>
       <button class="btn btn-primary" id="p-submit" style="width:100%;margin-top:10px;">${I18N.t("postAd.publish")}</button>
       <p class="form-msg" id="p-msg"></p>
@@ -1291,15 +1688,109 @@ async function renderPostAd(editId) {
 
   renderPhotoGrid();
 
+  const isbnHintEl = document.getElementById("p-isbn-hint");
+  async function isbnLookupAndFill(rawIsbn) {
+    const cleanIsbn = rawIsbn.replace(/[^0-9Xx]/g, "");
+    if (!cleanIsbn) {
+      isbnHintEl.textContent = "";
+      return;
+    }
+    isbnHintEl.textContent = I18N.t("postAd.isbnLooking");
+    isbnHintEl.className = "post-isbn-lookup-hint";
+    try {
+      const data = await api("/api/isbn/" + encodeURIComponent(cleanIsbn));
+      const titleEl = document.getElementById("p-title");
+      if (data.found) {
+        if (titleEl && !titleEl.value.trim()) titleEl.value = data.title;
+        const authors = Array.isArray(data.authors) && data.authors.length ? " — " + data.authors.join(", ") : "";
+        isbnHintEl.textContent = I18N.t("postAd.isbnFound") + ": " + data.title + authors;
+        isbnHintEl.className = "post-isbn-lookup-hint ok";
+      } else {
+        isbnHintEl.textContent = I18N.t("postAd.isbnNotFound");
+        isbnHintEl.className = "post-isbn-lookup-hint error";
+      }
+    } catch (e) {
+      isbnHintEl.textContent = "";
+    }
+  }
+  document.getElementById("p-isbn-scan").addEventListener("click", () => {
+    openBarcodeScanner((code) => {
+      document.getElementById("p-isbn").value = code;
+      isbnLookupAndFill(code);
+    });
+  });
+  document.getElementById("p-isbn").addEventListener("blur", (e) => isbnLookupAndFill(e.target.value.trim()));
+
+  const aiHintEl = document.getElementById("p-ai-hint");
+  const aiSuggestBtn = document.getElementById("p-ai-suggest");
+  const aiBanner = document.getElementById("ai-listing-banner");
+  let aiPendingAfterUpload = false;
+
+  async function runAiSuggest() {
+    if (!photoBuffer.length) {
+      aiHintEl.textContent = I18N.t("postAd.aiNeedsPhoto");
+      aiHintEl.className = "post-isbn-lookup-hint error";
+      return;
+    }
+    aiSuggestBtn.disabled = true;
+    aiBanner.disabled = true;
+    aiHintEl.textContent = I18N.t("postAd.aiThinking");
+    aiHintEl.className = "post-isbn-lookup-hint";
+    try {
+      const data = await api("/api/ai/analyze-book-photo", {
+        method: "POST",
+        auth: true,
+        body: { image: photoBuffer[0], locale: I18N.lang },
+      });
+      if (data.title) document.getElementById("p-title").value = data.title;
+      if (data.description) document.getElementById("p-description").value = data.description;
+      if (data.category) document.getElementById("p-category").value = data.category;
+      if (data.suggestedPrice) document.getElementById("p-price").value = data.suggestedPrice;
+      let hint = data.title ? I18N.t("postAd.aiSuggestedReview") : I18N.t("postAd.aiNoMatch");
+      if (data.suggestedPrice && data.priceReasoning) hint += " " + data.priceReasoning;
+      aiHintEl.textContent = hint;
+      aiHintEl.className = "post-isbn-lookup-hint " + (data.title ? "ok" : "error");
+      aiHintEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch (err) {
+      aiHintEl.textContent = err.message || I18N.t("postAd.aiError");
+      aiHintEl.className = "post-isbn-lookup-hint error";
+    } finally {
+      aiSuggestBtn.disabled = false;
+      aiBanner.disabled = false;
+    }
+  }
+  aiSuggestBtn.addEventListener("click", runAiSuggest);
+
+  // Big, impossible-to-miss entry point at the top of the form: if there's
+  // already a photo, run the AI right away; if not, open the photo picker
+  // first and run automatically as soon as a photo comes back.
+  aiBanner.addEventListener("click", () => {
+    if (photoBuffer.length) {
+      runAiSuggest();
+    } else {
+      aiPendingAfterUpload = true;
+      document.getElementById("p-photos").click();
+    }
+  });
+
   document.getElementById("p-photos").addEventListener("change", (e) => {
     const files = Array.from(e.target.files).slice(0, MAX_PHOTOS - photoBuffer.length);
     let remaining = files.length;
     if (remaining === 0) return;
+    let loaded = 0;
     files.forEach((file) => {
       const reader = new FileReader();
-      reader.onload = () => {
-        if (photoBuffer.length < MAX_PHOTOS) photoBuffer.push(reader.result);
+      reader.onload = async () => {
+        // Automatically clean up the photo (auto contrast/brightness) before
+        // it's stored - no button, no wait, it just happens.
+        const cleaned = await autoEnhanceImage(reader.result);
+        if (photoBuffer.length < MAX_PHOTOS) photoBuffer.push(cleaned);
         renderPhotoGrid();
+        loaded++;
+        if (loaded === files.length && aiPendingAfterUpload) {
+          aiPendingAfterUpload = false;
+          runAiSuggest();
+        }
       };
       reader.readAsDataURL(file);
     });
@@ -1313,6 +1804,7 @@ async function renderPostAd(editId) {
       description: document.getElementById("p-description").value,
       price: document.getElementById("p-price").value,
       category: document.getElementById("p-category").value,
+      isbn: document.getElementById("p-isbn").value.trim(),
       country: document.getElementById("p-country").value,
       state: document.getElementById("p-state").value,
       city: document.getElementById("p-city").value,
@@ -3219,6 +3711,11 @@ const CREATE_WIZARD_FILTERS = [
   { id: "vintage", css: "sepia(0.4) contrast(0.9) brightness(1.05) saturate(0.85)" },
 ];
 
+const CREATE_WIZARD_STICKERS = ["\u{1F600}", "\u{1F602}", "\u{1F60D}", "\u{1F525}", "\u{1F389}", "\u{1F4DA}", "❤️", "\u{1F44D}", "\u{1F60E}", "✨", "\u{1F973}", "\u{1F4D6}"];
+
+const WIZARD_HOLD_THRESHOLD_MS = 280;
+const WIZARD_RING_TARGET_MS = MAX_MOMENT_VIDEO_SECONDS * 1000;
+
 function createWizardFilterCss(id) {
   const f = CREATE_WIZARD_FILTERS.find((x) => x.id === id);
   return f ? f.css : "";
@@ -3227,6 +3724,7 @@ function createWizardFilterCss(id) {
 let createWizard = null;
 
 function stopCreateWizardCamera() {
+  if (createWizard) stopWizardRing();
   if (createWizard && createWizard.stream) {
     createWizard.stream.getTracks().forEach((t) => t.stop());
     createWizard.stream = null;
@@ -3250,9 +3748,14 @@ function openCreateWizard() {
     location.hash = "#/login";
     return;
   }
-  createWizard = { step: 1, filter: "none", mediaType: null, rawDataUrl: null, recording: false, stream: null, recorder: null, chunks: [], durationSeconds: null };
+  createWizard = {
+    step: 1, filter: "none", mediaType: null, rawDataUrl: null, recording: false,
+    stream: null, recorder: null, chunks: [], durationSeconds: null,
+    facingMode: "user", flashOn: false, timerMode: 0,
+    recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
+    overlays: [],
+  };
   const overlay = document.createElement("div");
-  overlay.className = "modal-overlay create-wizard-overlay";
   overlay.id = "create-wizard-overlay";
   document.body.appendChild(overlay);
   drawCreateWizard();
@@ -3273,161 +3776,521 @@ function wireCreateWizardFilterRow(onChange) {
   });
 }
 
+function wizardFormatTime(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m + ":" + String(r).padStart(2, "0");
+}
+
+function stopWizardRing() {
+  if (createWizard.ringRaf) cancelAnimationFrame(createWizard.ringRaf);
+  createWizard.ringRaf = null;
+}
+
+function startWizardRing() {
+  const circle = document.getElementById("wizard-fs-ring-circle");
+  const timeLabel = document.getElementById("wizard-fs-rec-time");
+  const R = 30;
+  const C = 2 * Math.PI * R;
+  const tick = () => {
+    if (!createWizard || !createWizard.recording) return;
+    const elapsed = createWizard.recordAccumMs + (Date.now() - createWizard.segmentStartTs);
+    const frac = Math.min(1, elapsed / WIZARD_RING_TARGET_MS);
+    if (circle) circle.style.strokeDashoffset = String(C * (1 - frac));
+    if (timeLabel) timeLabel.textContent = wizardFormatTime(elapsed);
+    if (frac >= 1) {
+      finalizeWizardRecording();
+      return;
+    }
+    createWizard.ringRaf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function updateWizardSideRailEnabled() {
+  const locked = createWizard.recordAccumMs > 0 || createWizard.recording;
+  ["flip", "flash", "timer"].forEach((a) => {
+    const el = document.getElementById("wizard-rail-" + a);
+    if (el) el.disabled = locked;
+  });
+}
+
+function showWizardRecBadge(show) {
+  const el = document.getElementById("wizard-fs-rec-badge");
+  if (el) el.style.display = show ? "flex" : "none";
+}
+
+function updateWizardHint(text) {
+  const el = document.getElementById("wizard-fs-hint");
+  if (el) el.textContent = text;
+}
+
+function updateWizardFlashSupport() {
+  const btn = document.getElementById("wizard-rail-flash");
+  if (!btn || !createWizard.stream) return;
+  const track = createWizard.stream.getVideoTracks()[0];
+  const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+  btn.style.display = caps && caps.torch ? "flex" : "none";
+  if (!(caps && caps.torch)) createWizard.flashOn = false;
+}
+
+function wizardToggleFlash() {
+  if (!createWizard.stream) return;
+  const track = createWizard.stream.getVideoTracks()[0];
+  if (!track || !track.getCapabilities || !track.getCapabilities().torch) return;
+  createWizard.flashOn = !createWizard.flashOn;
+  track.applyConstraints({ advanced: [{ torch: createWizard.flashOn }] }).catch(() => {});
+  const btn = document.getElementById("wizard-rail-flash");
+  if (btn) btn.classList.toggle("active", createWizard.flashOn);
+}
+
+function wizardCycleTimer() {
+  createWizard.timerMode = createWizard.timerMode === 0 ? 3 : createWizard.timerMode === 3 ? 10 : 0;
+  const btn = document.getElementById("wizard-rail-timer");
+  if (btn) {
+    btn.classList.toggle("active", createWizard.timerMode !== 0);
+    const icon = btn.querySelector(".rail-icon");
+    if (icon) icon.innerHTML = createWizard.timerMode === 0 ? "&#9201;" : createWizard.timerMode + "s";
+  }
+}
+
+function wizardShowToast(text) {
+  const wrap = document.getElementById("wizard-fs-video-wrap");
+  if (!wrap) return;
+  const existing = wrap.querySelector(".wizard-fs-toast");
+  if (existing) existing.remove();
+  const el = document.createElement("div");
+  el.className = "wizard-fs-toast";
+  el.textContent = text;
+  wrap.appendChild(el);
+  setTimeout(() => el.remove(), 1600);
+}
+
+function wizardToggleFilterStrip() {
+  const strip = document.querySelector(".wizard-fs-filter-rail");
+  if (strip) strip.hidden = !strip.hidden;
+}
+
+// Right-hand options rail: layout inspired by mainstream camera apps but
+// built from our own generic Unicode glyphs (not copied icon assets).
+// Tier 1 items show by default; tier 2 items reveal via the "more" toggle,
+// matching the collapsed/expanded pattern of similar camera UIs.
+const CREATE_WIZARD_RAIL_ITEMS = [
+  { action: "flip", tier: 1, icon: "&#8635;" },
+  { action: "timer", tier: 1, icon: "&#9201;" },
+  { action: "duration", tier: 1, icon: "&#9203;" },
+  { action: "templates", tier: 1, icon: "&#9638;" },
+  { action: "effects", tier: 1, icon: "&#10024;" },
+  { action: "speed", tier: 1, icon: "1x" },
+  { action: "greenscreen", tier: 2, icon: "&#9635;" },
+  { action: "retouch", tier: 2, icon: "&#128142;" },
+  { action: "filters", tier: 2, icon: "&#127912;" },
+  { action: "lighting", tier: 2, icon: "&#9788;" },
+  { action: "flash", tier: 2, icon: "&#9889;" },
+];
+
+function wizardRailItemsHtml() {
+  const items = CREATE_WIZARD_RAIL_ITEMS.map((it) => {
+    const hiddenStyle = it.action === "flash" ? ' style="display:none;"' : "";
+    return `<button class="wizard-fs-rail-item" data-tier="${it.tier}" data-action="${it.action}" id="wizard-rail-${it.action}"${hiddenStyle}>
+      <span class="rail-label">${I18N.t("create.rail_" + it.action)}</span>
+      <span class="rail-icon">${it.icon}</span>
+    </button>`;
+  }).join("");
+  const toggle = `<button class="wizard-fs-rail-item" data-rail="toggle" id="wizard-rail-toggle">
+      <span class="rail-label" id="wizard-rail-toggle-label">${I18N.t("create.rail_more")}</span>
+      <span class="rail-icon" id="wizard-rail-toggle-icon">&#9662;</span>
+    </button>`;
+  return items + toggle;
+}
+
+function wireWizardRail() {
+  document.querySelectorAll(".wizard-fs-rail-item[data-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const action = btn.dataset.action;
+      if (action === "flip") wizardFlipCamera();
+      else if (action === "timer") wizardCycleTimer();
+      else if (action === "flash") wizardToggleFlash();
+      else if (action === "effects" || action === "filters") wizardToggleFilterStrip();
+      else if (action === "duration") wizardShowToast(I18N.t("create.durationHint"));
+      else wizardShowToast(I18N.t("create.comingSoon"));
+    });
+  });
+  const toggleBtn = document.getElementById("wizard-rail-toggle");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      const rail = document.getElementById("wizard-fs-rail");
+      const expanded = rail.classList.toggle("expanded");
+      document.getElementById("wizard-rail-toggle-label").textContent = I18N.t(expanded ? "create.rail_close" : "create.rail_more");
+      document.getElementById("wizard-rail-toggle-icon").innerHTML = expanded ? "&#9652;" : "&#9662;";
+    });
+  }
+}
+
+function wizardRunCountdown(seconds) {
+  return new Promise((resolve) => {
+    const wrap = document.getElementById("wizard-fs-video-wrap");
+    if (!wrap) { resolve(); return; }
+    const el = document.createElement("div");
+    el.className = "wizard-fs-countdown";
+    wrap.appendChild(el);
+    let n = seconds;
+    el.textContent = String(n);
+    const iv = setInterval(() => {
+      n -= 1;
+      if (n <= 0) {
+        clearInterval(iv);
+        el.remove();
+        resolve();
+      } else {
+        el.textContent = String(n);
+      }
+    }, 1000);
+  });
+}
+
+function startWizardCameraStream() {
+  const video = document.getElementById("wizard-fs-video");
+  const fallback = document.getElementById("wizard-fs-fallback");
+  if (!video) return;
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    video.style.display = "none";
+    if (fallback) fallback.style.display = "flex";
+    return;
+  }
+  navigator.mediaDevices
+    .getUserMedia({ video: { facingMode: createWizard.facingMode }, audio: true })
+    .then((stream) => {
+      createWizard.stream = stream;
+      video.srcObject = stream;
+      video.style.display = "";
+      if (fallback) fallback.style.display = "none";
+      updateWizardFlashSupport();
+    })
+    .catch(() => {
+      video.style.display = "none";
+      if (fallback) fallback.style.display = "flex";
+    });
+}
+
+function wizardFlipCamera() {
+  if (createWizard.recordAccumMs > 0 || createWizard.recording) return;
+  const wrap = document.getElementById("wizard-fs-video-wrap");
+  createWizard.facingMode = createWizard.facingMode === "user" ? "environment" : "user";
+  if (createWizard.stream) createWizard.stream.getTracks().forEach((t) => t.stop());
+  if (wrap) wrap.classList.toggle("mirrored", createWizard.facingMode === "user");
+  startWizardCameraStream();
+}
+
+function finalizeWizardRecording() {
+  stopWizardRing();
+  if (createWizard.recorder && createWizard.recorder.state !== "inactive") {
+    createWizard.recorder.stop();
+  }
+}
+
+function finalizeWizardVideo() {
+  const blob = new Blob(createWizard.chunks, { type: "video/webm" });
+  createWizard.durationSeconds = createWizard.recordAccumMs / 1000;
+  const reader = new FileReader();
+  reader.onload = () => {
+    createWizard.rawDataUrl = reader.result;
+    createWizard.mediaType = "video";
+    createWizard.step = 2;
+    stopCreateWizardCamera();
+    drawCreateWizard();
+  };
+  reader.readAsDataURL(blob);
+}
+
+function wireWizardCaptureGesture() {
+  const btn = document.getElementById("wizard-fs-capture-btn");
+  const video = document.getElementById("wizard-fs-video");
+  if (!btn) return;
+
+  const beginHoldRecording = () => {
+    if (!createWizard.stream) return;
+    if (!createWizard.recorder) {
+      try {
+        createWizard.recorder = new MediaRecorder(createWizard.stream);
+      } catch (e) {
+        alert(I18N.t("create.cameraUnavailable"));
+        return;
+      }
+      createWizard.chunks = [];
+      createWizard.recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size) createWizard.chunks.push(e.data);
+      };
+      createWizard.recorder.onstop = finalizeWizardVideo;
+      createWizard.recorder.start(250);
+    } else if (createWizard.recorder.state === "paused") {
+      createWizard.recorder.resume();
+    }
+    createWizard.recording = true;
+    createWizard.segmentStartTs = Date.now();
+    btn.classList.add("recording");
+    showWizardRecBadge(true);
+    startWizardRing();
+    updateWizardSideRailEnabled();
+    updateWizardHint(I18N.t("create.recordingHint"));
+  };
+
+  const pauseHoldRecording = () => {
+    if (!createWizard.recording) return;
+    createWizard.recording = false;
+    createWizard.recordAccumMs += Date.now() - createWizard.segmentStartTs;
+    if (createWizard.recorder && createWizard.recorder.state === "recording") {
+      createWizard.recorder.pause();
+    }
+    btn.classList.remove("recording");
+    showWizardRecBadge(false);
+    stopWizardRing();
+    const doneBtn = document.getElementById("wizard-fs-done-btn");
+    if (doneBtn) doneBtn.removeAttribute("disabled");
+    updateWizardHint(I18N.t("create.addMoreOrDone"));
+    if (createWizard.recordAccumMs >= WIZARD_RING_TARGET_MS) {
+      finalizeWizardRecording();
+    }
+  };
+
+  const takePhoto = () => {
+    if (!video || !video.srcObject) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 720;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext("2d");
+    if (createWizard.facingMode === "user") {
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    createWizard.rawDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    createWizard.mediaType = "image";
+    createWizard.step = 2;
+    stopCreateWizardCamera();
+    drawCreateWizard();
+  };
+
+  const runCaptureFlow = async (isHoldPath) => {
+    if (createWizard.timerMode > 0 && createWizard.recordAccumMs === 0) {
+      btn.disabled = true;
+      await wizardRunCountdown(createWizard.timerMode);
+      btn.disabled = false;
+      takePhoto();
+      return;
+    }
+    if (isHoldPath) beginHoldRecording();
+    else takePhoto();
+  };
+
+  btn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    btn.classList.add("pressed");
+    createWizard.holdArmed = true;
+    createWizard.holdTimer = setTimeout(() => {
+      if (createWizard.holdArmed) runCaptureFlow(true);
+    }, WIZARD_HOLD_THRESHOLD_MS);
+  });
+
+  const release = () => {
+    btn.classList.remove("pressed");
+    if (!createWizard.holdArmed) return;
+    createWizard.holdArmed = false;
+    if (createWizard.holdTimer) {
+      clearTimeout(createWizard.holdTimer);
+      createWizard.holdTimer = null;
+    }
+    if (createWizard.recording) {
+      pauseHoldRecording();
+    } else if (createWizard.recordAccumMs === 0) {
+      runCaptureFlow(false);
+    }
+  };
+  btn.addEventListener("pointerup", release);
+  btn.addEventListener("pointerleave", () => { if (createWizard.recording) release(); });
+  btn.addEventListener("pointercancel", release);
+}
+
+function wizardHandleMediaFile(file) {
+  if (!file) return;
+  const isVideo = file.type.startsWith("video/");
+  if (!isVideo) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      createWizard.rawDataUrl = reader.result;
+      createWizard.mediaType = "image";
+      createWizard.step = 2;
+      stopCreateWizardCamera();
+      drawCreateWizard();
+    };
+    reader.readAsDataURL(file);
+    return;
+  }
+  const probe = document.createElement("video");
+  probe.preload = "metadata";
+  const objectUrl = URL.createObjectURL(file);
+  probe.onloadedmetadata = () => {
+    URL.revokeObjectURL(objectUrl);
+    if (probe.duration && probe.duration > MAX_MOMENT_VIDEO_SECONDS) {
+      alert(I18N.t("moments.videoTooLong"));
+      return;
+    }
+    createWizard.durationSeconds = probe.duration || null;
+    const reader = new FileReader();
+    reader.onload = () => {
+      createWizard.rawDataUrl = reader.result;
+      createWizard.mediaType = "video";
+      createWizard.step = 2;
+      stopCreateWizardCamera();
+      drawCreateWizard();
+    };
+    reader.readAsDataURL(file);
+  };
+  probe.src = objectUrl;
+}
+
+function renderWizardOverlays(interactive) {
+  const wrap = document.getElementById("wizard-preview-wrap");
+  if (!wrap) return;
+  wrap.querySelectorAll(".wizard-overlay-item").forEach((el) => el.remove());
+  createWizard.overlays.forEach((ov) => {
+    const el = document.createElement("div");
+    el.className = "wizard-overlay-item " + ov.type;
+    el.style.left = ov.xPct + "%";
+    el.style.top = ov.yPct + "%";
+    el.textContent = ov.value;
+    if (ov.type === "text") el.style.color = ov.color;
+    if (interactive) wireWizardOverlayDrag(el, wrap, ov);
+    wrap.appendChild(el);
+  });
+}
+
+function wireWizardOverlayDrag(el, wrap, ov) {
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    el.classList.add("dragging");
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+    const move = (ev) => {
+      const rect = wrap.getBoundingClientRect();
+      let xPct = ((ev.clientX - rect.left) / rect.width) * 100;
+      let yPct = ((ev.clientY - rect.top) / rect.height) * 100;
+      xPct = Math.max(4, Math.min(96, xPct));
+      yPct = Math.max(4, Math.min(96, yPct));
+      ov.xPct = xPct;
+      ov.yPct = yPct;
+      el.style.left = xPct + "%";
+      el.style.top = yPct + "%";
+    };
+    const up = () => {
+      el.classList.remove("dragging");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+}
+
+function drawWizardStickerPicker() {
+  let picker = document.getElementById("wizard-sticker-picker");
+  if (picker) {
+    picker.remove();
+    return;
+  }
+  picker = document.createElement("div");
+  picker.className = "wizard-sticker-picker";
+  picker.id = "wizard-sticker-picker";
+  picker.innerHTML = CREATE_WIZARD_STICKERS.map((s) => `<button data-emoji="${s}">${s}</button>`).join("");
+  const toolbar = document.querySelector(".wizard-edit-toolbar");
+  if (!toolbar) return;
+  toolbar.insertAdjacentElement("afterend", picker);
+  picker.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard.overlays.push({ id: "s" + Date.now(), type: "sticker", value: btn.dataset.emoji, xPct: 50, yPct: 50 });
+      renderWizardOverlays(true);
+      picker.remove();
+    });
+  });
+}
+
 function drawCreateWizard() {
   const overlay = document.getElementById("create-wizard-overlay");
   if (!overlay || !createWizard) return;
 
   if (createWizard.step === 1) {
+    overlay.className = "wizard-fs-overlay";
+    const ringC = 2 * Math.PI * 30;
     overlay.innerHTML = `
-      <div class="modal-box wizard-box">
-        <h2 class="section-heading">${I18N.t("create.step1Title")}</h2>
-        <div class="wizard-camera-wrap">
-          <video id="wizard-camera-video" autoplay playsinline muted style="filter:${createWizardFilterCss(createWizard.filter)};"></video>
-          <div class="wizard-camera-fallback" id="wizard-camera-fallback" style="display:none;">
-            <p>${I18N.t("create.cameraUnavailable")}</p>
+      <div class="wizard-fs-video-wrap ${createWizard.facingMode === "user" ? "mirrored" : ""}" id="wizard-fs-video-wrap">
+        <video id="wizard-fs-video" autoplay playsinline muted style="filter:${createWizardFilterCss(createWizard.filter)};"></video>
+        <div class="wizard-fs-fallback" id="wizard-fs-fallback" style="display:none;">
+          <p>${I18N.t("create.cameraUnavailable")}</p>
+        </div>
+        <div class="wizard-fs-topbar">
+          <button class="wizard-fs-icon-btn" id="wizard-fs-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${I18N.t("create.addSound")}</button>
+          <button class="wizard-fs-icon-btn" id="wizard-fs-effects-btn" title="${I18N.t("create.rail_effects")}">&#10024;</button>
+        </div>
+        <div class="wizard-fs-rec-badge" id="wizard-fs-rec-badge" style="display:none;"><span class="wizard-fs-rec-dot"></span><span id="wizard-fs-rec-time">0:00</span></div>
+        <div class="wizard-fs-rail" id="wizard-fs-rail">${wizardRailItemsHtml()}</div>
+      </div>
+      <div class="wizard-fs-bottom">
+        <p class="wizard-fs-hint" id="wizard-fs-hint">${I18N.t("create.tapHoldHint")}</p>
+        <div class="wizard-fs-filter-rail" hidden>${CREATE_WIZARD_FILTERS.map(
+          (f) => `<button class="wizard-fs-filter-item ${createWizard.filter === f.id ? "active" : ""}" data-filter="${f.id}">
+            <span class="wizard-fs-filter-thumb" style="filter:${f.css};"></span>
+            <span class="wizard-fs-filter-label">${I18N.t("create.filter_" + f.id)}</span>
+          </button>`
+        ).join("")}</div>
+        <div class="wizard-fs-controls-row">
+          <button class="wizard-fs-gallery-btn" id="wizard-fs-gallery-btn" title="${I18N.t("create.uploadFromGallery")}">&#128247;</button>
+          <div class="wizard-fs-capture-wrap">
+            <svg class="wizard-fs-capture-ring" viewBox="0 0 70 70" width="76" height="76">
+              <circle cx="35" cy="35" r="30" fill="none" stroke="var(--gold)" stroke-width="4" stroke-dasharray="${ringC}" stroke-dashoffset="${ringC}" id="wizard-fs-ring-circle" stroke-linecap="round"></circle>
+            </svg>
+            <button class="wizard-fs-capture-btn" id="wizard-fs-capture-btn" aria-label="${I18N.t("create.capturePhoto")}"></button>
           </div>
-        </div>
-        ${createWizardFilterRow()}
-        <div class="wizard-capture-row">
-          <button class="btn btn-secondary" id="wizard-upload-photo-btn">${I18N.t("moments.uploadPhoto")}</button>
-          <button class="btn wizard-capture-btn" id="wizard-capture-btn">${I18N.t("create.capturePhoto")}</button>
-          <button class="btn btn-secondary" id="wizard-record-btn">${I18N.t("create.startVideo")}</button>
-          <button class="btn btn-secondary" id="wizard-upload-video-btn">${I18N.t("create.uploadVideo")}</button>
-        </div>
-        <p class="field-hint" id="wizard-record-hint"></p>
-        <input type="file" id="wizard-file-photo" accept="image/*" style="display:none;" />
-        <input type="file" id="wizard-file-video" accept="video/*" style="display:none;" />
-        <div class="action-row">
-          <button class="btn btn-secondary" id="wizard-cancel">${I18N.t("common.cancel")}</button>
+          <button class="wizard-fs-done-btn" id="wizard-fs-done-btn" disabled title="${I18N.t("create.next")}">&#10003;</button>
         </div>
       </div>
+      <input type="file" id="wizard-file-media" accept="image/*,video/*" style="display:none;" />
     `;
 
-    const video = document.getElementById("wizard-camera-video");
-    const fallback = document.getElementById("wizard-camera-fallback");
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices
-        .getUserMedia({ video: true, audio: true })
-        .then((stream) => {
-          createWizard.stream = stream;
-          video.srcObject = stream;
-        })
-        .catch(() => {
-          video.style.display = "none";
-          fallback.style.display = "block";
-        });
-    } else {
-      video.style.display = "none";
-      fallback.style.display = "block";
-    }
+    startWizardCameraStream();
 
-    wireCreateWizardFilterRow(() => {
-      if (video) video.style.filter = createWizardFilterCss(createWizard.filter);
+    document.querySelectorAll(".wizard-fs-filter-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        createWizard.filter = btn.dataset.filter;
+        document.querySelectorAll(".wizard-fs-filter-item").forEach((b) => b.classList.toggle("active", b.dataset.filter === createWizard.filter));
+        const v = document.getElementById("wizard-fs-video");
+        if (v) v.style.filter = createWizardFilterCss(createWizard.filter);
+      });
     });
 
-    document.getElementById("wizard-capture-btn").addEventListener("click", () => {
-      if (!video || !video.srcObject) return;
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth || 720;
-      canvas.height = video.videoHeight || 720;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      createWizard.rawDataUrl = canvas.toDataURL("image/jpeg", 0.92);
-      createWizard.mediaType = "image";
-      createWizard.step = 2;
-      stopCreateWizardCamera();
-      drawCreateWizard();
+    document.getElementById("wizard-fs-close").addEventListener("click", closeCreateWizard);
+    document.getElementById("wizard-fs-sound-pill").addEventListener("click", () => wizardShowToast(I18N.t("create.comingSoon")));
+    document.getElementById("wizard-fs-effects-btn").addEventListener("click", wizardToggleFilterStrip);
+    document.getElementById("wizard-fs-gallery-btn").addEventListener("click", () => document.getElementById("wizard-file-media").click());
+    document.getElementById("wizard-file-media").addEventListener("change", (e) => wizardHandleMediaFile(e.target.files[0]));
+    document.getElementById("wizard-fs-done-btn").addEventListener("click", () => {
+      if (createWizard.recordAccumMs > 0) finalizeWizardRecording();
     });
-
-    const recordBtn = document.getElementById("wizard-record-btn");
-    const recordHint = document.getElementById("wizard-record-hint");
-    recordBtn.addEventListener("click", () => {
-      if (!createWizard.stream) return;
-      if (!createWizard.recording) {
-        createWizard.chunks = [];
-        try {
-          createWizard.recorder = new MediaRecorder(createWizard.stream);
-        } catch (e) {
-          alert(I18N.t("create.cameraUnavailable"));
-          return;
-        }
-        createWizard.recorder.ondataavailable = (e) => {
-          if (e.data && e.data.size) createWizard.chunks.push(e.data);
-        };
-        createWizard.recordStart = Date.now();
-        createWizard.recorder.onstop = () => {
-          const blob = new Blob(createWizard.chunks, { type: "video/webm" });
-          createWizard.durationSeconds = (Date.now() - createWizard.recordStart) / 1000;
-          const reader = new FileReader();
-          reader.onload = () => {
-            createWizard.rawDataUrl = reader.result;
-            createWizard.mediaType = "video";
-            createWizard.step = 2;
-            stopCreateWizardCamera();
-            drawCreateWizard();
-          };
-          reader.readAsDataURL(blob);
-        };
-        createWizard.recorder.start();
-        createWizard.recording = true;
-        recordBtn.textContent = I18N.t("create.stopVideo");
-        recordHint.textContent = I18N.t("create.recordingHint");
-      } else {
-        createWizard.recording = false;
-        if (createWizard.recorder) createWizard.recorder.stop();
-      }
-    });
-
-    document.getElementById("wizard-upload-photo-btn").addEventListener("click", () => document.getElementById("wizard-file-photo").click());
-    document.getElementById("wizard-upload-video-btn").addEventListener("click", () => document.getElementById("wizard-file-video").click());
-    document.getElementById("wizard-file-photo").addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        createWizard.rawDataUrl = reader.result;
-        createWizard.mediaType = "image";
-        createWizard.step = 2;
-        stopCreateWizardCamera();
-        drawCreateWizard();
-      };
-      reader.readAsDataURL(file);
-    });
-    document.getElementById("wizard-file-video").addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const probe = document.createElement("video");
-      probe.preload = "metadata";
-      const objectUrl = URL.createObjectURL(file);
-      probe.onloadedmetadata = () => {
-        URL.revokeObjectURL(objectUrl);
-        if (probe.duration && probe.duration > MAX_MOMENT_VIDEO_SECONDS) {
-          alert(I18N.t("moments.videoTooLong"));
-          return;
-        }
-        createWizard.durationSeconds = probe.duration || null;
-        const reader = new FileReader();
-        reader.onload = () => {
-          createWizard.rawDataUrl = reader.result;
-          createWizard.mediaType = "video";
-          createWizard.step = 2;
-          stopCreateWizardCamera();
-          drawCreateWizard();
-        };
-        reader.readAsDataURL(file);
-      };
-      probe.src = objectUrl;
-    });
-
-    document.getElementById("wizard-cancel").addEventListener("click", closeCreateWizard);
+    wireWizardRail();
+    wireWizardCaptureGesture();
     return;
   }
 
   if (createWizard.step === 2) {
+    overlay.className = "modal-overlay create-wizard-overlay";
     overlay.innerHTML = `
       <div class="modal-box wizard-box">
         <h2 class="section-heading">${I18N.t("create.step2Title")}</h2>
-        <div class="wizard-preview-wrap">
+        <div class="wizard-edit-toolbar">
+          <button class="wizard-edit-tool-btn" id="wizard-add-text-btn" title="${I18N.t("create.addText")}">Aa</button>
+          <button class="wizard-edit-tool-btn" id="wizard-add-sticker-btn" title="${I18N.t("create.addSticker")}">&#128512;</button>
+        </div>
+        <div class="wizard-preview-wrap" id="wizard-preview-wrap">
           ${
             createWizard.mediaType === "video"
               ? `<video class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" controls></video>`
@@ -3443,6 +4306,7 @@ function drawCreateWizard() {
         <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel2">${I18N.t("common.cancel")}</a></p>
       </div>
     `;
+    renderWizardOverlays(true);
     document.getElementById("wizard-cancel2").addEventListener("click", (e) => {
       e.preventDefault();
       closeCreateWizard();
@@ -3453,10 +4317,21 @@ function drawCreateWizard() {
       if (img) img.style.filter = createWizardFilterCss(createWizard.filter);
       else if (vid) vid.style.filter = createWizardFilterCss(createWizard.filter);
     });
+    document.getElementById("wizard-add-text-btn").addEventListener("click", () => {
+      const val = prompt(I18N.t("create.addTextPrompt"));
+      if (!val) return;
+      createWizard.overlays.push({ id: "t" + Date.now(), type: "text", value: val.slice(0, 60), color: "#FFD84D", xPct: 50, yPct: 35 });
+      renderWizardOverlays(true);
+    });
+    document.getElementById("wizard-add-sticker-btn").addEventListener("click", drawWizardStickerPicker);
     document.getElementById("wizard-back").addEventListener("click", () => {
       createWizard.step = 1;
       createWizard.rawDataUrl = null;
       createWizard.mediaType = null;
+      createWizard.overlays = [];
+      createWizard.recordAccumMs = 0;
+      createWizard.recorder = null;
+      createWizard.chunks = [];
       drawCreateWizard();
     });
     document.getElementById("wizard-next").addEventListener("click", () => {
@@ -3518,8 +4393,13 @@ function drawCreateWizard() {
     msgEl.className = "form-msg";
     try {
       let finalMedia = createWizard.rawDataUrl;
-      if (createWizard.mediaType === "image" && createWizard.filter !== "none") {
-        finalMedia = await bakeImageFilter(createWizard.rawDataUrl, createWizardFilterCss(createWizard.filter));
+      if (createWizard.mediaType === "image") {
+        if (createWizard.filter !== "none") {
+          finalMedia = await bakeImageFilter(finalMedia, createWizardFilterCss(createWizard.filter));
+        }
+        if (createWizard.overlays.length) {
+          finalMedia = await bakeWizardOverlays(finalMedia, createWizard.overlays);
+        }
       }
       const hashtagsRaw = document.getElementById("wizard-hashtags").value.trim();
       const hashtags = hashtagsRaw
@@ -3567,6 +4447,44 @@ function bakeImageFilter(dataUrl, cssFilter) {
       const ctx = canvas.getContext("2d");
       ctx.filter = cssFilter;
       ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL("image/jpeg", 0.92));
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+// Draws text/sticker overlays (added in the create-wizard edit step) onto the
+// final image so they're part of the published file, not just a DOM overlay.
+function bakeWizardOverlays(dataUrl, overlays) {
+  if (!overlays || !overlays.length) return Promise.resolve(dataUrl);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      overlays.forEach((ov) => {
+        const x = (ov.xPct / 100) * canvas.width;
+        const y = (ov.yPct / 100) * canvas.height;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        if (ov.type === "text") {
+          const fontSize = Math.round(canvas.width * 0.06);
+          ctx.font = `800 ${fontSize}px sans-serif`;
+          ctx.fillStyle = ov.color || "#FFD84D";
+          ctx.shadowColor = "rgba(0,0,0,0.5)";
+          ctx.shadowBlur = 6;
+          ctx.fillText(ov.value, x, y);
+          ctx.shadowBlur = 0;
+        } else {
+          const fontSize = Math.round(canvas.width * 0.12);
+          ctx.font = `${fontSize}px sans-serif`;
+          ctx.fillText(ov.value, x, y);
+        }
+      });
       resolve(canvas.toDataURL("image/jpeg", 0.92));
     };
     img.onerror = reject;
@@ -4390,6 +5308,7 @@ function openEditProfileModal(profile) {
       });
       state.user = { ...state.user, ...data.user };
       localStorage.setItem("authUser", JSON.stringify(state.user));
+      applyUserTheme(state.user);
       overlay.remove();
       router();
     } catch (e) {
