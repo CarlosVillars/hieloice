@@ -357,6 +357,7 @@ function setText(id, text) {
 
 function applyStaticI18n() {
   setText("brand-name", I18N.t("site.name"));
+  setText("brand-tagline", I18N.t("site.tagline"));
   updateGlobalSearchPlaceholder();
   setText("nav-messages", I18N.t("nav.messages"));
   setText("nav-profile", I18N.t("nav.profile"));
@@ -798,18 +799,7 @@ function renderMarketplaceHome() {
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
     </div>
     <a href="#/post" class="sell-books-banner">
-      <span class="sell-books-banner-icon" style="display:flex;align-items:center;gap:3px;">
-        <svg viewBox="0 0 24 24" width="26" height="26" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <rect x="3" y="14.5" width="18" height="3" rx="0.6" fill="#c0392b" stroke="#8f2a1e" stroke-width="0.4" />
-          <rect x="3.6" y="11.3" width="16.8" height="3" rx="0.6" fill="#2f6fb0" stroke="#1f4d7a" stroke-width="0.4" />
-          <rect x="4.2" y="8.1" width="15.6" height="3" rx="0.6" fill="#f4e4c1" stroke="#d99a12" stroke-width="0.4" />
-        </svg>
-        <svg viewBox="0 0 24 24" width="26" height="26" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M3.5 4h2l1.9 10.8a2 2 0 0 0 2 1.66h7.4a2 2 0 0 0 1.96-1.62L20.5 7H7" fill="none" stroke="#d99a12" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-          <circle cx="10.5" cy="20.3" r="1.4" fill="#d99a12" />
-          <circle cx="17.5" cy="20.3" r="1.4" fill="#d99a12" />
-        </svg>
-      </span>
+      <span class="sell-books-banner-icon">&#128218;</span>
       <span class="ai-listing-banner-text">
         <strong>${I18N.t("home.sellBannerTitle")}</strong>
         <span>${I18N.t("home.sellBannerSubtitle")}</span>

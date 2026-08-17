@@ -141,6 +141,8 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   text-shadow: 0 1px 2px rgba(0,0,0,0.35);
 }
 .brand-logo-img { display: block; height: 48px; width: auto; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.25)); }
+.brand-text-col { display: flex; flex-direction: column; line-height: 1.15; }
+.brand-tagline { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 10.5px; font-weight: 500; letter-spacing: 0.1px; opacity: 0.88; white-space: normal; text-shadow: none; }
 .brand-logo-dark { display: none; }
 [data-theme="dark"] .brand-logo-light { display: none; }
 [data-theme="dark"] .brand-logo-dark { display: block; }
