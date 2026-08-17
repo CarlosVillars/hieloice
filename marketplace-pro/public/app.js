@@ -270,13 +270,18 @@ async function refreshMe() {
   updateNavUI();
 }
 
+function setDisplay(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = value;
+}
+
 function updateNavUI() {
   const loggedIn = !!state.token;
-  document.getElementById("nav-login").style.display = loggedIn ? "none" : "inline";
-  document.getElementById("nav-register").style.display = loggedIn ? "none" : "inline";
-  document.getElementById("nav-logout").style.display = loggedIn ? "inline" : "none";
-  document.getElementById("nav-profile").style.display = loggedIn ? "inline" : "none";
-  document.getElementById("nav-messages").style.display = loggedIn ? "inline" : "none";
+  setDisplay("nav-login", loggedIn ? "none" : "inline");
+  setDisplay("nav-register", loggedIn ? "none" : "inline");
+  setDisplay("nav-logout", loggedIn ? "inline" : "none");
+  setDisplay("nav-profile", loggedIn ? "inline" : "none");
+  setDisplay("nav-messages", loggedIn ? "inline" : "none");
   const navAdmin = document.getElementById("nav-admin");
   if (navAdmin) {
     const canAdmin = loggedIn && state.user && (state.user.role === "admin" || state.user.isOwner);
@@ -290,13 +295,16 @@ function updateNavUI() {
   }
 }
 
-document.getElementById("nav-logout").addEventListener("click", async () => {
-  try {
-    await api("/api/auth/logout", { method: "POST", auth: true });
-  } catch (e) {}
-  setAuth(null, null);
-  location.hash = "#/";
-});
+const navLogoutBtn = document.getElementById("nav-logout");
+if (navLogoutBtn) {
+  navLogoutBtn.addEventListener("click", async () => {
+    try {
+      await api("/api/auth/logout", { method: "POST", auth: true });
+    } catch (e) {}
+    setAuth(null, null);
+    location.hash = "#/";
+  });
+}
 
 // ---------------- Unread messages badge ----------------
 
@@ -356,8 +364,10 @@ function applyStaticI18n() {
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
   setText("nav-logout", I18N.t("nav.logout"));
-  document.getElementById("lang-en").classList.toggle("active", I18N.lang === "en");
-  document.getElementById("lang-es").classList.toggle("active", I18N.lang === "es");
+  const langEnBtnEl = document.getElementById("lang-en");
+  if (langEnBtnEl) langEnBtnEl.classList.toggle("active", I18N.lang === "en");
+  const langEsBtnEl = document.getElementById("lang-es");
+  if (langEsBtnEl) langEsBtnEl.classList.toggle("active", I18N.lang === "es");
   setText("icon-nav-home-label", I18N.t("iconnav.home"));
   setText("icon-nav-friends-label", I18N.t("iconnav.friends"));
   setText("icon-nav-shorts-label", I18N.t("iconnav.shorts"));
@@ -379,26 +389,34 @@ function applyStaticI18n() {
   setText("icon-nav-books-auction-soon", I18N.t("iconnav.booksSoonTag"));
 }
 
-document.getElementById("lang-en").addEventListener("click", () => {
-  I18N.setLang("en");
-  applyStaticI18n();
-  router();
-});
-document.getElementById("lang-es").addEventListener("click", () => {
-  I18N.setLang("es");
-  applyStaticI18n();
-  router();
-});
+const langEnBtn = document.getElementById("lang-en");
+if (langEnBtn) {
+  langEnBtn.addEventListener("click", () => {
+    I18N.setLang("en");
+    applyStaticI18n();
+    router();
+  });
+}
+const langEsBtn = document.getElementById("lang-es");
+if (langEsBtn) {
+  langEsBtn.addEventListener("click", () => {
+    I18N.setLang("es");
+    applyStaticI18n();
+    router();
+  });
+}
 
 // Normal-tier dark mode toggle (hidden for premium accounts - see
 // applyUserTheme()). Clicking these when hidden is harmless since the
 // wrapper is display:none for premium users.
-document.getElementById("theme-normal-light").addEventListener("click", () => {
-  applyNormalThemePref("light");
-});
-document.getElementById("theme-normal-dark").addEventListener("click", () => {
-  applyNormalThemePref("dark");
-});
+const themeNormalLightBtn = document.getElementById("theme-normal-light");
+if (themeNormalLightBtn) {
+  themeNormalLightBtn.addEventListener("click", () => applyNormalThemePref("light"));
+}
+const themeNormalDarkBtn = document.getElementById("theme-normal-dark");
+if (themeNormalDarkBtn) {
+  themeNormalDarkBtn.addEventListener("click", () => applyNormalThemePref("dark"));
+}
 
 // ---------------- Topbar "..." menu (language + logout) ----------------
 // Same open/close-on-outside-click pattern as the icon-nav dropdowns below.
@@ -419,18 +437,27 @@ document.getElementById("theme-normal-dark").addEventListener("click", () => {
   });
 })();
 
-document.getElementById("global-search-btn").addEventListener("click", doGlobalSearch);
-document.getElementById("global-search").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") doGlobalSearch();
-});
-document.getElementById("global-search-scan-btn").addEventListener("click", () => {
-  openBarcodeScanner((code) => {
-    document.getElementById("global-search").value = code;
-    doGlobalSearch();
+const globalSearchBtn = document.getElementById("global-search-btn");
+if (globalSearchBtn) globalSearchBtn.addEventListener("click", doGlobalSearch);
+const globalSearchInput = document.getElementById("global-search");
+if (globalSearchInput) {
+  globalSearchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doGlobalSearch();
   });
-});
+}
+const globalSearchScanBtn = document.getElementById("global-search-scan-btn");
+if (globalSearchScanBtn) {
+  globalSearchScanBtn.addEventListener("click", () => {
+    openBarcodeScanner((code) => {
+      const searchInput = document.getElementById("global-search");
+      if (searchInput) searchInput.value = code;
+      doGlobalSearch();
+    });
+  });
+}
 function doGlobalSearch() {
-  const q = document.getElementById("global-search").value.trim();
+  const searchInput = document.getElementById("global-search");
+  const q = searchInput ? searchInput.value.trim() : "";
   location.hash = "#/category/all" + (q ? "?q=" + encodeURIComponent(q) : "");
 }
 
@@ -771,7 +798,15 @@ function renderMarketplaceHome() {
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
     </div>
     <a href="#/post" class="sell-books-banner">
-      <span class="sell-books-banner-icon">&#128218;</span>
+      <span class="sell-books-banner-icon">
+        <svg viewBox="0 0 24 24" width="32" height="32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M3.5 4h2l1.9 10.8a2 2 0 0 0 2 1.66h7.4a2 2 0 0 0 1.96-1.62L20.5 7H7" fill="none" stroke="#d99a12" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <circle cx="10.5" cy="20.3" r="1.3" fill="#d99a12" />
+          <circle cx="17.5" cy="20.3" r="1.3" fill="#d99a12" />
+          <rect x="7.5" y="2.4" width="6.6" height="8.4" rx="0.6" transform="rotate(-8 10.8 6.6)" fill="#c0392b" stroke="#8f2a1e" stroke-width="0.4" />
+          <rect x="9.4" y="1" width="6.2" height="8" rx="0.6" transform="rotate(6 12.5 5)" fill="#2f6fb0" stroke="#1f4d7a" stroke-width="0.4" />
+        </svg>
+      </span>
       <span class="ai-listing-banner-text">
         <strong>${I18N.t("home.sellBannerTitle")}</strong>
         <span>${I18N.t("home.sellBannerSubtitle")}</span>
