@@ -307,7 +307,8 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .icon-nav-btn-plain { cursor: pointer; }
 .icon-nav-btn-center { font-weight: 800; }
 .icon-nav-icecube { display: block; margin: 0 auto; height: 27px; width: 27px; }
-.icon-nav-cartbooks { display: flex; align-items: center; justify-content: center; gap: 2px; margin: 0 auto; transition: transform 0.15s ease; }
+.icon-nav-cartbooks { display: flex; align-items: center; justify-content: center; height: 27px; gap: 1px; margin: 0 auto; transition: transform 0.15s ease; }
+.icon-nav-cartbooks-emoji { font-size: 21px; line-height: 1; }
 .icon-nav-btn:active .icon-nav-cartbooks { transform: scale(0.85); }
 @keyframes iconBagPop {
   0% { transform: scale(1) rotate(0deg); }
