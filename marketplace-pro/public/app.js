@@ -50,9 +50,28 @@ function applyUserTheme(user) {
   }
 }
 
+function safeParseStoredUser() {
+  // If a stale/corrupted value ever ends up in localStorage under
+  // "authUser" (e.g. leftover from an older app version), an unguarded
+  // JSON.parse() throws synchronously at script load time and silently
+  // aborts the ENTIRE app.js execution - every click handler wired further
+  // down (including the "+" create button and the Marketplace dropdown)
+  // simply never gets attached, with no visible error to the user. Clearing
+  // browser cache/cookies does NOT clear localStorage, so that bug survives
+  // a cache clear. Guard against it here so a bad value just logs the user
+  // out instead of breaking the whole page.
+  try {
+    return JSON.parse(localStorage.getItem("authUser") || "null");
+  } catch (e) {
+    localStorage.removeItem("authUser");
+    localStorage.removeItem("authToken");
+    return null;
+  }
+}
+
 const state = {
   token: localStorage.getItem("authToken") || null,
-  user: JSON.parse(localStorage.getItem("authUser") || "null"),
+  user: safeParseStoredUser(),
 };
 
 // Set the initial skin as early as possible based on whatever user object
