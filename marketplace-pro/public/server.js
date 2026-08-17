@@ -42,6 +42,13 @@ const MAX_ACTIVE_MOMENTS = 3;
 const MAX_MOMENT_VIDEO_SECONDS = 180; // 3 minutes - enforced client-side (no server-side video parsing)
 const MAX_PRODUCT_VIDEO_SECONDS = 20; // enforced client-side (no server-side video parsing)
 
+// Reused keep-alive HTTPS agent so every outbound call (Supabase REST,
+// Supabase Storage, OAuth token exchanges) reuses pooled TCP+TLS connections
+// instead of paying a fresh handshake on every single request. A page like
+// the profile view fires 8-10 backend calls, each of which fires 1-3
+// Supabase calls - without this, that's dozens of cold handshakes per load.
+const keepAliveAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
+
 // ---------- Supabase REST helpers ----------
 
 function sbRequest(method, pathAndQuery, body) {
@@ -64,6 +71,7 @@ function sbRequest(method, pathAndQuery, body) {
         path: target.pathname + target.search,
         method,
         headers,
+        agent: keepAliveAgent,
       },
       (res) => {
         let chunks = [];
@@ -137,6 +145,7 @@ function httpsRequestJson(method, urlStr, opts) {
         path: target.pathname + target.search,
         method,
         headers,
+        agent: keepAliveAgent,
       },
       (res) => {
         let chunks = [];
@@ -195,6 +204,7 @@ function sbStorageUpload(bucket, path, dataUrl) {
           "Content-Length": buffer.length,
           "x-upsert": "true",
         },
+        agent: keepAliveAgent,
       },
       (res) => {
         let chunks = [];
@@ -225,18 +235,36 @@ function verifyPassword(password, stored) {
   return hashPassword(password, salt) === stored;
 }
 
+// Very short-lived cache so a single page load that fires several
+// authenticated requests in a burst (e.g. the profile page's friend/follow/
+// block-status calls) doesn't redo the same 2 sequential DB round-trips per
+// request. TTL is intentionally tiny (a few seconds) so login/suspension
+// changes still take effect almost immediately.
+const authUserCache = new Map(); // token -> { promise, expires }
+const AUTH_CACHE_TTL_MS = 5000;
+
 async function getAuthUser(req) {
   const auth = req.headers["authorization"] || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
   if (!token) return null;
-  const sessions = await db.select("mkt_sessions", { token: "eq." + enc(token), select: "user_id" });
-  if (!sessions || !sessions[0]) return null;
-  const users = await db.select("mkt_users", { id: "eq." + enc(sessions[0].user_id), select: "*" });
-  const user = (users && users[0]) || null;
-  // Suspended accounts are treated as logged-out for every authenticated
-  // action app-wide (their public listings/profile stay visible to others).
-  if (user && user.suspended) return null;
-  return user;
+
+  const cached = authUserCache.get(token);
+  if (cached && cached.expires > Date.now()) return cached.promise;
+
+  const promise = (async () => {
+    const sessions = await db.select("mkt_sessions", { token: "eq." + enc(token), select: "user_id" });
+    if (!sessions || !sessions[0]) return null;
+    const users = await db.select("mkt_users", { id: "eq." + enc(sessions[0].user_id), select: "*" });
+    const user = (users && users[0]) || null;
+    // Suspended accounts are treated as logged-out for every authenticated
+    // action app-wide (their public listings/profile stay visible to others).
+    if (user && user.suspended) return null;
+    return user;
+  })();
+
+  authUserCache.set(token, { promise, expires: Date.now() + AUTH_CACHE_TTL_MS });
+  promise.catch(() => authUserCache.delete(token)); // don't cache failures
+  return promise;
 }
 
 function publicUser(u) {
@@ -256,7 +284,7 @@ function ownUser(u) {
 
 function toCamelUser(u) {
   if (!u) return u;
-  const { created_at, cover_photo, chat_privacy, is_page, page_category, subscription_mode, suspended_reason, suspended_at, ...rest } = u;
+  const { created_at, cover_photo, chat_privacy, is_page, page_category, subscription_mode, suspended_reason, suspended_at, is_premium, ...rest } = u;
   return {
     ...rest,
     createdAt: created_at,
@@ -268,6 +296,7 @@ function toCamelUser(u) {
     role: u.role || "user",
     suspendedReason: suspended_reason || "",
     suspendedAt: suspended_at || null,
+    isPremium: !!is_premium,
   };
 }
 
@@ -341,6 +370,30 @@ async function userRatingSummary(userId) {
   const count = reviews.length;
   const avg = count ? reviews.reduce((s, r) => s + r.rating, 0) / count : 0;
   return { ratingAvg: Math.round(avg * 10) / 10, ratingCount: count };
+}
+
+// Batched version of userRatingSummary for lists of sellers (product grids,
+// profile listings) - does ONE query instead of one query per seller, which
+// was previously causing multi-second load times on pages with many sellers.
+async function userRatingSummariesBatch(userIds) {
+  const ids = [...new Set(userIds)];
+  const out = {};
+  if (!ids.length) return out;
+  const reviews = await db.select("mkt_reviews", {
+    target_user_id: "in.(" + ids.map(enc).join(",") + ")",
+    select: "target_user_id,rating",
+  });
+  const bySeller = {};
+  for (const r of reviews) {
+    (bySeller[r.target_user_id] = bySeller[r.target_user_id] || []).push(r.rating);
+  }
+  for (const id of ids) {
+    const list = bySeller[id] || [];
+    const count = list.length;
+    const avg = count ? list.reduce((s, r) => s + r, 0) / count : 0;
+    out[id] = { ratingAvg: Math.round(avg * 10) / 10, ratingCount: count };
+  }
+  return out;
 }
 
 // LinkedIn-style trust profile: sales history (completed = seller marked the
@@ -549,11 +602,15 @@ function isEmail(s) {
   return typeof s === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
+// Book genres, ordered by C2C used-book resale demand (see CATEGORY_LIST
+// in public/i18n.js, which must stay in sync with these slugs).
 const CATEGORIES = [
-  "vehicles", "auto-parts", "heavy-machinery", "food", "clothing",
-  "video-games", "cell-phones", "computers-tech", "real-estate",
-  "generators-solar", "art-crafts", "airplanes-jets",
-  "construction-materials", "appliances", "jewelry", "toys", "other",
+  "bestsellers-fiction", "mystery-thriller", "romance", "fantasy",
+  "science-fiction", "horror", "textbooks-academic", "self-help",
+  "nonfiction", "children", "young-adult", "comics-manga",
+  "biography-memoir", "history", "classics-literature", "poetry",
+  "cooking", "health-wellness", "business-finance", "religion-spirituality",
+  "art-photography", "travel", "rare-collectible", "other-books",
 ];
 
 const REPORT_REASONS = ["spam", "prohibited", "inappropriate", "fraud", "other"];
@@ -1018,14 +1075,17 @@ async function handleApi(req, res, pathname, query) {
   // ---- PRODUCTS ----
   if (method === "GET" && pathname === "/api/products") {
     const me = await getAuthUser(req);
-    const { category, q, country, state, city, minPrice, maxPrice, sort } = query;
+    const { category, q, country, state, city, minPrice, maxPrice, sort, sellerId } = query;
     const params = { select: "*" };
+    if (sellerId) params.seller_id = "eq." + enc(sellerId);
     if (category && category !== "all") params.category = "eq." + enc(category);
     if (country) params.country = "ilike." + enc(country);
     if (state) params.state = "ilike." + enc(state);
     if (city) params.city = "ilike.*" + enc(city) + "*";
     if (q) {
-      params.or = "(title.ilike.*" + enc(q) + "*,description.ilike.*" + enc(q) + "*)";
+      const qDigits = String(q).replace(/[^0-9Xx]/g, "");
+      const isbnClause = qDigits.length >= 6 ? ",isbn.ilike.*" + enc(qDigits) + "*" : "";
+      params.or = "(title.ilike.*" + enc(q) + "*,description.ilike.*" + enc(q) + "*" + isbnClause + ")";
     }
     const min = minPrice !== undefined && minPrice !== "" ? Number(minPrice) : null;
     const max = maxPrice !== undefined && maxPrice !== "" ? Number(maxPrice) : null;
@@ -1046,15 +1106,12 @@ async function handleApi(req, res, pathname, query) {
     const allProducts = await db.select("mkt_products", params);
     const products = allProducts.filter((p) => !p.flagged || (me && me.id === p.seller_id));
     const sellerIds = [...new Set(products.map((p) => p.seller_id))];
-    let sellers = [];
-    if (sellerIds.length) {
-      sellers = await db.select("mkt_users", {
-        id: "in.(" + sellerIds.map(enc).join(",") + ")",
-        select: "id,name,photo",
-      });
-    }
-    const ratings = {};
-    for (const id of sellerIds) ratings[id] = await userRatingSummary(id);
+    const [sellers, ratings] = await Promise.all([
+      sellerIds.length
+        ? db.select("mkt_users", { id: "in.(" + sellerIds.map(enc).join(",") + ")", select: "id,name,photo" })
+        : Promise.resolve([]),
+      userRatingSummariesBatch(sellerIds),
+    ]);
 
     const safe = products.map((p) => {
       const seller = sellers.find((u) => u.id === p.seller_id);
@@ -1094,11 +1151,35 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, out);
   }
 
+  // ---- ISBN lookup (barcode scan -> book title/author/cover via Open Library) ----
+  const isbnMatch = pathname.match(/^\/api\/isbn\/([0-9Xx-]{8,20})$/);
+  if (method === "GET" && isbnMatch) {
+    const cleanIsbn = isbnMatch[1].replace(/[^0-9Xx]/g, "");
+    try {
+      const data = await httpsRequestJson(
+        "GET",
+        "https://openlibrary.org/api/books?bibkeys=ISBN:" + enc(cleanIsbn) + "&format=json&jscmd=data",
+        { headers: { "User-Agent": "HieloIce/1.0 (+https://hieloice.com)" } }
+      );
+      const book = data && data["ISBN:" + cleanIsbn];
+      if (!book) return sendJson(res, 200, { found: false, isbn: cleanIsbn });
+      return sendJson(res, 200, {
+        found: true,
+        isbn: cleanIsbn,
+        title: book.title || "",
+        authors: Array.isArray(book.authors) ? book.authors.map((a) => a.name).filter(Boolean) : [],
+        cover: (book.cover && (book.cover.medium || book.cover.large || book.cover.small)) || null,
+      });
+    } catch (e) {
+      return sendJson(res, 200, { found: false, isbn: cleanIsbn });
+    }
+  }
+
   if (method === "POST" && pathname === "/api/products") {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
     const body = await readBody(req);
-    const { title, description, price, category, country, state, city, allowOffers, allowReturn } = body;
+    const { title, description, price, category, country, state, city, allowOffers, allowReturn, isbn } = body;
 
     if (!title || !String(title).trim()) return sendJson(res, 400, { error: "Title is required" });
     if (!CATEGORIES.includes(category)) return sendJson(res, 400, { error: "Invalid category" });
@@ -1119,6 +1200,7 @@ async function handleApi(req, res, pathname, query) {
       description: String(description || "").slice(0, 3000),
       price: price ? Number(price) || 0 : 0,
       category,
+      isbn: isbn ? String(isbn).replace(/[^0-9Xx]/g, "").slice(0, 13) : null,
       photos,
       video,
       video_duration_seconds: videoDurationSeconds,
@@ -1164,6 +1246,7 @@ async function handleApi(req, res, pathname, query) {
     if (body.description !== undefined) patch.description = String(body.description).slice(0, 3000);
     if (body.price !== undefined) patch.price = Number(body.price) || 0;
     if (body.category !== undefined && CATEGORIES.includes(body.category)) patch.category = body.category;
+    if (body.isbn !== undefined) patch.isbn = body.isbn ? String(body.isbn).replace(/[^0-9Xx]/g, "").slice(0, 13) : null;
     if (body.country !== undefined) patch.country = String(body.country).slice(0, 80);
     if (body.state !== undefined) patch.state = String(body.state).slice(0, 80);
     if (body.city !== undefined) patch.city = String(body.city).slice(0, 80);

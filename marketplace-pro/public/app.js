@@ -490,6 +490,83 @@ function renderHome() {
   loadHomeFeed();
 }
 
+// ---------------- Barcode / ISBN scanner (Marketplace search + listing form) ----------------
+// Shared full-screen scanner reused from two places: the Marketplace search
+// bar (scan a book's barcode to search for it) and the "Post a listing" form
+// (scan a book's ISBN barcode to auto-fill the title via Open Library).
+// Uses the ZXing browser library (loaded in index.html) since the native
+// BarcodeDetector API isn't available on iOS Safari.
+let barcodeScannerControls = null;
+
+function closeBarcodeScanner() {
+  if (barcodeScannerControls) {
+    try {
+      barcodeScannerControls.stop();
+    } catch (e) {}
+    barcodeScannerControls = null;
+  }
+  const overlay = document.getElementById("barcode-scanner-overlay");
+  if (overlay) overlay.remove();
+}
+
+function openBarcodeScanner(onDetected) {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  const overlay = document.createElement("div");
+  overlay.className = "barcode-scanner-overlay";
+  overlay.id = "barcode-scanner-overlay";
+  overlay.innerHTML = `
+    <div class="barcode-scanner-video-wrap">
+      <video id="barcode-scanner-video" autoplay playsinline muted></video>
+      <div class="barcode-scanner-frame"></div>
+      <div class="barcode-scanner-topbar">
+        <button class="wizard-fs-icon-btn" id="barcode-scanner-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+      </div>
+    </div>
+    <div class="barcode-scanner-bottom">
+      <p class="barcode-scanner-hint">${I18N.t("market.scanHint")}</p>
+      <a href="#" class="barcode-scanner-manual-link" id="barcode-scanner-manual">${I18N.t("market.enterManually")}</a>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  document.getElementById("barcode-scanner-close").addEventListener("click", closeBarcodeScanner);
+  document.getElementById("barcode-scanner-manual").addEventListener("click", (e) => {
+    e.preventDefault();
+    closeBarcodeScanner();
+    const manual = prompt(I18N.t("market.enterIsbnPrompt"));
+    if (manual && manual.trim()) onDetected(manual.trim());
+  });
+
+  const showUnavailable = () => {
+    const wrap = overlay.querySelector(".barcode-scanner-video-wrap");
+    if (wrap) wrap.insertAdjacentHTML("beforeend", `<div class="wizard-fs-fallback">${I18N.t("market.scannerUnavailable")}</div>`);
+  };
+
+  if (!window.ZXingBrowser || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showUnavailable();
+    return;
+  }
+
+  const videoEl = document.getElementById("barcode-scanner-video");
+  const codeReader = new window.ZXingBrowser.BrowserMultiFormatReader();
+  codeReader
+    .decodeFromConstraints({ video: { facingMode: "environment" } }, videoEl, (result, err, controls) => {
+      barcodeScannerControls = controls;
+      if (result) {
+        const text = result.getText();
+        try {
+          controls.stop();
+        } catch (e2) {}
+        closeBarcodeScanner();
+        onDetected(text);
+      }
+    })
+    .catch(() => showUnavailable());
+}
+
 // "#/marketplace": the classic category-grid landing page, also reachable by
 // guests at "#/" and by logged-in users via the Marketplace icon-nav button.
 function renderMarketplaceHome() {
@@ -501,6 +578,7 @@ function renderMarketplaceHome() {
     </div>
     <div class="filters" id="marketplace-search-row">
       <input type="text" id="marketplace-search-input" placeholder="${I18N.t("home.searchPlaceholder")}" />
+      <button type="button" class="market-scan-btn" id="marketplace-scan-btn" title="${I18N.t("market.scanBarcode")}">&#128247;</button>
       <button id="marketplace-search-btn">${I18N.t("home.searchBtn")}</button>
     </div>
     ${categoryTabsHtml("all")}
@@ -514,6 +592,12 @@ function renderMarketplaceHome() {
   document.getElementById("marketplace-search-btn").addEventListener("click", doMarketplaceSearch);
   document.getElementById("marketplace-search-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") doMarketplaceSearch();
+  });
+  document.getElementById("marketplace-scan-btn").addEventListener("click", () => {
+    openBarcodeScanner((code) => {
+      document.getElementById("marketplace-search-input").value = code;
+      doMarketplaceSearch();
+    });
   });
   loadAdCarousel();
 }
@@ -1325,6 +1409,14 @@ async function renderPostAd(editId) {
     <div class="form-panel wide">
       <h2 class="section-heading">${I18N.t("postAd.title")}</h2>
       <div class="form-group">
+        <label>${I18N.t("postAd.isbnField")}</label>
+        <div class="post-isbn-row">
+          <input type="text" id="p-isbn" maxlength="17" placeholder="${I18N.t("postAd.isbnPlaceholder")}" value="${existing && existing.isbn ? escapeHtml(existing.isbn) : ""}" />
+          <button type="button" class="market-scan-btn" id="p-isbn-scan" title="${I18N.t("market.scanBarcode")}">&#128247;</button>
+        </div>
+        <p class="post-isbn-lookup-hint" id="p-isbn-hint"></p>
+      </div>
+      <div class="form-group">
         <label>${I18N.t("postAd.titleField")}</label>
         <input type="text" id="p-title" maxlength="140" value="${existing ? escapeHtml(existing.title) : ""}" />
       </div>
@@ -1376,6 +1468,39 @@ async function renderPostAd(editId) {
 
   renderPhotoGrid();
 
+  const isbnHintEl = document.getElementById("p-isbn-hint");
+  async function isbnLookupAndFill(rawIsbn) {
+    const cleanIsbn = rawIsbn.replace(/[^0-9Xx]/g, "");
+    if (!cleanIsbn) {
+      isbnHintEl.textContent = "";
+      return;
+    }
+    isbnHintEl.textContent = I18N.t("postAd.isbnLooking");
+    isbnHintEl.className = "post-isbn-lookup-hint";
+    try {
+      const data = await api("/api/isbn/" + encodeURIComponent(cleanIsbn));
+      const titleEl = document.getElementById("p-title");
+      if (data.found) {
+        if (titleEl && !titleEl.value.trim()) titleEl.value = data.title;
+        const authors = Array.isArray(data.authors) && data.authors.length ? " — " + data.authors.join(", ") : "";
+        isbnHintEl.textContent = I18N.t("postAd.isbnFound") + ": " + data.title + authors;
+        isbnHintEl.className = "post-isbn-lookup-hint ok";
+      } else {
+        isbnHintEl.textContent = I18N.t("postAd.isbnNotFound");
+        isbnHintEl.className = "post-isbn-lookup-hint error";
+      }
+    } catch (e) {
+      isbnHintEl.textContent = "";
+    }
+  }
+  document.getElementById("p-isbn-scan").addEventListener("click", () => {
+    openBarcodeScanner((code) => {
+      document.getElementById("p-isbn").value = code;
+      isbnLookupAndFill(code);
+    });
+  });
+  document.getElementById("p-isbn").addEventListener("blur", (e) => isbnLookupAndFill(e.target.value.trim()));
+
   document.getElementById("p-photos").addEventListener("change", (e) => {
     const files = Array.from(e.target.files).slice(0, MAX_PHOTOS - photoBuffer.length);
     let remaining = files.length;
@@ -1398,6 +1523,7 @@ async function renderPostAd(editId) {
       description: document.getElementById("p-description").value,
       price: document.getElementById("p-price").value,
       category: document.getElementById("p-category").value,
+      isbn: document.getElementById("p-isbn").value.trim(),
       country: document.getElementById("p-country").value,
       state: document.getElementById("p-state").value,
       city: document.getElementById("p-city").value,
