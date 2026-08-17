@@ -6,7 +6,11 @@
 <title>HieloIce - Marketplace</title>
 <link rel="icon" type="image/png" href="icon.png" />
 <link rel="manifest" href="manifest.json" />
-<meta name="theme-color" content="#0f3d2e" />
+<meta name="theme-color" content="#0F3D2E" />
+<meta name="color-scheme" content="light" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -19,7 +23,8 @@
     <div class="topbar-inner">
       <div class="topbar-top-row">
         <a href="#/" class="brand" id="brand-link">
-          <img src="icon.png" alt="HieloIce" class="brand-logo-img" />
+          <img src="icon-header.png" alt="HieloIce" class="brand-logo-img brand-logo-light" />
+          <img src="icon-header-dark.png" alt="HieloIce" class="brand-logo-img brand-logo-dark" />
           <span id="brand-name">HieloIce</span>
         </a>
         <div class="topbar-menu-wrap" id="topbar-menu-wrap">
@@ -29,6 +34,10 @@
               <button id="lang-en" class="lang-btn active">EN</button>
               <button id="lang-es" class="lang-btn">ES</button>
             </div>
+            <div class="theme-toggle" id="theme-toggle-wrap">
+              <button id="theme-normal-light" class="theme-toggle-btn active" aria-label="Light mode">&#9728;&#65039;</button>
+              <button id="theme-normal-dark" class="theme-toggle-btn" aria-label="Dark mode">&#127769;</button>
+            </div>
             <a href="#/admin" id="nav-admin" class="topbar-menu-logout" style="display:none;">Admin</a>
             <button id="nav-logout" class="topbar-menu-logout" style="display:none;">Log Out</button>
           </div>
@@ -36,7 +45,8 @@
       </div>
 
       <div class="topbar-search">
-        <input type="text" id="global-search" placeholder="Search products..." />
+        <input type="text" id="global-search" placeholder="Search friends, people, books, groups..." />
+        <button type="button" class="market-scan-btn" id="global-search-scan-btn" title="Scan barcode">&#128247;</button>
         <button id="global-search-btn">🔍</button>
       </div>
 
@@ -79,16 +89,33 @@
         <span class="icon-nav-create-plus">+</span><span class="icon-nav-label" id="icon-nav-create-label">Create</span>
       </button>
       <div class="icon-nav-dropdown" id="icon-nav-create-dropdown" style="display:none;">
-        <a href="#" id="icon-nav-create-moment">📸 <span id="icon-nav-create-moment-label">Moment / Photo</span></a>
-        <a href="#/post" id="icon-nav-create-product">🛒 <span id="icon-nav-create-product-label">Product</span></a>
+        <a href="#" id="icon-nav-create-moment"><span id="icon-nav-create-moment-label">Moment / Photo</span></a>
+        <a href="#/post" id="icon-nav-create-product"><span id="icon-nav-create-product-label">Product</span></a>
       </div>
     </div>
     <div class="icon-nav-dropdown-wrap">
       <button class="icon-nav-btn icon-nav-btn-plain" id="icon-nav-marketplace">
-        <span class="icon-nav-emoji">🛒</span><span class="icon-nav-label" id="icon-nav-marketplace-label">Marketplace</span>
+        <span class="icon-nav-cartbooks">
+          <svg viewBox="0 0 24 24" width="18" height="18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect x="3" y="14.5" width="18" height="3" rx="0.6" fill="#c0392b" stroke="#8f2a1e" stroke-width="0.4" />
+            <rect x="3.6" y="11.3" width="16.8" height="3" rx="0.6" fill="#2f6fb0" stroke="#1f4d7a" stroke-width="0.4" />
+            <rect x="4.2" y="8.1" width="15.6" height="3" rx="0.6" fill="#f4e4c1" stroke="#d99a12" stroke-width="0.4" />
+          </svg>
+          <svg viewBox="0 0 24 24" width="18" height="18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M3.5 4h2l1.9 10.8a2 2 0 0 0 2 1.66h7.4a2 2 0 0 0 1.96-1.62L20.5 7H7" fill="none" stroke="#d99a12" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            <circle cx="10.5" cy="20.3" r="1.4" fill="#d99a12" />
+            <circle cx="17.5" cy="20.3" r="1.4" fill="#d99a12" />
+          </svg>
+        </span>
+        <span class="icon-nav-label" id="icon-nav-marketplace-label">Marketplace</span>
       </button>
       <div class="icon-nav-dropdown" id="icon-nav-marketplace-dropdown" style="display:none;">
-        <a href="#/marketplace" id="icon-nav-dropdown-marketplace">🛒 Marketplace</a>
+        <a href="#/marketplace" id="icon-nav-dropdown-marketplace">Marketplace</a>
+        <a href="#/post" id="icon-nav-books-sell">💰 <span id="icon-nav-books-sell-label">Sell</span></a>
+        <a href="#/post" id="icon-nav-books-publish">📤 <span id="icon-nav-books-publish-label">Publish a listing</span></a>
+        <a href="#" id="icon-nav-books-exchange">🔄 <span id="icon-nav-books-exchange-label">Exchange</span> <em class="icon-nav-soon" id="icon-nav-books-exchange-soon">Soon</em></a>
+        <a href="#" id="icon-nav-books-recommend">⭐ <span id="icon-nav-books-recommend-label">Recommend</span> <em class="icon-nav-soon" id="icon-nav-books-recommend-soon">Soon</em></a>
+        <a href="#" id="icon-nav-books-auction">🔨 <span id="icon-nav-books-auction-label">Auction</span> <em class="icon-nav-soon" id="icon-nav-books-auction-soon">Soon</em></a>
         <a href="#/intl" id="icon-nav-dropdown-intl">🌎 International</a>
         <a href="#/groups" id="icon-nav-dropdown-groups">💬 Communities</a>
       </div>
@@ -123,6 +150,7 @@
     </div>
   </footer>
 
+  <script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.1/umd/zxing-browser.min.js"></script>
   <script src="i18n.js"></script>
   <script src="legal.js"></script>
   <script src="chatbot.js"></script>
