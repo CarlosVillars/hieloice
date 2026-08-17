@@ -270,13 +270,18 @@ async function refreshMe() {
   updateNavUI();
 }
 
+function setDisplay(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = value;
+}
+
 function updateNavUI() {
   const loggedIn = !!state.token;
-  document.getElementById("nav-login").style.display = loggedIn ? "none" : "inline";
-  document.getElementById("nav-register").style.display = loggedIn ? "none" : "inline";
-  document.getElementById("nav-logout").style.display = loggedIn ? "inline" : "none";
-  document.getElementById("nav-profile").style.display = loggedIn ? "inline" : "none";
-  document.getElementById("nav-messages").style.display = loggedIn ? "inline" : "none";
+  setDisplay("nav-login", loggedIn ? "none" : "inline");
+  setDisplay("nav-register", loggedIn ? "none" : "inline");
+  setDisplay("nav-logout", loggedIn ? "inline" : "none");
+  setDisplay("nav-profile", loggedIn ? "inline" : "none");
+  setDisplay("nav-messages", loggedIn ? "inline" : "none");
   const navAdmin = document.getElementById("nav-admin");
   if (navAdmin) {
     const canAdmin = loggedIn && state.user && (state.user.role === "admin" || state.user.isOwner);
@@ -290,13 +295,16 @@ function updateNavUI() {
   }
 }
 
-document.getElementById("nav-logout").addEventListener("click", async () => {
-  try {
-    await api("/api/auth/logout", { method: "POST", auth: true });
-  } catch (e) {}
-  setAuth(null, null);
-  location.hash = "#/";
-});
+const navLogoutBtn = document.getElementById("nav-logout");
+if (navLogoutBtn) {
+  navLogoutBtn.addEventListener("click", async () => {
+    try {
+      await api("/api/auth/logout", { method: "POST", auth: true });
+    } catch (e) {}
+    setAuth(null, null);
+    location.hash = "#/";
+  });
+}
 
 // ---------------- Unread messages badge ----------------
 
@@ -349,6 +357,7 @@ function setText(id, text) {
 
 function applyStaticI18n() {
   setText("brand-name", I18N.t("site.name"));
+  setText("brand-tagline", I18N.t("site.tagline"));
   updateGlobalSearchPlaceholder();
   setText("nav-messages", I18N.t("nav.messages"));
   setText("nav-profile", I18N.t("nav.profile"));
@@ -356,8 +365,10 @@ function applyStaticI18n() {
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
   setText("nav-logout", I18N.t("nav.logout"));
-  document.getElementById("lang-en").classList.toggle("active", I18N.lang === "en");
-  document.getElementById("lang-es").classList.toggle("active", I18N.lang === "es");
+  const langEnBtnEl = document.getElementById("lang-en");
+  if (langEnBtnEl) langEnBtnEl.classList.toggle("active", I18N.lang === "en");
+  const langEsBtnEl = document.getElementById("lang-es");
+  if (langEsBtnEl) langEsBtnEl.classList.toggle("active", I18N.lang === "es");
   setText("icon-nav-home-label", I18N.t("iconnav.home"));
   setText("icon-nav-friends-label", I18N.t("iconnav.friends"));
   setText("icon-nav-shorts-label", I18N.t("iconnav.shorts"));
@@ -379,26 +390,34 @@ function applyStaticI18n() {
   setText("icon-nav-books-auction-soon", I18N.t("iconnav.booksSoonTag"));
 }
 
-document.getElementById("lang-en").addEventListener("click", () => {
-  I18N.setLang("en");
-  applyStaticI18n();
-  router();
-});
-document.getElementById("lang-es").addEventListener("click", () => {
-  I18N.setLang("es");
-  applyStaticI18n();
-  router();
-});
+const langEnBtn = document.getElementById("lang-en");
+if (langEnBtn) {
+  langEnBtn.addEventListener("click", () => {
+    I18N.setLang("en");
+    applyStaticI18n();
+    router();
+  });
+}
+const langEsBtn = document.getElementById("lang-es");
+if (langEsBtn) {
+  langEsBtn.addEventListener("click", () => {
+    I18N.setLang("es");
+    applyStaticI18n();
+    router();
+  });
+}
 
 // Normal-tier dark mode toggle (hidden for premium accounts - see
 // applyUserTheme()). Clicking these when hidden is harmless since the
 // wrapper is display:none for premium users.
-document.getElementById("theme-normal-light").addEventListener("click", () => {
-  applyNormalThemePref("light");
-});
-document.getElementById("theme-normal-dark").addEventListener("click", () => {
-  applyNormalThemePref("dark");
-});
+const themeNormalLightBtn = document.getElementById("theme-normal-light");
+if (themeNormalLightBtn) {
+  themeNormalLightBtn.addEventListener("click", () => applyNormalThemePref("light"));
+}
+const themeNormalDarkBtn = document.getElementById("theme-normal-dark");
+if (themeNormalDarkBtn) {
+  themeNormalDarkBtn.addEventListener("click", () => applyNormalThemePref("dark"));
+}
 
 // ---------------- Topbar "..." menu (language + logout) ----------------
 // Same open/close-on-outside-click pattern as the icon-nav dropdowns below.
@@ -419,18 +438,27 @@ document.getElementById("theme-normal-dark").addEventListener("click", () => {
   });
 })();
 
-document.getElementById("global-search-btn").addEventListener("click", doGlobalSearch);
-document.getElementById("global-search").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") doGlobalSearch();
-});
-document.getElementById("global-search-scan-btn").addEventListener("click", () => {
-  openBarcodeScanner((code) => {
-    document.getElementById("global-search").value = code;
-    doGlobalSearch();
+const globalSearchBtn = document.getElementById("global-search-btn");
+if (globalSearchBtn) globalSearchBtn.addEventListener("click", doGlobalSearch);
+const globalSearchInput = document.getElementById("global-search");
+if (globalSearchInput) {
+  globalSearchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doGlobalSearch();
   });
-});
+}
+const globalSearchScanBtn = document.getElementById("global-search-scan-btn");
+if (globalSearchScanBtn) {
+  globalSearchScanBtn.addEventListener("click", () => {
+    openBarcodeScanner((code) => {
+      const searchInput = document.getElementById("global-search");
+      if (searchInput) searchInput.value = code;
+      doGlobalSearch();
+    });
+  });
+}
 function doGlobalSearch() {
-  const q = document.getElementById("global-search").value.trim();
+  const searchInput = document.getElementById("global-search");
+  const q = searchInput ? searchInput.value.trim() : "";
   location.hash = "#/category/all" + (q ? "?q=" + encodeURIComponent(q) : "");
 }
 

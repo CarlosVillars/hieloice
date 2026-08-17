@@ -141,6 +141,8 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   text-shadow: 0 1px 2px rgba(0,0,0,0.35);
 }
 .brand-logo-img { display: block; height: 48px; width: auto; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.25)); }
+.brand-text-col { display: flex; flex-direction: column; line-height: 1.15; }
+.brand-tagline { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 10.5px; font-weight: 500; letter-spacing: 0.1px; opacity: 0.88; white-space: normal; text-shadow: none; }
 .brand-logo-dark { display: none; }
 [data-theme="dark"] .brand-logo-light { display: none; }
 [data-theme="dark"] .brand-logo-dark { display: block; }
@@ -279,14 +281,15 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   top: 0;
   z-index: 45;
   padding: 2px 10px;
-  /* Safety net: if the nav ever has more items than fit a narrow phone
-     screen, it scrolls horizontally instead of silently pushing items
-     (like Notifications) off-screen with no way to reach them. */
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
+  /* No overflow-x here on purpose: setting overflow-x without overflow-y
+     makes the browser also clip the Y axis (per the CSS overflow spec),
+     which silently hid the Marketplace/Create dropdown menus below this
+     bar - they were opening correctly, just invisible, on every device.
+     We're back to exactly 6 nav items, which already fit narrow screens
+     via the flex:1 rule below, so the old horizontal-scroll safety net
+     is not needed and must not come back without solving the clipping
+     problem first (e.g. rendering dropdowns via a portal to <body>). */
 }
-.icon-nav::-webkit-scrollbar { display: none; }
 .icon-nav-btn {
   position: relative;
   display: flex;
@@ -304,7 +307,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .icon-nav-btn-plain { cursor: pointer; }
 .icon-nav-btn-center { font-weight: 800; }
 .icon-nav-icecube { display: block; margin: 0 auto; height: 27px; width: 27px; }
-.icon-nav-cartbooks { display: block; margin: 0 auto; transition: transform 0.15s ease; }
+.icon-nav-cartbooks { display: flex; align-items: center; justify-content: center; gap: 2px; margin: 0 auto; transition: transform 0.15s ease; }
 .icon-nav-btn:active .icon-nav-cartbooks { transform: scale(0.85); }
 @keyframes iconBagPop {
   0% { transform: scale(1) rotate(0deg); }
