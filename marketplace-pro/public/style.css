@@ -390,25 +390,45 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   background: rgba(0,0,0,0.75); color: #fff; font-size: 12px; padding: 8px 16px;
   border-radius: 999px; z-index: 4; white-space: nowrap;
 }
+.wizard-fs-grid {
+  position: absolute; inset: 0; pointer-events: none; z-index: 1;
+  opacity: 0; transition: opacity 0.15s ease;
+  background-image:
+    linear-gradient(to right, rgba(255,255,255,0.4) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.4) 1px, transparent 1px);
+  background-size: 33.333% 33.333%;
+}
+.wizard-fs-grid.show { opacity: 1; }
 
 /* Right-side labeled options rail, YouTube-Shorts-style layout with our own icon glyphs */
 .wizard-fs-rail {
   position: absolute; top: 64px; right: 0; bottom: 150px; width: 128px;
   background: linear-gradient(180deg, rgba(0,0,0,0.5), rgba(0,0,0,0.15));
   border-radius: 22px 0 0 22px; display: flex; flex-direction: column;
-  padding: 8px 0; overflow-y: auto; z-index: 2;
+  padding: 8px 0; overflow-y: auto; overflow-x: visible; z-index: 2;
+  /* overflow-x must stay "visible" (not the default/unset) - setting only
+     overflow-y implicitly clips the X axis too (same class of bug fixed on
+     .icon-nav), which would cut off the tap-to-reveal rail-label bubble
+     whenever it pops out wider than this rail's own 128px width. */
 }
 .wizard-fs-rail-item {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
   padding: 9px 14px; background: none; border: none; cursor: pointer; color: #fff;
 }
-.wizard-fs-rail-item .rail-label { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+.wizard-fs-rail-item .rail-label {
+  font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; text-shadow: 0 1px 3px rgba(0,0,0,0.7);
+  background: rgba(0,0,0,0.45); padding: 3px 8px; border-radius: 8px;
+  opacity: 0; transform: translateX(4px); pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.wizard-fs-rail-item.show-label .rail-label { opacity: 1; transform: translateX(0); }
 .wizard-fs-rail-item .rail-icon {
-  font-size: 17px; width: 36px; height: 36px; line-height: 36px; text-align: center; flex: 0 0 auto;
+  font-size: 22px; width: 46px; height: 46px; line-height: 46px; text-align: center; flex: 0 0 auto;
   background: rgba(255,255,255,0.16); border-radius: 50%; backdrop-filter: blur(2px);
   transition: background 0.15s ease, transform 0.1s ease;
 }
 .wizard-fs-rail-item:active .rail-icon { transform: scale(0.9); background: rgba(255,255,255,0.28); }
+.wizard-fs-rail-item.show-label .rail-icon { background: rgba(255,255,255,0.3); }
 .wizard-fs-rail-item.active .rail-icon, .wizard-fs-rail-item.active .rail-label { color: var(--gold); }
 .wizard-fs-rail-item[data-tier="2"] { display: none; }
 .wizard-fs-rail.expanded [data-tier="2"] { display: flex; }
@@ -444,6 +464,28 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .wizard-fs-done-btn[disabled] { visibility: hidden; }
 .wizard-fs-hint { text-align: center; font-size: 11px; color: rgba(255,255,255,0.75); padding: 0 20px; }
+
+/* Guided photo capture (product mode: front cover / back cover / spine / damage) */
+.guided-capture-overlay {
+  position: fixed; inset: 0; background: #000; z-index: 300;
+  display: flex; flex-direction: column; overflow: hidden;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.guided-capture-topbar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; }
+.guided-capture-step { color: #fff; font-size: 13px; font-weight: 700; }
+.guided-capture-video-wrap { flex: 1; position: relative; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; }
+.guided-capture-video-wrap video, .guided-capture-preview { width: 100%; height: 100%; object-fit: cover; display: block; }
+.guided-capture-thumbs { display: flex; gap: 8px; justify-content: center; padding: 10px; }
+.guided-thumb {
+  width: 34px; height: 34px; border-radius: 8px; border: 2px solid rgba(255,255,255,0.3);
+  overflow: hidden; background: rgba(255,255,255,0.08); display: block; flex: 0 0 auto;
+}
+.guided-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.guided-thumb.current { border-color: var(--gold); }
+.guided-thumb.done { border-color: #4CAF50; }
+.guided-capture-controls { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 6px 20px 4px; }
+.guided-capture-skip { text-align: center; padding-bottom: calc(14px + env(safe-area-inset-bottom)); margin: 0; }
+.guided-capture-skip a { color: var(--gold); font-size: 13px; font-weight: 600; }
 
 /* Barcode/ISBN scanner overlay (Marketplace search + listing form) */
 .barcode-scanner-overlay { position: fixed; inset: 0; background: #000; z-index: 300; display: flex; flex-direction: column; }

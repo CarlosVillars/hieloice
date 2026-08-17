@@ -1722,6 +1722,7 @@ async function renderPostAd(editId) {
         <label>${I18N.t("postAd.photosField")}</label>
         <div class="photo-upload-grid" id="photo-grid"></div>
         <input type="file" id="p-photos" accept="image/*" multiple style="font-size:12px;" />
+        <button type="button" class="btn btn-secondary" id="p-guided-capture" style="margin-top:8px;">&#128247; ${I18N.t("postAd.guidedCaptureBtn")}</button>
         <button type="button" class="btn btn-ai-suggest" id="p-ai-suggest" style="margin-top:8px;">&#10024; ${I18N.t("postAd.aiSuggest")}</button>
         <p class="post-isbn-lookup-hint" id="p-ai-hint"></p>
       </div>
@@ -1761,9 +1762,14 @@ async function renderPostAd(editId) {
     openBarcodeScanner((code) => {
       document.getElementById("p-isbn").value = code;
       isbnLookupAndFill(code);
+      // Keep the seller moving in one continuous flow: scan -> photograph.
+      // If they haven't added photos yet, jump straight into guided capture
+      // instead of leaving them to hunt for the button themselves.
+      if (photoBuffer.length === 0) openGuidedPhotoCapture();
     });
   });
   document.getElementById("p-isbn").addEventListener("blur", (e) => isbnLookupAndFill(e.target.value.trim()));
+  document.getElementById("p-guided-capture").addEventListener("click", openGuidedPhotoCapture);
 
   const aiHintEl = document.getElementById("p-ai-hint");
   const aiSuggestBtn = document.getElementById("p-ai-suggest");
@@ -1893,6 +1899,163 @@ function renderPhotoGrid() {
       renderPhotoGrid();
     });
   });
+}
+
+// ---------------- Guided photo capture (product mode) ----------------
+// Walks a seller through a fixed shot sequence (front cover, back cover,
+// spine, optional damage close-up) instead of one loose photo at a time -
+// this is the highest-leverage camera improvement for book listings per the
+// C2C-books strategy: it directly improves listing quality/speed, which is
+// the "logistics" half of "easy to use + great logistics."
+const GUIDED_SHOT_SEQUENCE = [
+  { key: "front", required: true },
+  { key: "back", required: true },
+  { key: "spine", required: false },
+  { key: "damage", required: false },
+];
+
+let guidedCapture = null;
+
+function openGuidedPhotoCapture() {
+  if (photoBuffer.length >= MAX_PHOTOS) {
+    alert(I18N.t("postAd.guidedMaxReached"));
+    return;
+  }
+  guidedCapture = {
+    index: 0,
+    stream: null,
+    shots: GUIDED_SHOT_SEQUENCE.map((s) => ({ ...s, dataUrl: null })),
+  };
+  const overlay = document.createElement("div");
+  overlay.id = "guided-capture-overlay";
+  overlay.className = "guided-capture-overlay";
+  document.body.appendChild(overlay);
+  drawGuidedCapture();
+  startGuidedStream();
+}
+
+function startGuidedStream() {
+  if (!guidedCapture || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) return;
+  navigator.mediaDevices
+    .getUserMedia({ video: { facingMode: "environment" } })
+    .then((stream) => {
+      if (!guidedCapture) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      guidedCapture.stream = stream;
+      const video = document.getElementById("guided-video");
+      if (video) video.srcObject = stream;
+    })
+    .catch(() => {
+      const hint = document.getElementById("guided-capture-hint");
+      if (hint) hint.textContent = I18N.t("create.cameraUnavailable");
+    });
+}
+
+function closeGuidedCapture() {
+  if (guidedCapture && guidedCapture.stream) guidedCapture.stream.getTracks().forEach((t) => t.stop());
+  const overlay = document.getElementById("guided-capture-overlay");
+  if (overlay) overlay.remove();
+  guidedCapture = null;
+}
+
+function guidedCaptureShot() {
+  const video = document.getElementById("guided-video");
+  if (!video || !video.srcObject) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth || 900;
+  canvas.height = video.videoHeight || 900;
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  guidedCapture.shots[guidedCapture.index].dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  drawGuidedCapture();
+}
+
+function guidedRetake() {
+  guidedCapture.shots[guidedCapture.index].dataUrl = null;
+  drawGuidedCapture();
+}
+
+function guidedAdvance() {
+  if (guidedCapture.index < guidedCapture.shots.length - 1) {
+    guidedCapture.index += 1;
+    drawGuidedCapture();
+  } else {
+    finishGuidedCapture();
+  }
+}
+
+async function finishGuidedCapture() {
+  const captured = guidedCapture.shots.filter((s) => s.dataUrl);
+  for (const s of captured) {
+    if (photoBuffer.length >= MAX_PHOTOS) break;
+    const cleaned = await autoEnhanceImage(s.dataUrl);
+    photoBuffer.push(cleaned);
+  }
+  renderPhotoGrid();
+  closeGuidedCapture();
+}
+
+function drawGuidedCapture() {
+  const overlay = document.getElementById("guided-capture-overlay");
+  if (!overlay || !guidedCapture) return;
+  const shot = guidedCapture.shots[guidedCapture.index];
+  const n = guidedCapture.shots.length;
+  const stepLabel = I18N.t("postAd.guidedStepOf")
+    .replace("{i}", String(guidedCapture.index + 1))
+    .replace("{n}", String(n));
+  const shotLabel = I18N.t("postAd.guidedShot_" + shot.key);
+  const thumbsHtml = guidedCapture.shots
+    .map(
+      (s, i) =>
+        `<span class="guided-thumb ${i === guidedCapture.index ? "current" : ""} ${s.dataUrl ? "done" : ""}">${
+          s.dataUrl ? `<img src="${s.dataUrl}" />` : ""
+        }</span>`
+    )
+    .join("");
+
+  overlay.innerHTML = `
+    <div class="guided-capture-topbar">
+      <button class="wizard-fs-icon-btn" id="guided-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+      <span class="guided-capture-step">${stepLabel}: ${shotLabel}${shot.required ? "" : " (" + I18N.t("postAd.guidedOptional") + ")"}</span>
+    </div>
+    <div class="guided-capture-video-wrap">
+      ${
+        shot.dataUrl
+          ? `<img class="guided-capture-preview" src="${shot.dataUrl}" />`
+          : `<video id="guided-video" autoplay playsinline muted></video><p class="wizard-fs-hint" id="guided-capture-hint"></p>`
+      }
+    </div>
+    <div class="guided-capture-thumbs">${thumbsHtml}</div>
+    <div class="guided-capture-controls">
+      ${
+        shot.dataUrl
+          ? `<button class="btn btn-secondary" id="guided-retake">${I18N.t("postAd.guidedRetake")}</button>
+             <button class="btn btn-primary" id="guided-next">${guidedCapture.index === n - 1 ? I18N.t("postAd.guidedFinish") : I18N.t("postAd.guidedNext")}</button>`
+          : `<div class="wizard-fs-capture-wrap"><button class="wizard-fs-capture-btn" id="guided-shutter" aria-label="${I18N.t("create.capturePhoto")}"></button></div>`
+      }
+    </div>
+    ${!shot.dataUrl && !shot.required ? `<p class="guided-capture-skip"><a href="#" id="guided-skip">${I18N.t("postAd.guidedSkip")}</a></p>` : ""}
+  `;
+
+  const video = document.getElementById("guided-video");
+  if (video && guidedCapture.stream) video.srcObject = guidedCapture.stream;
+
+  document.getElementById("guided-close").addEventListener("click", closeGuidedCapture);
+  if (shot.dataUrl) {
+    document.getElementById("guided-retake").addEventListener("click", guidedRetake);
+    document.getElementById("guided-next").addEventListener("click", guidedAdvance);
+  } else {
+    const shutter = document.getElementById("guided-shutter");
+    if (shutter) shutter.addEventListener("click", guidedCaptureShot);
+    const skip = document.getElementById("guided-skip");
+    if (skip) {
+      skip.addEventListener("click", (e) => {
+        e.preventDefault();
+        guidedAdvance();
+      });
+    }
+  }
 }
 
 // ---------------- Friends ----------------
@@ -3797,7 +3960,7 @@ function openCreateWizard() {
     stream: null, recorder: null, chunks: [], durationSeconds: null,
     facingMode: "user", flashOn: false, timerMode: 0,
     recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
-    overlays: [],
+    overlays: [], gridOn: false,
   };
   const overlay = document.createElement("div");
   overlay.id = "create-wizard-overlay";
@@ -3879,6 +4042,14 @@ function updateWizardFlashSupport() {
   if (!(caps && caps.torch)) createWizard.flashOn = false;
 }
 
+function wizardToggleGrid() {
+  createWizard.gridOn = !createWizard.gridOn;
+  const gridEl = document.getElementById("wizard-fs-grid");
+  if (gridEl) gridEl.classList.toggle("show", createWizard.gridOn);
+  const btn = document.getElementById("wizard-rail-grid");
+  if (btn) btn.classList.toggle("active", createWizard.gridOn);
+}
+
 function wizardToggleFlash() {
   if (!createWizard.stream) return;
   const track = createWizard.stream.getVideoTracks()[0];
@@ -3921,6 +4092,7 @@ function wizardToggleFilterStrip() {
 // Tier 1 items show by default; tier 2 items reveal via the "more" toggle,
 // matching the collapsed/expanded pattern of similar camera UIs.
 const CREATE_WIZARD_RAIL_ITEMS = [
+  { action: "grid", tier: 1, icon: "#" },
   { action: "flip", tier: 1, icon: "&#8635;" },
   { action: "timer", tier: 1, icon: "&#9201;" },
   { action: "duration", tier: 1, icon: "&#9203;" },
@@ -3952,8 +4124,18 @@ function wizardRailItemsHtml() {
 function wireWizardRail() {
   document.querySelectorAll(".wizard-fs-rail-item[data-action]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      // Show this item's label briefly on tap, then hide it again -
+      // labels stay off by default so the rail reads as clean icons only.
+      document.querySelectorAll(".wizard-fs-rail-item.show-label").forEach((other) => {
+        if (other !== btn) other.classList.remove("show-label");
+      });
+      btn.classList.add("show-label");
+      clearTimeout(btn._railLabelTimer);
+      btn._railLabelTimer = setTimeout(() => btn.classList.remove("show-label"), 1600);
+
       const action = btn.dataset.action;
-      if (action === "flip") wizardFlipCamera();
+      if (action === "grid") wizardToggleGrid();
+      else if (action === "flip") wizardFlipCamera();
       else if (action === "timer") wizardCycleTimer();
       else if (action === "flash") wizardToggleFlash();
       else if (action === "effects" || action === "filters") wizardToggleFilterStrip();
@@ -4271,6 +4453,7 @@ function drawCreateWizard() {
         <div class="wizard-fs-fallback" id="wizard-fs-fallback" style="display:none;">
           <p>${I18N.t("create.cameraUnavailable")}</p>
         </div>
+        <div class="wizard-fs-grid ${createWizard.gridOn ? "show" : ""}" id="wizard-fs-grid" aria-hidden="true"></div>
         <div class="wizard-fs-topbar">
           <button class="wizard-fs-icon-btn" id="wizard-fs-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
           <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${I18N.t("create.addSound")}</button>
