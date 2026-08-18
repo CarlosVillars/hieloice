@@ -730,6 +730,40 @@ function renderHome() {
   loadHomeFeed();
 }
 
+// ---------------- Full-screen overlay back-button support ----------------
+// Camera-style overlays (Moments capture, guided product photo capture,
+// the barcode scanner) are plain DOM overlays stacked on top of the current
+// route, not routes themselves - so the phone/browser Back button used to
+// do nothing about them: it silently changed the underlying page while the
+// camera stayed stuck on screen, leaving the on-screen X as the only way
+// out. We push one throwaway history entry when an overlay opens and
+// consume it on popstate, so Back and X close the overlay the same way.
+let overlayBackGuard = null; // { closeFn } for whichever overlay is open
+
+function guardOverlayForBack(closeFn) {
+  overlayBackGuard = { closeFn };
+  history.pushState({ hiOverlay: true }, "", location.href);
+}
+
+function closeOverlayViaBack(closeFn) {
+  // Used by an overlay's own X/cancel control. If we're still holding the
+  // history entry pushed for it, consume it so a later Back press doesn't
+  // land on a dead state; either way, run the real close logic now.
+  if (overlayBackGuard && overlayBackGuard.closeFn === closeFn) {
+    overlayBackGuard = null;
+    history.back();
+  }
+  closeFn();
+}
+
+window.addEventListener("popstate", () => {
+  if (overlayBackGuard) {
+    const fn = overlayBackGuard.closeFn;
+    overlayBackGuard = null;
+    fn();
+  }
+});
+
 // ---------------- Barcode / ISBN scanner (Marketplace search + listing form) ----------------
 // Shared full-screen scanner reused from two places: the Marketplace search
 // bar (scan a book's barcode to search for it) and the "Post a listing" form
@@ -771,11 +805,12 @@ function openBarcodeScanner(onDetected) {
     </div>
   `;
   document.body.appendChild(overlay);
+  guardOverlayForBack(closeBarcodeScanner);
 
-  document.getElementById("barcode-scanner-close").addEventListener("click", closeBarcodeScanner);
+  document.getElementById("barcode-scanner-close").addEventListener("click", () => closeOverlayViaBack(closeBarcodeScanner));
   document.getElementById("barcode-scanner-manual").addEventListener("click", (e) => {
     e.preventDefault();
-    closeBarcodeScanner();
+    closeOverlayViaBack(closeBarcodeScanner);
     const manual = prompt(I18N.t("market.enterIsbnPrompt"));
     if (manual && manual.trim()) onDetected(manual.trim());
   });
@@ -823,7 +858,7 @@ function openBarcodeScanner(onDetected) {
           try {
             controls.stop();
           } catch (e2) {}
-          closeBarcodeScanner();
+          closeOverlayViaBack(closeBarcodeScanner);
           onDetected(text);
         }
       }
@@ -1956,6 +1991,7 @@ function openGuidedPhotoCapture() {
   overlay.id = "guided-capture-overlay";
   overlay.className = "guided-capture-overlay";
   document.body.appendChild(overlay);
+  guardOverlayForBack(closeGuidedCapture);
   drawGuidedCapture();
   startGuidedStream();
 }
@@ -2019,7 +2055,7 @@ async function finishGuidedCapture() {
     photoBuffer.push(cleaned);
   }
   renderPhotoGrid();
-  closeGuidedCapture();
+  closeOverlayViaBack(closeGuidedCapture);
 }
 
 function drawGuidedCapture() {
@@ -2067,7 +2103,7 @@ function drawGuidedCapture() {
   const video = document.getElementById("guided-video");
   if (video && guidedCapture.stream) video.srcObject = guidedCapture.stream;
 
-  document.getElementById("guided-close").addEventListener("click", closeGuidedCapture);
+  document.getElementById("guided-close").addEventListener("click", () => closeOverlayViaBack(closeGuidedCapture));
   if (shot.dataUrl) {
     document.getElementById("guided-retake").addEventListener("click", guidedRetake);
     document.getElementById("guided-next").addEventListener("click", guidedAdvance);
@@ -3946,7 +3982,11 @@ const CREATE_WIZARD_FILTERS = [
 
 const CREATE_WIZARD_STICKERS = ["\u{1F600}", "\u{1F602}", "\u{1F60D}", "\u{1F525}", "\u{1F389}", "\u{1F4DA}", "❤️", "\u{1F44D}", "\u{1F60E}", "✨", "\u{1F973}", "\u{1F4D6}"];
 
-const WIZARD_HOLD_THRESHOLD_MS = 280;
+const WIZARD_HOLD_THRESHOLD_MS = 380;
+// Below this much accumulated hold time, a press is treated as an oversized
+// tap rather than an intentional video, and the shutter falls back to
+// taking a photo (see pauseHoldRecording()).
+const WIZARD_MIN_INTENTIONAL_HOLD_MS = 500;
 const WIZARD_RING_TARGET_MS = MAX_MOMENT_VIDEO_SECONDS * 1000;
 
 function createWizardFilterCss(id) {
@@ -3991,6 +4031,7 @@ function openCreateWizard() {
   const overlay = document.createElement("div");
   overlay.id = "create-wizard-overlay";
   document.body.appendChild(overlay);
+  guardOverlayForBack(closeCreateWizard);
   drawCreateWizard();
 }
 
@@ -4298,6 +4339,26 @@ function wireWizardCaptureGesture() {
     btn.classList.remove("recording");
     showWizardRecBadge(false);
     stopWizardRing();
+    // A real-world tap-and-release routinely takes a bit longer than the
+    // hold threshold below, which was silently starting (and then pausing)
+    // a throwaway fraction-of-a-second video instead of taking the photo
+    // the person actually meant to take - and left recordAccumMs > 0, which
+    // made every following tap on the shutter do nothing at all (this was
+    // the "press the red button and no photo is taken" bug). If the hold
+    // never grew into an intentional clip, discard it and shoot a photo.
+    if (createWizard.recordAccumMs < WIZARD_MIN_INTENTIONAL_HOLD_MS) {
+      if (createWizard.recorder && createWizard.recorder.state !== "inactive") {
+        createWizard.recorder.onstop = null;
+        createWizard.recorder.stop();
+      }
+      createWizard.recorder = null;
+      createWizard.chunks = [];
+      createWizard.recordAccumMs = 0;
+      const doneBtnReset = document.getElementById("wizard-fs-done-btn");
+      if (doneBtnReset) doneBtnReset.setAttribute("disabled", "disabled");
+      takePhoto();
+      return;
+    }
     const doneBtn = document.getElementById("wizard-fs-done-btn");
     if (doneBtn) doneBtn.removeAttribute("disabled");
     updateWizardHint(I18N.t("create.addMoreOrDone"));
@@ -4521,7 +4582,7 @@ function drawCreateWizard() {
       });
     });
 
-    document.getElementById("wizard-fs-close").addEventListener("click", closeCreateWizard);
+    document.getElementById("wizard-fs-close").addEventListener("click", () => closeOverlayViaBack(closeCreateWizard));
     document.getElementById("wizard-fs-sound-pill").addEventListener("click", () => wizardShowToast(I18N.t("create.comingSoon")));
     document.getElementById("wizard-fs-effects-btn").addEventListener("click", wizardToggleFilterStrip);
     document.getElementById("wizard-fs-gallery-btn").addEventListener("click", () => document.getElementById("wizard-file-media").click());
@@ -4562,7 +4623,7 @@ function drawCreateWizard() {
     renderWizardOverlays(true);
     document.getElementById("wizard-cancel2").addEventListener("click", (e) => {
       e.preventDefault();
-      closeCreateWizard();
+      closeOverlayViaBack(closeCreateWizard);
     });
     wireCreateWizardFilterRow(() => {
       const img = document.getElementById("wizard-preview-img");
@@ -4624,7 +4685,7 @@ function drawCreateWizard() {
   `;
   document.getElementById("wizard-cancel3").addEventListener("click", (e) => {
     e.preventDefault();
-    closeCreateWizard();
+    closeOverlayViaBack(closeCreateWizard);
   });
 
   const captionEl = document.getElementById("wizard-caption");
@@ -4676,7 +4737,7 @@ function drawCreateWizard() {
       msgEl.textContent = I18N.t("moments.posted");
       msgEl.className = "form-msg ok";
       setTimeout(() => {
-        closeCreateWizard();
+        closeOverlayViaBack(closeCreateWizard);
         router();
       }, 700);
     } catch (e) {
