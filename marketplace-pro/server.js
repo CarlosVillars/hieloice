@@ -55,9 +55,20 @@ const MAX_PHOTOS = 12;
 // "Loops" feature below (see POST /api/loops), which is the genuinely
 // ephemeral Stories-style feature this cap always made sense for.
 const MAX_ACTIVE_MOMENTS = 3;
-const MAX_MOMENT_VIDEO_SECONDS = 180; // 3 minutes - enforced client-side (no server-side video parsing)
-const MAX_LOOP_VIDEO_SECONDS = 60; // Loops are short looping clips, not 3-minute Moments - enforced client-side same as MAX_MOMENT_VIDEO_SECONDS (no server-side video parsing)
+const MAX_MOMENT_VIDEO_SECONDS = 90; // matches Instagram Reels cap - enforced client-side (no server-side video parsing)
+const MAX_LOOP_VIDEO_SECONDS = 20; // matches Stories-style short clips - enforced client-side same as MAX_MOMENT_VIDEO_SECONDS (no server-side video parsing)
 const MAX_PRODUCT_VIDEO_SECONDS = 20; // enforced client-side (no server-side video parsing)
+// Long-form "Videos" hub (task #231) - a general-purpose, YouTube-like
+// video feature, NOT limited to book reviews. Reuses the mkt_moments table
+// (see the "is_long_video" columns added by the mkt_moments_video_hub_columns
+// migration) rather than a parallel table, so it inherits the same
+// likes/saves/comments/view-tracking infra Moments already has. A long
+// video is just a moment row with is_long_video=true, a title, and an
+// optional linked_product_id - see POST /api/moments below, which branches
+// on body.target === "video". 20 minutes is a generous ceiling for
+// long-form content, enforced client-side same as every other video cap in
+// this file (no server-side video parsing exists here).
+const MAX_LONG_VIDEO_SECONDS = 1200;
 
 // Reused keep-alive HTTPS agent so every outbound call (Supabase REST,
 // Supabase Storage, OAuth token exchanges) reuses pooled TCP+TLS connections
@@ -2635,7 +2646,7 @@ async function handleApi(req, res, pathname, query) {
   // column soon, and re-adding a dropped column is wasted churn.
 
   function momentOut(m) {
-    const { user_id, media_url, media_type, created_at, expires_at, repost_of, trim_start_sec, trim_end_sec, ...rest } = m;
+    const { user_id, media_url, media_type, created_at, expires_at, repost_of, trim_start_sec, trim_end_sec, title, linked_product_id, is_long_video, ...rest } = m;
     return {
       ...rest,
       userId: user_id,
@@ -2649,6 +2660,15 @@ async function handleApi(req, res, pathname, query) {
       // bounded-loop playback that enforces this.
       trimStartSec: trim_start_sec != null ? Number(trim_start_sec) : null,
       trimEndSec: trim_end_sec != null ? Number(trim_end_sec) : null,
+      // Long-form "Videos" hub (task #231) - title is only ever set for
+      // long videos (short-form Moments don't have one); linkedProductId is
+      // an optional, unenforced cross-reference to one of the poster's own
+      // mkt_products rows (same "plain text id, no FK constraint" style as
+      // repost_of above) so a video can double as a review/demo on a
+      // listing's page without requiring one.
+      title: title || null,
+      linkedProductId: linked_product_id || null,
+      isLongVideo: !!is_long_video,
     };
   }
 
@@ -2690,16 +2710,54 @@ async function handleApi(req, res, pathname, query) {
     // handful of "active" ones no longer makes sense. The per-IP rate limit
     // above still guards against spam/abuse.
     const body = await readBody(req);
+    // Long-form "Videos" hub (task #231) - the create wizard signals a
+    // long-form upload with target:"video" in the payload, the same idiom
+    // openCreateWizard()/drawCreateWizard() already use client-side to pick
+    // which endpoint/shape to post (see the "loop" target for /api/loops).
+    // Everything else about the row is a normal mkt_moments insert; only
+    // the duration cap, the required title, and the optional product link
+    // differ from a regular Moment.
+    const isLongVideo = body.target === "video";
     const mediaType = body.mediaType === "video" ? "video" : "image";
     const prefix = mediaType === "video" ? "data:video/" : "data:image/";
     if (!body.media || typeof body.media !== "string" || !body.media.startsWith(prefix)) {
       return sendJson(res, 400, { error: "Valid media is required" });
     }
+    if (isLongVideo && mediaType !== "video") {
+      return sendJson(res, 400, { error: "Videos must be a video file." });
+    }
+    let title = null;
+    if (isLongVideo) {
+      title = String(body.title || "").trim().slice(0, 120);
+      if (!title) return sendJson(res, 400, { error: "A title is required for videos." });
+    }
+    const maxVideoSeconds = isLongVideo ? MAX_LONG_VIDEO_SECONDS : MAX_MOMENT_VIDEO_SECONDS;
     if (mediaType === "video" && body.durationSeconds !== undefined) {
       const dur = Number(body.durationSeconds);
-      if (dur && dur > MAX_MOMENT_VIDEO_SECONDS) {
-        return sendJson(res, 400, { error: "Videos can be at most " + MAX_MOMENT_VIDEO_SECONDS / 60 + " minutes long." });
+      if (dur && dur > maxVideoSeconds) {
+        return sendJson(res, 400, {
+          error: isLongVideo
+            ? "Videos can be at most " + Math.round(MAX_LONG_VIDEO_SECONDS / 60) + " minutes long."
+            : "Videos can be at most " + MAX_MOMENT_VIDEO_SECONDS / 60 + " minutes long.",
+        });
       }
+    }
+    // Optional link to one of the poster's OWN listings (any category, not
+    // book-specific) - task #231 explicitly scopes this to the owner's own
+    // products only, not third-party review tooling. Silently ignored if
+    // missing/not-owned would hide a mistake from the client, so this
+    // rejects instead of dropping it.
+    let linkedProductId = null;
+    if (isLongVideo && body.linkedProductId) {
+      const ownProducts = await db.select("mkt_products", {
+        id: "eq." + enc(body.linkedProductId),
+        seller_id: "eq." + enc(me.id),
+        select: "id",
+      });
+      if (!ownProducts || !ownProducts[0]) {
+        return sendJson(res, 400, { error: "You can only link a video to your own listing." });
+      }
+      linkedProductId = body.linkedProductId;
     }
     const ext = mediaType === "video" ? ".mp4" : ".jpg";
     let mediaUrl;
@@ -2733,6 +2791,9 @@ async function handleApi(req, res, pathname, query) {
       expires_at: now + 24 * 60 * 60 * 1000,
       trim_start_sec: trimStartSec,
       trim_end_sec: trimEndSec,
+      title,
+      linked_product_id: linkedProductId,
+      is_long_video: isLongVideo,
     };
     await db.insert("mkt_moments", moment);
     return sendJson(res, 201, momentOut(moment));
@@ -2783,6 +2844,13 @@ async function handleApi(req, res, pathname, query) {
       user_id: "in.(" + userIds.map(enc).join(",") + ")",
       // No expires_at filter - Moments are permanent now, so every
       // non-deleted moment from these users is included.
+      // is_long_video=eq.false - long-form Videos hub uploads (task #231)
+      // live in this same table but never belong in the short-form scroll
+      // feed; they have their own GET /api/videos/feed. This is a
+      // deliberate product decision, not an oversight - short-form passive
+      // scroll and long-form active search are different mental modes and
+      // must stay visually/contextually separate.
+      is_long_video: "eq.false",
       order: "created_at.asc",
       select: "*",
     });
@@ -2855,6 +2923,11 @@ async function handleApi(req, res, pathname, query) {
       // No expires_at filter - Moments are permanent now, so the pool of
       // candidates is every moment on the platform (bounded by the limit
       // below), not just ones posted in the last 24h.
+      // is_long_video=eq.false - this backs the short-form swipe feed
+      // (#/clips) - see the identical exclusion + comment on GET
+      // /api/moments/feed above. Long videos belong in GET /api/videos/feed
+      // instead (task #231).
+      is_long_video: "eq.false",
       order: "created_at.desc",
       select: "*",
       limit: "200",
@@ -3200,6 +3273,24 @@ async function handleApi(req, res, pathname, query) {
   }
 
   const momentMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)$/);
+  // Single-moment fetch, public (no auth required) - added for the Videos
+  // hub watch page (task #231, GET /#/videos/:id), which needs to load one
+  // specific moment by id directly (e.g. from a shared link) rather than
+  // finding it inside a feed page. Works for any moment, short or long form.
+  if (method === "GET" && momentMatch) {
+    const rows = await db.select("mkt_moments", { id: "eq." + enc(momentMatch[1]), select: "*" });
+    const m = rows && rows[0];
+    if (!m) return sendJson(res, 404, { error: "Moment not found" });
+    const authorRows = await db.select("mkt_users", { id: "eq." + enc(m.user_id), select: "id,name,photo,is_page" });
+    const author = authorRows && authorRows[0];
+    const out = momentOut(m);
+    out.userName = author ? author.name : "Unknown";
+    out.userPhoto = author ? author.photo : null;
+    out.isPage = !!(author && author.is_page);
+    const me = await getAuthUser(req);
+    await attachMomentEngagement([out], me ? me.id : null);
+    return sendJson(res, 200, out);
+  }
   if (method === "DELETE" && momentMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -3209,6 +3300,76 @@ async function handleApi(req, res, pathname, query) {
     if (m.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this moment" });
     await db.remove("mkt_moments", { id: "eq." + enc(m.id) });
     return sendJson(res, 200, { ok: true });
+  }
+
+  // ---- VIDEOS (long-form video hub, task #231 - "Videos", plain and
+  // general-purpose, NOT limited to book reviews and NOT named after any
+  // other platform's short-form feature). Every long video is just an
+  // mkt_moments row with is_long_video=true, a title, and an optional
+  // linked_product_id - see POST /api/moments above (target:"video") and
+  // momentOut() for the shape. This section only adds the two read
+  // endpoints the Videos hub needs on top of that; like/save/comment/delete
+  // all reuse the existing /api/moments/:id/... endpoints unchanged, since
+  // these rows really are moments under the hood. ----
+
+  // Reverse-chronological "home" feed for the Videos hub - deliberately
+  // simple (no ranking algorithm) for MVP, unlike the Moments v2 feed.
+  // Works for guests too (like/saved just come back false) so the section
+  // is always browsable, matching how the rest of the app treats browsing
+  // vs. the auth-gated write actions.
+  if (method === "GET" && pathname === "/api/videos/feed") {
+    const me = await getAuthUser(req);
+    const limitNum = Math.min(60, Math.max(1, Number(query.limit) || 30));
+    const offsetNum = Math.max(0, Number(query.offset) || 0);
+    const videos = await db.select("mkt_moments", {
+      is_long_video: "eq.true",
+      order: "created_at.desc",
+      select: "*",
+      limit: String(limitNum),
+      offset: String(offsetNum),
+    });
+    if (!videos.length) return sendJson(res, 200, []);
+    const authorIds = [...new Set(videos.map((v) => v.user_id))];
+    const authors = await db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,photo,is_page" });
+    const out = videos.map((v) => {
+      const author = authors.find((a) => a.id === v.user_id);
+      return {
+        ...momentOut(v),
+        userName: author ? author.name : "Unknown",
+        userPhoto: author ? author.photo : null,
+        isPage: !!(author && author.is_page),
+      };
+    });
+    await attachMomentEngagement(out, me ? me.id : null);
+    return sendJson(res, 200, out);
+  }
+
+  // Long videos linked to a given product listing - rendered as a "Related
+  // videos" strip on that product's detail page. Public (no auth required),
+  // same as the product detail endpoint itself.
+  const videosByProductMatch = pathname.match(/^\/api\/videos\/by-product\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && videosByProductMatch) {
+    const me = await getAuthUser(req);
+    const videos = await db.select("mkt_moments", {
+      is_long_video: "eq.true",
+      linked_product_id: "eq." + enc(videosByProductMatch[1]),
+      order: "created_at.desc",
+      select: "*",
+    });
+    if (!videos.length) return sendJson(res, 200, []);
+    const authorIds = [...new Set(videos.map((v) => v.user_id))];
+    const authors = await db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,photo,is_page" });
+    const out = videos.map((v) => {
+      const author = authors.find((a) => a.id === v.user_id);
+      return {
+        ...momentOut(v),
+        userName: author ? author.name : "Unknown",
+        userPhoto: author ? author.photo : null,
+        isPage: !!(author && author.is_page),
+      };
+    });
+    await attachMomentEngagement(out, me ? me.id : null);
+    return sendJson(res, 200, out);
   }
 
   // ---- LOOPS (genuinely ephemeral 24h stories, Instagram/FB-Stories-style) ----
