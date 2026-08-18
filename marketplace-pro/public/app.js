@@ -287,8 +287,18 @@ function updateNavUI() {
     const canAdmin = loggedIn && state.user && (state.user.role === "admin" || state.user.isOwner);
     navAdmin.style.display = canAdmin ? "inline" : "none";
   }
+  // The bottom/top icon bar stays visible for guests too (not just logged-in
+  // users) so a first-time visitor can still find Marketplace, International
+  // and Communities - those live inside the Marketplace dropdown. Only the
+  // items that require an account (Friends, Moments/Clips, Create,
+  // Notifications) are hidden until the person logs in.
   const iconNav = document.getElementById("icon-nav");
-  if (iconNav) iconNav.style.display = loggedIn ? "flex" : "none";
+  if (iconNav) iconNav.style.display = "flex";
+  setDisplay("icon-nav-friends", loggedIn ? "flex" : "none");
+  setDisplay("icon-nav-clips", loggedIn ? "flex" : "none");
+  const createWrap = document.getElementById("icon-nav-create");
+  if (createWrap) createWrap.style.display = loggedIn ? "flex" : "none";
+  setDisplay("icon-nav-notifications", loggedIn ? "flex" : "none");
   if (!loggedIn) {
     setUnreadBadge(0);
     setIconNavBadge(0);
@@ -384,7 +394,7 @@ function applyStaticI18n() {
   setText("icon-nav-create-upload-picture-label", I18N.t("iconnav.createUploadPicture"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
-  setText("icon-nav-books-publish-label", I18N.t("iconnav.booksPublish"));
+  setText("icon-nav-dropdown-soon-label", I18N.t("iconnav.comingSoon"));
   setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
   setText("icon-nav-books-recommend-label", I18N.t("iconnav.booksRecommend"));
   setText("icon-nav-books-auction-label", I18N.t("iconnav.booksAuction"));
@@ -655,9 +665,9 @@ async function router() {
     if (parts[0] === "intl") return renderIntlHome();
     if (parts[0] === "admin" && parts[1]) return renderAdminPanel(parts[1]);
     if (parts[0] === "admin") return renderAdminPanel("reports");
-    viewEl.innerHTML = "<p>Not found.</p>";
+    viewEl.innerHTML = `<div class="not-found-state"><p>${I18N.t("common.notFound")}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
   } catch (e) {
-    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    viewEl.innerHTML = `<div class="not-found-state"><p class="form-msg error">${escapeHtml(e.message)}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
   }
 }
 window.addEventListener("hashchange", router);
@@ -1662,7 +1672,10 @@ async function renderPostAd(editId) {
 
   viewEl.innerHTML = `
     <div class="form-panel wide">
-      <h2 class="section-heading">${I18N.t("postAd.title")}</h2>
+      <div class="post-ad-header-row">
+        <h2 class="section-heading">${I18N.t("postAd.title")}</h2>
+        <a href="#/marketplace" class="post-ad-cancel-link" id="post-ad-cancel">${I18N.t("common.cancel")}</a>
+      </div>
       <button type="button" class="ai-listing-banner" id="ai-listing-banner">
         <span class="ai-listing-banner-icon">&#10024;</span>
         <span class="ai-listing-banner-text">

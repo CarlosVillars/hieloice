@@ -321,6 +321,12 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .icon-nav-emoji { font-size: 21px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; }
 .icon-nav-label { white-space: nowrap; }
 .icon-nav-badge { position: absolute; top: 3px; right: 8px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; }
+/* Unread-messages badge next to the desktop top-bar "Messages" link (a
+   twin of .icon-nav-badge used on the mobile bottom-bar icon). This was
+   previously dead code - setUnreadBadge() looked for an element that
+   didn't exist in the markup, so the count silently never showed here. */
+.nav-messages-link { position: relative; }
+.nav-messages-badge { min-width: 15px; height: 15px; padding: 0 4px; margin-left: 5px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; align-items: center; justify-content: center; vertical-align: middle; }
 .icon-nav-dropdown-wrap { position: relative; }
 .icon-nav-dropdown {
   position: absolute;
@@ -337,6 +343,16 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .icon-nav-dropdown a { display: block; padding: 9px 12px; border-radius: 6px; font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .icon-nav-dropdown a:hover { background: var(--bg-surface-alt); color: var(--accent-text); }
+/* "Coming soon" items are visually separated below a divider and dimmed, so
+   they read as a preview of what's next rather than broken links mixed in
+   with the working menu items above them. */
+.icon-nav-dropdown-divider {
+  margin: 6px 4px 2px; padding-top: 6px; border-top: 1px solid var(--border-color);
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-secondary); padding-left: 8px;
+}
+.icon-nav-dropdown-soon-item { opacity: 0.6; cursor: default; }
+.icon-nav-dropdown-soon-item:hover { background: none; color: var(--text-primary); }
 .icon-nav-create-plus { font-size: 34px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; font-weight: 800; color: var(--gold); }
 .icon-nav-soon {
   font-style: normal; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
@@ -597,6 +613,12 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 /* ---- Layout ---- */
 .view { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
 .section-heading { font-size: 22px; margin: 0 0 16px; color: var(--accent); font-family: var(--font-display); font-weight: 800; letter-spacing: 0.2px; }
+/* Post Ad form header: keeps the title next to a visible Cancel link so a
+   seller can always back out of the long form instead of being stuck. */
+.post-ad-header-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; }
+.post-ad-header-row .section-heading { margin: 0; }
+.post-ad-cancel-link { font-size: 14px; font-weight: 700; color: var(--text-secondary); white-space: nowrap; }
+.post-ad-cancel-link:hover { color: var(--danger); text-decoration: underline; }
 .section-subheading { font-size: 16px; margin: 22px 0 10px; color: var(--accent); font-family: var(--font-display); font-weight: 700; }
 [data-theme="dark"] .section-heading,
 [data-theme="dark"] .section-subheading { color: var(--gold); }
@@ -741,6 +763,9 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .product-seller-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); margin-top: 4px; flex-wrap: wrap; }
 .mini-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; background: var(--bg-surface-alt); }
 .empty-state { color: var(--text-muted); padding: 40px; text-align: center; grid-column: 1/-1; background: var(--bg-surface); border-radius: 10px; border: 1px dashed var(--border-color); }
+/* Dead-end screens (404, unexpected errors) always offer a way back to Home
+   instead of leaving the visitor stuck with only the phone back button. */
+.not-found-state { text-align: center; padding: 60px 20px; display: flex; flex-direction: column; align-items: center; gap: 14px; color: var(--text-secondary); }
 .rating-count { color: var(--text-muted); font-size: 11px; }
 
 /* ---- Status badge (reserved / sold) ---- */

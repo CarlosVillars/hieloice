@@ -1,196 +1,174 @@
-// ---------------- HieloIce Assistant (free, rule-based FAQ chat widget) ----------------
-// No external AI API is used here — this matches common questions against a
-// keyword list and returns a pre-written bilingual answer. Zero running cost.
-
-const CHATBOT_FAQS = [
-  {
-    keywords: ["comprar", "compra", "como compro", "buy", "purchase", "how do i buy"],
-    en: "To buy an item, open its listing and tap \"Buy Now\", or \"Make an Offer\" if the seller accepts offers. You'll message the seller directly to arrange payment and delivery.",
-    es: "Para comprar un producto, abre el aviso y toca \"Comprar Ahora\", o \"Hacer una Oferta\" si el vendedor acepta ofertas. Te pondras en contacto directo con el vendedor para coordinar el pago y la entrega.",
-  },
-  {
-    keywords: ["vender", "publicar", "post ad", "sell", "publish", "aviso", "how do i sell"],
-    en: "To sell, log in and tap \"Post an Ad\". Add a title, description, price, category, location and photos. Posting is free.",
-    es: "Para vender, inicia sesion y toca \"Publicar Aviso\". Agrega titulo, descripcion, precio, categoria, ubicacion y fotos. Publicar es gratis.",
-  },
-  {
-    keywords: ["gratis", "costo", "cuesta", "precio de usar", "fee", "cost", "free", "comision", "comisión"],
-    en: "HieloIce is currently free to use — there are no fees to post listings or to buy/sell items.",
-    es: "HieloIce es gratis por el momento — no hay costos por publicar avisos ni por comprar o vender.",
-  },
-  {
-    keywords: ["cuenta", "registrar", "registro", "account", "sign up", "crear cuenta", "iniciar sesion", "iniciar sesión", "log in", "login"],
-    en: "Tap \"Sign Up\" to create a free account with your email, or continue with Google or Facebook. You must accept the Terms & Conditions and Privacy Policy to register.",
-    es: "Toca \"Registrarse\" para crear una cuenta gratis con tu correo, o continua con Google o Facebook. Debes aceptar los Terminos y Condiciones y la Politica de Privacidad para registrarte.",
-  },
-  {
-    keywords: ["categoria", "categoría", "categories", "que puedo vender", "que vendo", "what can i sell"],
-    en: "You can post listings in many categories: Vehicles, Auto Parts, Heavy Machinery, Food, Clothing, Video Games, Cell Phones, Computers & Technology, Real Estate, Generators & Solar Panels, Art & Crafts, Airplanes & Jets, Construction Materials, Appliances, Jewelry, Toys, and more.",
-    es: "Puedes publicar en muchas categorias: Vehiculos, Repuestos, Maquinaria Pesada, Comida, Ropa, Videojuegos, Celulares, Computadoras y Tecnologia, Bienes Raices, Generadores y Paneles Solares, Arte y Manualidades, Aviones y Jets, Materiales de Construccion, Electrodomesticos, Joyas, Juguetes, y mas.",
-  },
-  {
-    keywords: ["devolucion", "devolución", "return", "reembolso", "refund"],
-    en: "Returns depend on each seller — check the \"Returns accepted\" badge on the listing, and message the seller directly to arrange any return.",
-    es: "Las devoluciones dependen de cada vendedor — revisa la insignia de \"Acepta devoluciones\" en el aviso, y contacta al vendedor directamente para coordinar cualquier devolucion.",
-  },
-  {
-    keywords: ["disputa", "estafa", "problema con", "fraude", "scam", "dispute", "fraud", "problem with my order"],
-    en: "HieloIce is only a free platform connecting buyers and sellers — we are not part of any transaction and can't mediate disputes. Please deal only with people you trust, meet in safe public places, and review our Terms & Conditions for details.",
-    es: "HieloIce es solo una plataforma gratuita que conecta compradores y vendedores — no somos parte de ninguna transaccion y no podemos mediar disputas. Trata solo con personas de confianza, reunete en lugares publicos seguros, y revisa nuestros Terminos y Condiciones para mas detalles.",
-  },
-  {
-    keywords: ["mensaje", "contactar vendedor", "message seller", "chat con vendedor", "how do i message"],
-    en: "Use the \"Message Seller\" button on any listing, or check your Messages inbox from the top menu.",
-    es: "Usa el boton \"Mensaje al Vendedor\" en cualquier aviso, o revisa tu bandeja de Mensajes en el menu superior.",
-  },
-  {
-    keywords: ["terminos", "términos", "privacidad", "privacy", "terms", "politica", "política"],
-    en: "You can read our full Terms & Conditions and Privacy Policy at the bottom of any page (footer links).",
-    es: "Puedes leer nuestros Terminos y Condiciones y Politica de Privacidad completos al final de cualquier pagina (enlaces en el pie de pagina).",
-  },
-  {
-    keywords: ["contacto", "contact", "soporte", "support", "ayuda humana", "correo", "email"],
-    en: "For anything this assistant can't help with, email us at info@hieloice.com.",
-    es: "Para todo lo que este asistente no pueda resolver, escribenos a info@hieloice.com.",
-  },
-  {
-    keywords: ["que es hieloice", "qué es hieloice", "what is hieloice", "que es esto", "about hieloice"],
-    en: "HieloIce is a free online marketplace where you can buy and sell almost anything, anywhere.",
-    es: "HieloIce es un marketplace en linea gratuito donde puedes comprar y vender casi cualquier cosa, en cualquier lugar.",
-  },
-  {
-    keywords: ["oferta", "hacer una oferta", "offer", "negociar"],
-    en: "If a seller accepts offers (check the listing), tap \"Make an Offer\", enter your amount and an optional message, and the seller can accept or reject it.",
-    es: "Si el vendedor acepta ofertas (revisa el aviso), toca \"Hacer una Oferta\", ingresa tu monto y un mensaje opcional, y el vendedor puede aceptarla o rechazarla.",
-  },
-  {
-    keywords: ["resena", "reseña", "calificacion", "calificación", "review", "rating"],
-    en: "You can leave a review and star rating on a seller's profile after interacting with them, to help other buyers.",
-    es: "Puedes dejar una resena y calificacion en el perfil de un vendedor despues de interactuar con el, para ayudar a otros compradores.",
-  },
-];
-
-const CHATBOT_FALLBACK = {
-  en: "I'm not sure about that yet — for anything I can't answer, please email info@hieloice.com and we'll help you directly.",
-  es: "No tengo una respuesta para eso todavia — para lo que no pueda resolver, escribenos a info@hieloice.com y te ayudamos directamente.",
-};
-
-const CHATBOT_GREETING = {
-  en: "Hi! I'm the HieloIce assistant. Ask me about buying, selling, categories, accounts, or anything else about the platform.",
-  es: "Hola! Soy el asistente de HieloIce. Preguntame sobre como comprar, vender, categorias, cuentas, o cualquier otra cosa sobre la plataforma.",
-};
-
-const CHATBOT_PLACEHOLDER = {
-  en: "Type your question...",
-  es: "Escribe tu pregunta...",
-};
-
-function chatbotLang() {
-  try {
-    return typeof I18N !== "undefined" && I18N.lang === "es" ? "es" : "en";
-  } catch (e) {
-    return "en";
-  }
-}
-
-function chatbotFindAnswer(text) {
-  const q = text.toLowerCase();
-  let best = null;
-  let bestScore = 0;
-  CHATBOT_FAQS.forEach((faq) => {
-    let score = 0;
-    faq.keywords.forEach((kw) => {
-      if (q.indexOf(kw) !== -1) score++;
-    });
-    if (score > bestScore) {
-      bestScore = score;
-      best = faq;
-    }
-  });
-  const lang = chatbotLang();
-  if (best) return best[lang];
-  return CHATBOT_FALLBACK[lang];
-}
-
-function chatbotInit() {
-  if (document.getElementById("chatbot-widget")) return;
-
-  const wrap = document.createElement("div");
-  wrap.id = "chatbot-widget";
-  wrap.innerHTML =
-    '<button id="chatbot-toggle" aria-label="Chat" type="button">💬</button>' +
-    '<div id="chatbot-panel" class="chatbot-panel hidden">' +
-    '<div class="chatbot-header">' +
-    '<span>HieloIce Assistant</span>' +
-    '<button id="chatbot-close" aria-label="Close" type="button">✕</button>' +
-    "</div>" +
-    '<div id="chatbot-messages" class="chatbot-messages"></div>' +
-    '<form id="chatbot-form" class="chatbot-form">' +
-    '<input id="chatbot-input" type="text" autocomplete="off" />' +
-    '<button type="submit" aria-label="Send">➤</button>' +
-    "</form>" +
-    "</div>";
-  document.body.appendChild(wrap);
-
-  const toggleBtn = document.getElementById("chatbot-toggle");
-  const panel = document.getElementById("chatbot-panel");
-  const closeBtn = document.getElementById("chatbot-close");
-  const messagesEl = document.getElementById("chatbot-messages");
-  const form = document.getElementById("chatbot-form");
-  const input = document.getElementById("chatbot-input");
-
-  let greeted = false;
-
-  function addMessage(text, who) {
+// AI help assistant widget. Self-contained: builds its own DOM, talks to
+// /api/ai/chat directly with fetch (does not depend on app.js, since this
+// script loads before app.js in index.html). Reuses the existing
+// #chatbot-widget / .chatbot-panel / .chatbot-msg CSS shell in style.css.
+(function () {
+  function escapeHtml(str) {
     const div = document.createElement("div");
-    div.className = "chatbot-msg " + (who === "bot" ? "chatbot-msg-bot" : "chatbot-msg-user");
-    div.textContent = text;
-    messagesEl.appendChild(div);
+    div.textContent = str == null ? "" : String(str);
+    return div.innerHTML;
+  }
+
+  function t(key) {
+    if (typeof I18N !== "undefined" && I18N.t) return I18N.t(key);
+    return key;
+  }
+  function lang() {
+    return typeof I18N !== "undefined" && I18N.lang === "es" ? "es" : "en";
+  }
+
+  const history = []; // { role: "user"|"assistant", content: string }
+  let opened = false;
+  let sending = false;
+
+  const QUICK_REPLIES = ["chatbot.quickSell", "chatbot.quickIsbn", "chatbot.quickMoments", "chatbot.quickPayment"];
+
+  function buildWidget() {
+    const wrap = document.createElement("div");
+    wrap.id = "chatbot-widget";
+    wrap.innerHTML = `
+      <div class="chatbot-panel hidden" id="chatbot-panel">
+        <div class="chatbot-header">
+          <span id="chatbot-title"></span>
+          <button type="button" id="chatbot-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="chatbot-messages" id="chatbot-messages"></div>
+        <form class="chatbot-form" id="chatbot-form">
+          <input type="text" id="chatbot-input" autocomplete="off" />
+          <button type="submit">&#10148;</button>
+        </form>
+      </div>
+      <button type="button" id="chatbot-toggle" aria-label="Help">&#128172;</button>
+    `;
+    document.body.appendChild(wrap);
+    return wrap;
+  }
+
+  function renderStaticText() {
+    const titleEl = document.getElementById("chatbot-title");
+    const inputEl = document.getElementById("chatbot-input");
+    if (titleEl) titleEl.textContent = t("chatbot.title");
+    if (inputEl) inputEl.placeholder = t("chatbot.placeholder");
+  }
+
+  function addMessage(role, text) {
+    const messagesEl = document.getElementById("chatbot-messages");
+    if (!messagesEl) return;
+    const bubble = document.createElement("div");
+    bubble.className = "chatbot-msg " + (role === "user" ? "chatbot-msg-user" : "chatbot-msg-bot");
+    bubble.innerHTML = escapeHtml(text).replace(/\n/g, "<br>");
+    messagesEl.appendChild(bubble);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  function refreshPlaceholder() {
-    input.placeholder = CHATBOT_PLACEHOLDER[chatbotLang()];
+  function addQuickReplies() {
+    const messagesEl = document.getElementById("chatbot-messages");
+    if (!messagesEl) return;
+    const row = document.createElement("div");
+    row.className = "chatbot-msg chatbot-msg-bot";
+    row.style.display = "flex";
+    row.style.flexWrap = "wrap";
+    row.style.gap = "6px";
+    row.style.background = "transparent";
+    row.style.padding = "0";
+    QUICK_REPLIES.forEach((key) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = t(key);
+      btn.style.cssText =
+        "border:1px solid var(--border-color);background:var(--bg-surface);color:var(--accent-text);" +
+        "border-radius:14px;padding:6px 10px;font-size:12px;cursor:pointer;";
+      btn.addEventListener("click", () => sendMessage(t(key)));
+      row.appendChild(btn);
+    });
+    messagesEl.appendChild(row);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  async function sendMessage(text) {
+    text = String(text || "").trim();
+    if (!text || sending) return;
+    sending = true;
+    addMessage("user", text);
+    history.push({ role: "user", content: text });
+
+    const messagesEl = document.getElementById("chatbot-messages");
+    const thinkingBubble = document.createElement("div");
+    thinkingBubble.className = "chatbot-msg chatbot-msg-bot";
+    thinkingBubble.id = "chatbot-thinking";
+    thinkingBubble.textContent = t("chatbot.thinking");
+    messagesEl.appendChild(thinkingBubble);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    try {
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: history, locale: lang() }),
+      });
+      const data = await res.json().catch(() => null);
+      thinkingBubble.remove();
+      if (!res.ok || !data || !data.reply) {
+        addMessage("bot", (data && data.error) || t("chatbot.error"));
+      } else {
+        addMessage("bot", data.reply);
+        history.push({ role: "assistant", content: data.reply });
+      }
+    } catch (e) {
+      thinkingBubble.remove();
+      addMessage("bot", t("chatbot.error"));
+    } finally {
+      sending = false;
+    }
   }
 
   function openPanel() {
+    const panel = document.getElementById("chatbot-panel");
+    if (!panel) return;
     panel.classList.remove("hidden");
-    refreshPlaceholder();
-    if (!greeted) {
-      addMessage(CHATBOT_GREETING[chatbotLang()], "bot");
-      greeted = true;
+    if (!opened) {
+      opened = true;
+      addMessage("bot", t("chatbot.greeting"));
+      addQuickReplies();
     }
-    input.focus();
+    const inputEl = document.getElementById("chatbot-input");
+    if (inputEl) inputEl.focus();
+  }
+  function closePanel() {
+    const panel = document.getElementById("chatbot-panel");
+    if (panel) panel.classList.add("hidden");
   }
 
-  toggleBtn.addEventListener("click", function () {
-    if (panel.classList.contains("hidden")) {
-      openPanel();
-    } else {
-      panel.classList.add("hidden");
-    }
-  });
+  function init() {
+    buildWidget();
+    renderStaticText();
 
-  closeBtn.addEventListener("click", function () {
-    panel.classList.add("hidden");
-  });
+    document.getElementById("chatbot-toggle").addEventListener("click", () => {
+      const panel = document.getElementById("chatbot-panel");
+      if (panel.classList.contains("hidden")) openPanel();
+      else closePanel();
+    });
+    document.getElementById("chatbot-close").addEventListener("click", closePanel);
+    document.getElementById("chatbot-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const inputEl = document.getElementById("chatbot-input");
+      const text = inputEl.value;
+      inputEl.value = "";
+      sendMessage(text);
+    });
 
-  form.addEventListener("submit", function (e) {
-    e.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
-    addMessage(text, "user");
-    input.value = "";
-    setTimeout(function () {
-      addMessage(chatbotFindAnswer(text), "bot");
-    }, 300);
-  });
+    // The language toggle buttons live in index.html and are wired by
+    // app.js, which loads after this file - hook in separately so the
+    // widget's own static text updates too when the user switches language.
+    const langEn = document.getElementById("lang-en");
+    const langEs = document.getElementById("lang-es");
+    if (langEn) langEn.addEventListener("click", renderStaticText);
+    if (langEs) langEs.addEventListener("click", renderStaticText);
+  }
 
-  refreshPlaceholder();
-}
-
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", chatbotInit);
-} else {
-  chatbotInit();
-}
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();

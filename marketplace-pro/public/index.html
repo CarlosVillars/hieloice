@@ -55,7 +55,7 @@
 
       <nav class="topbar-nav">
         <a href="#/profile" id="nav-profile" class="nav-link">Profile</a>
-        <a href="#/messages" id="nav-messages" class="nav-link">Messages</a>
+        <a href="#/messages" id="nav-messages" class="nav-link nav-messages-link">Messages<span class="nav-messages-badge" id="nav-messages-badge" style="display:none;"></span></a>
         <a href="#/post" id="nav-post" class="nav-link nav-post-btn">Post an Ad</a>
         <a href="#/login" id="nav-login" class="nav-link">Log In</a>
         <a href="#/register" id="nav-register" class="nav-link">Sign Up</a>
@@ -109,13 +109,15 @@
       </button>
       <div class="icon-nav-dropdown" id="icon-nav-marketplace-dropdown" style="display:none;">
         <a href="#/marketplace" id="icon-nav-dropdown-marketplace">Marketplace</a>
-        <a href="#/post" id="icon-nav-books-sell">💰 <span id="icon-nav-books-sell-label">Sell</span></a>
-        <a href="#/post" id="icon-nav-books-publish">📤 <span id="icon-nav-books-publish-label">Publish a listing</span></a>
-        <a href="#" id="icon-nav-books-exchange">🔄 <span id="icon-nav-books-exchange-label">Exchange</span> <em class="icon-nav-soon" id="icon-nav-books-exchange-soon">Soon</em></a>
-        <a href="#" id="icon-nav-books-recommend">⭐ <span id="icon-nav-books-recommend-label">Recommend</span> <em class="icon-nav-soon" id="icon-nav-books-recommend-soon">Soon</em></a>
-        <a href="#" id="icon-nav-books-auction">🔨 <span id="icon-nav-books-auction-label">Auction</span> <em class="icon-nav-soon" id="icon-nav-books-auction-soon">Soon</em></a>
+        <a href="#/post" id="icon-nav-books-sell">💰 <span id="icon-nav-books-sell-label">Sell a Book</span></a>
         <a href="#/intl" id="icon-nav-dropdown-intl">🌎 International</a>
         <a href="#/groups" id="icon-nav-dropdown-groups">💬 Communities</a>
+        <div class="icon-nav-dropdown-divider" id="icon-nav-dropdown-soon-divider">
+          <span id="icon-nav-dropdown-soon-label">Coming soon</span>
+        </div>
+        <a href="#" id="icon-nav-books-exchange" class="icon-nav-dropdown-soon-item">🔄 <span id="icon-nav-books-exchange-label">Exchange</span> <em class="icon-nav-soon" id="icon-nav-books-exchange-soon">Soon</em></a>
+        <a href="#" id="icon-nav-books-recommend" class="icon-nav-dropdown-soon-item">⭐ <span id="icon-nav-books-recommend-label">Recommend</span> <em class="icon-nav-soon" id="icon-nav-books-recommend-soon">Soon</em></a>
+        <a href="#" id="icon-nav-books-auction" class="icon-nav-dropdown-soon-item">🔨 <span id="icon-nav-books-auction-label">Auction</span> <em class="icon-nav-soon" id="icon-nav-books-auction-soon">Soon</em></a>
       </div>
     </div>
     <a href="#/notifications" class="icon-nav-btn" id="icon-nav-notifications">
