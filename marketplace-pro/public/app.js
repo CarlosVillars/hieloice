@@ -402,7 +402,7 @@ function applyStaticI18n() {
   setText("icon-nav-create-video-label", I18N.t("iconnav.createVideo"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
-  setText("icon-nav-dropdown-videos-label", I18N.t("iconnav.dropdownVideos"));
+  setText("icon-nav-videos-label", I18N.t("iconnav.dropdownVideos"));
   setText("icon-nav-dropdown-soon-label", I18N.t("iconnav.comingSoon"));
   setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
   setText("icon-nav-books-recommend-label", I18N.t("iconnav.booksRecommend"));
