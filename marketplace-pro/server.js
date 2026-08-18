@@ -37,6 +37,14 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
   console.error("Missing VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY - push notifications disabled.");
 }
 
+// AI features (photo -> listing suggestion, and the AI help assistant) use
+// the Anthropic API. Both are no-ops (return a clear "unavailable" error)
+// if this key isn't configured, rather than crashing the server.
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+if (!ANTHROPIC_API_KEY) {
+  console.error("Missing ANTHROPIC_API_KEY - AI photo analysis and AI assistant disabled.");
+}
+
 const MAX_PHOTOS = 12;
 const MAX_ACTIVE_MOMENTS = 3;
 const MAX_MOMENT_VIDEO_SECONDS = 180; // 3 minutes - enforced client-side (no server-side video parsing)
@@ -164,6 +172,36 @@ function httpsRequestJson(method, urlStr, opts) {
     if (data) req.write(data);
     req.end();
   });
+}
+
+// ---------- Anthropic Claude (AI photo-to-listing + AI help assistant) ----------
+function callClaude(payload) {
+  if (!ANTHROPIC_API_KEY) {
+    return Promise.reject(Object.assign(new Error("AI features are not configured on this server yet."), { status: 503 }));
+  }
+  return httpsRequestJson("POST", "https://api.anthropic.com/v1/messages", {
+    headers: {
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  }).then((data) => {
+    if (data && data.type === "error") {
+      const err = new Error((data.error && data.error.message) || "AI request failed");
+      err.status = 502;
+      throw err;
+    }
+    return data;
+  });
+}
+function claudeText(data) {
+  if (!data || !Array.isArray(data.content)) return "";
+  return data.content
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("\n")
+    .trim();
 }
 
 const db = {
@@ -602,11 +640,15 @@ function isEmail(s) {
   return typeof s === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
+// Book genres, ordered by C2C used-book resale demand (see CATEGORY_LIST
+// in public/i18n.js, which must stay in sync with these slugs).
 const CATEGORIES = [
-  "vehicles", "auto-parts", "heavy-machinery", "food", "clothing",
-  "video-games", "cell-phones", "computers-tech", "real-estate",
-  "generators-solar", "art-crafts", "airplanes-jets",
-  "construction-materials", "appliances", "jewelry", "toys", "other",
+  "bestsellers-fiction", "mystery-thriller", "romance", "fantasy",
+  "science-fiction", "horror", "textbooks-academic", "self-help",
+  "nonfiction", "children", "young-adult", "comics-manga",
+  "biography-memoir", "history", "classics-literature", "poetry",
+  "cooking", "health-wellness", "business-finance", "religion-spirituality",
+  "art-photography", "travel", "rare-collectible", "other-books",
 ];
 
 const REPORT_REASONS = ["spam", "prohibited", "inappropriate", "fraud", "other"];
@@ -1079,7 +1121,9 @@ async function handleApi(req, res, pathname, query) {
     if (state) params.state = "ilike." + enc(state);
     if (city) params.city = "ilike.*" + enc(city) + "*";
     if (q) {
-      params.or = "(title.ilike.*" + enc(q) + "*,description.ilike.*" + enc(q) + "*)";
+      const qDigits = String(q).replace(/[^0-9Xx]/g, "");
+      const isbnClause = qDigits.length >= 6 ? ",isbn.ilike.*" + enc(qDigits) + "*" : "";
+      params.or = "(title.ilike.*" + enc(q) + "*,description.ilike.*" + enc(q) + "*" + isbnClause + ")";
     }
     const min = minPrice !== undefined && minPrice !== "" ? Number(minPrice) : null;
     const max = maxPrice !== undefined && maxPrice !== "" ? Number(maxPrice) : null;
@@ -1145,11 +1189,177 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, out);
   }
 
+  // ---- ISBN lookup (barcode scan -> book title/author/cover via Open Library) ----
+  const isbnMatch = pathname.match(/^\/api\/isbn\/([0-9Xx-]{8,20})$/);
+  if (method === "GET" && isbnMatch) {
+    const cleanIsbn = isbnMatch[1].replace(/[^0-9Xx]/g, "");
+    try {
+      const data = await httpsRequestJson(
+        "GET",
+        "https://openlibrary.org/api/books?bibkeys=ISBN:" + enc(cleanIsbn) + "&format=json&jscmd=data",
+        { headers: { "User-Agent": "HieloIce/1.0 (+https://hieloice.com)" } }
+      );
+      const book = data && data["ISBN:" + cleanIsbn];
+      if (!book) return sendJson(res, 200, { found: false, isbn: cleanIsbn });
+      return sendJson(res, 200, {
+        found: true,
+        isbn: cleanIsbn,
+        title: book.title || "",
+        authors: Array.isArray(book.authors) ? book.authors.map((a) => a.name).filter(Boolean) : [],
+        cover: (book.cover && (book.cover.medium || book.cover.large || book.cover.small)) || null,
+      });
+    } catch (e) {
+      return sendJson(res, 200, { found: false, isbn: cleanIsbn });
+    }
+  }
+
+  // ---- AI: analyze a book photo and suggest title/description/category ----
+  // The seller always reviews and can edit before publishing - this endpoint
+  // only ever produces a *suggestion*, never publishes anything itself.
+  // It also researches real-world used-book prices via Claude's web search
+  // tool (a handful of well-known resale sites) so the suggested price is
+  // grounded in actual comparable listings, not a guess.
+  if (method === "POST" && pathname === "/api/ai/analyze-book-photo") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!ANTHROPIC_API_KEY) return sendJson(res, 503, { error: "AI features are not configured on this server yet." });
+    // Lower limit than a plain chat message: this call also runs a handful
+    // of billed web searches, so it costs meaningfully more per use.
+    if (!checkRateLimit("ai-photo:" + me.id, 12, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many AI requests. Please try again in a bit." });
+    }
+
+    const body = await readBody(req);
+    const image = typeof body.image === "string" ? body.image : "";
+    const m = image.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/);
+    if (!m) return sendJson(res, 400, { error: "Please provide a JPEG, PNG, or WEBP photo." });
+    const [, mediaType, base64Data] = m;
+    if (base64Data.length > 8 * 1024 * 1024) {
+      return sendJson(res, 400, { error: "Photo is too large." });
+    }
+    const locale = body.locale === "es" ? "es" : "en";
+
+    try {
+      const data = await callClaude({
+        model: "claude-sonnet-5",
+        max_tokens: 1200,
+        tools: [
+          {
+            type: "web_search_20250305",
+            name: "web_search",
+            max_uses: 4,
+            allowed_domains: [
+              "abebooks.com", "thriftbooks.com", "betterworldbooks.com",
+              "ebay.com", "amazon.com", "biblio.com", "worldofbooks.com",
+            ],
+          },
+        ],
+        system:
+          "You are a listing assistant for HieloIce, a marketplace for used and secondhand books. " +
+          "You will be shown a photo of a book (cover, spine, or barcode). Steps: " +
+          "1) Identify the exact book (and edition, if visible). " +
+          "2) Use the web_search tool to look up what this book typically resells for used on sites like " +
+          "AbeBooks, ThriftBooks, Better World Books, eBay, Amazon, Biblio, or World of Books - run 2-4 " +
+          "searches if needed to find real comparable used prices. " +
+          "3) Write a short, honest, appealing resale listing. " +
+          "After you finish searching, your FINAL message must be ONLY a single JSON object, no markdown " +
+          "fences, no text before or after it, in this exact shape: " +
+          '{"title": "...", "description": "...", "category": "...", "suggestedPriceUsd": 0, "priceReasoning": "..."}. ' +
+          "The title should be the book's real title (and author, if confident), under 100 characters. " +
+          "The description should be 2-4 sentences, written " + (locale === "es" ? "in Spanish" : "in English") +
+          ", describing the book and its visible condition (cover wear, edge yellowing, etc.) based on the " +
+          "photo - do not invent condition details you can't see. The category MUST be exactly one of these " +
+          "slugs: " + CATEGORIES.join(", ") + ". suggestedPriceUsd must be a plain number (US dollars, no " +
+          "symbol) - a reasonable used-book resale price based on what you found, adjusted down a bit for a " +
+          "typical used C2C listing versus a professional seller. priceReasoning must be 1-2 short sentences " +
+          (locale === "es" ? "in Spanish " : "in English ") +
+          "explaining what comparable prices you found and where. If you cannot identify the book at all, or " +
+          "found no pricing data, set title to \"\", suggestedPriceUsd to 0, and category to \"other-books\".",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
+              { type: "text", text: "Identify this book, research its typical used resale price, and return the JSON listing suggestion." },
+            ],
+          },
+        ],
+      });
+      const textBlocks = Array.isArray(data.content) ? data.content.filter((b) => b.type === "text") : [];
+      const raw = textBlocks.length ? textBlocks[textBlocks.length - 1].text : "";
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI did not return JSON");
+      const parsed = JSON.parse(jsonMatch[0]);
+      const category = CATEGORIES.includes(parsed.category) ? parsed.category : "other-books";
+      const suggestedPrice = Number(parsed.suggestedPriceUsd);
+      return sendJson(res, 200, {
+        title: String(parsed.title || "").slice(0, 140),
+        description: String(parsed.description || "").slice(0, 3000),
+        category,
+        suggestedPrice: Number.isFinite(suggestedPrice) && suggestedPrice > 0 ? Math.round(suggestedPrice * 100) / 100 : null,
+        priceReasoning: String(parsed.priceReasoning || "").slice(0, 500),
+      });
+    } catch (e) {
+      console.error("AI photo analysis failed:", e && e.message);
+      return sendJson(res, 502, { error: "AI could not analyze this photo right now. Please try again or fill it in manually." });
+    }
+  }
+
+  // ---- AI: help assistant chatbot (replaces the old rule-based FAQ widget) ----
+  if (method === "POST" && pathname === "/api/ai/chat") {
+    if (!ANTHROPIC_API_KEY) return sendJson(res, 503, { error: "AI features are not configured on this server yet." });
+    const ip = getClientIp(req);
+    if (!checkRateLimit("ai-chat:" + ip, 40, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many messages. Please try again in a bit." });
+    }
+
+    const body = await readBody(req);
+    const locale = body.locale === "es" ? "es" : "en";
+    const incoming = Array.isArray(body.messages) ? body.messages : [];
+    const messages = incoming
+      .filter((x) => x && (x.role === "user" || x.role === "assistant") && typeof x.content === "string")
+      .slice(-12)
+      .map((x) => ({ role: x.role, content: String(x.content).slice(0, 2000) }));
+    if (!messages.length || messages[messages.length - 1].role !== "user") {
+      return sendJson(res, 400, { error: "Missing user message." });
+    }
+
+    try {
+      const data = await callClaude({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 500,
+        system:
+          "You are the HieloIce help assistant, embedded as a chat widget on hieloice.com, a marketplace and " +
+          "social network for buying, selling, and discussing used/secondhand books. Reply " +
+          (locale === "es" ? "in Spanish" : "in English") + ", in 2-5 short sentences, in a warm, helpful, " +
+          "concise tone - no markdown headers or bullet lists, just plain conversational text. " +
+          "Proactively GUIDE users through how to do things step by step (don't just answer narrowly) - for " +
+          "example if someone asks about selling, briefly walk them through: tap Create (+) or 'Post an Ad', " +
+          "add photos or scan the ISBN/barcode to auto-fill details (or use 'Analyze with AI' to draft the " +
+          "title/description for them to review), set a price and category, and publish. " +
+          "Key features you can explain: Marketplace (browse/search/filter used books, ISBN barcode scanning, " +
+          "AI-assisted listings the seller always reviews before publishing), Moments (24h photo/video stories), " +
+          "Clips (full-screen video feed), Friends & People, Groups/Communities, Messages, saved items, " +
+          "seller ratings and verified-seller badges, notifications, light/dark theme, and account settings. " +
+          "If asked something you genuinely don't know (e.g. specific account/order details, refunds, payment " +
+          "disputes, or legal questions), say so honestly and suggest they use 'Report a Bug' or the Contact " +
+          "link (info@hieloice.com). Never claim to take actions yourself (you cannot post listings, send " +
+          "money, or change account settings) - only guide the user to do it.",
+        messages,
+      });
+      const reply = claudeText(data) || (locale === "es" ? "Lo siento, no pude generar una respuesta. Intenta de nuevo." : "Sorry, I couldn't generate a reply. Please try again.");
+      return sendJson(res, 200, { reply });
+    } catch (e) {
+      console.error("AI chat failed:", e && e.message);
+      return sendJson(res, 502, { error: locale === "es" ? "El asistente de IA no está disponible ahora mismo." : "The AI assistant is unavailable right now." });
+    }
+  }
+
   if (method === "POST" && pathname === "/api/products") {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
     const body = await readBody(req);
-    const { title, description, price, category, country, state, city, allowOffers, allowReturn } = body;
+    const { title, description, price, category, country, state, city, allowOffers, allowReturn, isbn } = body;
 
     if (!title || !String(title).trim()) return sendJson(res, 400, { error: "Title is required" });
     if (!CATEGORIES.includes(category)) return sendJson(res, 400, { error: "Invalid category" });
@@ -1170,6 +1380,7 @@ async function handleApi(req, res, pathname, query) {
       description: String(description || "").slice(0, 3000),
       price: price ? Number(price) || 0 : 0,
       category,
+      isbn: isbn ? String(isbn).replace(/[^0-9Xx]/g, "").slice(0, 13) : null,
       photos,
       video,
       video_duration_seconds: videoDurationSeconds,
@@ -1215,6 +1426,7 @@ async function handleApi(req, res, pathname, query) {
     if (body.description !== undefined) patch.description = String(body.description).slice(0, 3000);
     if (body.price !== undefined) patch.price = Number(body.price) || 0;
     if (body.category !== undefined && CATEGORIES.includes(body.category)) patch.category = body.category;
+    if (body.isbn !== undefined) patch.isbn = body.isbn ? String(body.isbn).replace(/[^0-9Xx]/g, "").slice(0, 13) : null;
     if (body.country !== undefined) patch.country = String(body.country).slice(0, 80);
     if (body.state !== undefined) patch.state = String(body.state).slice(0, 80);
     if (body.city !== undefined) patch.city = String(body.city).slice(0, 80);
@@ -2365,7 +2577,7 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { friends: friendsSection, suggested: suggestedSection });
   }
 
-  // "Shorts" feed v2: every active video moment on the platform, ranked by a
+  // "Clips" feed v2: every active video moment on the platform, ranked by a
   // blend of TikTok-style behavior signals and the same social graph bonuses
   // from v1. Works for guests too (falls back to recency + global popularity)
   // so the section always has content; personalization kicks in once
@@ -2723,11 +2935,20 @@ async function handleApi(req, res, pathname, query) {
 
   const INTL_ROLE_TYPES = ["producer", "distributor"];
   const INTL_STATUSES = ["pending", "in_review", "verified", "rejected"];
+  // Structured book-focused service tags a company can offer - lets the
+  // directory be filtered by what a buyer/seller actually needs (sourcing a
+  // rare title, shipping books abroad, buying in bulk) instead of a vague
+  // free-text "industry" field. Stored as a comma-joined string.
+  const INTL_BOOK_SERVICES = ["sourcing", "foreign_language", "academic", "logistics", "wholesale"];
+  function sanitizeBookServices(input) {
+    const arr = Array.isArray(input) ? input : String(input || "").split(",");
+    return arr.map((s) => String(s).trim()).filter((s) => INTL_BOOK_SERVICES.includes(s)).join(",");
+  }
 
   // Full view - includes internal verification notes. Only ever sent to the
   // owner of the profile or an admin (isOwner), never to the public directory.
   function companyOut(c) {
-    const { owner_user_id, company_name, role_type, contact_email, contact_phone, logo_url, verification_notes, verified_at, created_at, ...rest } = c;
+    const { owner_user_id, company_name, role_type, contact_email, contact_phone, logo_url, verification_notes, verified_at, created_at, book_services, ...rest } = c;
     return {
       ...rest,
       ownerUserId: owner_user_id,
@@ -2739,6 +2960,7 @@ async function handleApi(req, res, pathname, query) {
       verificationNotes: verification_notes,
       verifiedAt: verified_at,
       createdAt: created_at,
+      bookServices: book_services ? book_services.split(",").filter(Boolean) : [],
     };
   }
 
@@ -2763,7 +2985,7 @@ async function handleApi(req, res, pathname, query) {
       return sendJson(res, 429, { error: "Too many submissions. Please try again later." });
     }
     const body = await readBody(req);
-    const { companyName, roleType, country, industry, description, contactEmail, contactPhone, website } = body;
+    const { companyName, roleType, country, industry, description, contactEmail, contactPhone, website, bookServices } = body;
 
     if (!companyName || !String(companyName).trim()) return sendJson(res, 400, { error: "Company name is required" });
     if (!INTL_ROLE_TYPES.includes(roleType)) return sendJson(res, 400, { error: "Invalid role type" });
@@ -2781,6 +3003,7 @@ async function handleApi(req, res, pathname, query) {
       contact_phone: String(contactPhone || "").trim().slice(0, 40),
       website: String(website || "").trim().slice(0, 300),
       logo_url: "",
+      book_services: sanitizeBookServices(bookServices),
       status: "pending",
       verification_notes: "",
       verified_at: null,
@@ -2815,6 +3038,9 @@ async function handleApi(req, res, pathname, query) {
     if (query.country) params.country = "ilike.*" + enc(query.country) + "*";
     if (query.industry) params.industry = "ilike.*" + enc(query.industry) + "*";
     if (query.roleType && INTL_ROLE_TYPES.includes(query.roleType)) params.role_type = "eq." + enc(query.roleType);
+    if (query.bookService && INTL_BOOK_SERVICES.includes(query.bookService)) {
+      params.book_services = "ilike.*" + enc(query.bookService) + "*";
+    }
     const verified = await db.select("mkt_intl_companies", params);
     return sendJson(res, 200, verified.map(companyPublicOut));
   }
@@ -2851,6 +3077,7 @@ async function handleApi(req, res, pathname, query) {
     if (body.contactPhone !== undefined) patch.contact_phone = String(body.contactPhone).trim().slice(0, 40);
     if (body.website !== undefined) patch.website = String(body.website).trim().slice(0, 300);
     if (body.logoUrl !== undefined) patch.logo_url = String(body.logoUrl).trim().slice(0, 1000);
+    if (body.bookServices !== undefined) patch.book_services = sanitizeBookServices(body.bookServices);
     const updated = await db.update("mkt_intl_companies", { id: "eq." + enc(c.id) }, patch);
     return sendJson(res, 200, companyOut(updated[0]));
   }
