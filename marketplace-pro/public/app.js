@@ -392,6 +392,7 @@ function applyStaticI18n() {
   setText("icon-nav-create-record-label", I18N.t("iconnav.createRecord"));
   setText("icon-nav-create-upload-moment-label", I18N.t("iconnav.createUploadMoment"));
   setText("icon-nav-create-upload-picture-label", I18N.t("iconnav.createUploadPicture"));
+  setText("icon-nav-create-loop-label", I18N.t("iconnav.createLoop"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
   setText("icon-nav-dropdown-soon-label", I18N.t("iconnav.comingSoon"));
@@ -594,6 +595,19 @@ function updateGlobalSearchPlaceholder() {
         }
       });
     }
+    // "Loop" opens the same camera-wizard flow as "Camera"/"Record a Moment"
+    // (see openCreateWizard() below) - it takes an optional target argument
+    // that tells the wizard's final publish step which endpoint to post to
+    // (POST /api/loops instead of POST /api/moments) rather than this
+    // needing its own separate capture UI.
+    const loopLink = document.getElementById("icon-nav-create-loop");
+    if (loopLink) {
+      loopLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard("loop");
+      });
+    }
     const productLink = document.getElementById("icon-nav-create-product");
     if (productLink) {
       productLink.addEventListener("click", () => {
@@ -700,8 +714,14 @@ function categoryCardsHtml() {
 // photo moments (Facebook-style focus on sharing, TikTok-style continuous
 // swipe), falling back to the marketplace grid for guests who have nothing
 // to see in a feed yet. Two pieces, both fed by real endpoints:
-//   (a) a thin "stories" strip (friends' active moments, rect layout) -
-//       loadHomeStoriesStrip() below.
+//   (a) a thin "stories" strip - genuinely ephemeral "Loops" (24h,
+//       tap-through viewer, seen/unseen ring), NOT the (now-permanent)
+//       Moments below - loadHomeStoriesStrip() below. Moments were made
+//       permanent on 2026-08-18 (see server.js), which is exactly why this
+//       strip no longer shows them: a "stories" rail stops making sense once
+//       its content never expires. Loops exists as a separate feature/table
+//       (see server.js's "LOOPS" section) specifically to keep that Stories
+//       mechanic alive under its own name.
 //   (b) the full swipe feed itself, sharing its render/gesture engine with
 //       the full-screen Clips player - see drawSwipeItem()/
 //       wireSwipeGestures() above and loadHomeSwipeFeed() below.
@@ -718,21 +738,20 @@ function renderHome() {
   // page where they belong.
   viewEl.innerHTML = `
     <div class="home-stories-strip" id="home-stories-strip">
-      <div class="moments-bar" id="home-moments-bar-friends"></div>
+      <div class="moments-bar" id="home-loops-bar"></div>
     </div>
     <div class="home-swipe-feed" id="home-swipe-feed"><p style="color:var(--text-secondary);text-align:center;padding:40px 0;">${I18N.t("common.loading")}</p></div>
   `;
-  // Draw the "your moment" circle (yellow ring if you already posted one today,
-  // plain "+" to add one otherwise) immediately, from data already in memory -
-  // don't wait on the /api/moments/feed round trip for it, and don't let a
-  // failed/slow fetch hide it later (see loadHomeStoriesStrip()'s catch below).
-  // This was previously only drawn after the feed loaded, so on a slow
-  // connection or a feed error it silently never appeared at all.
-  renderMomentGroupsBar(document.getElementById("home-moments-bar-friends"), [], {
-    showAddForUserId: state.user.id,
+  // Draw the "your Loop" circle (colored ring if you have an unviewed-by-
+  // someone-else Loop live, plain "+" to add one otherwise) immediately,
+  // from data already in memory - don't wait on the /api/loops/feed round
+  // trip for it, and don't let a failed/slow fetch hide it later (see
+  // loadHomeStoriesStrip()'s catch below). Mirrors how the old permanent-
+  // Moments version of this strip drew its own-circle placeholder eagerly.
+  renderLoopGroupsBar(document.getElementById("home-loops-bar"), [], {
+    ownUserId: state.user.id,
     ownPhoto: state.user.photo,
     ownName: state.user.name,
-    layout: "rect",
   });
   wireHomeSwipeFeedResize();
   sizeHomeSwipeFeed();
@@ -740,27 +759,26 @@ function renderHome() {
   loadHomeSwipeFeed();
 }
 
-// Thin "stories" strip at the top of Home - just the friends' active-moments
-// bar from the old /api/moments/feed endpoint, still in rect layout (sized
-// down via .home-stories-strip in style.css). The "suggested" half of that
-// same response isn't shown here anymore - the unified swipe feed below
-// covers suggested content too.
+// Thin "stories" strip at the top of Home - the caller's own Loop (if any)
+// plus friends'/followed-pages' Loops from GET /api/loops/feed, grouped by
+// author, rect layout (sized down via .home-stories-strip in style.css).
+// Distinct from the permanent Moments feed below it - see the comment above
+// renderHome().
 async function loadHomeStoriesStrip() {
-  const elFriends = document.getElementById("home-moments-bar-friends");
-  if (!elFriends) return;
+  const el = document.getElementById("home-loops-bar");
+  if (!el) return;
   try {
-    const data = await api("/api/moments/feed", { auth: true });
-    elFriends.style.display = "flex";
-    renderMomentGroupsBar(elFriends, data.friends || [], {
-      showAddForUserId: state.user.id,
+    const data = await api("/api/loops/feed", { auth: true });
+    el.style.display = "flex";
+    renderLoopGroupsBar(el, data.groups || [], {
+      ownUserId: state.user.id,
       ownPhoto: state.user.photo,
       ownName: state.user.name,
-      layout: "rect",
     });
   } catch (e) {
-    // Best-effort: leave the "your moment" circle drawn by renderHome() as-is
+    // Best-effort: leave the "your Loop" circle drawn by renderHome() as-is
     // rather than wiping the strip - a failed fetch shouldn't make the
-    // add-a-moment entry point disappear too.
+    // add-a-Loop entry point disappear too.
   }
 }
 
@@ -3108,6 +3126,81 @@ function renderMomentGroupsBar(containerEl, groups, opts) {
   });
 }
 
+// Renders the Loops "stories" strip on Home (see the .home-stories-strip
+// comment on renderHome()). Deliberately a separate function from
+// renderMomentGroupsBar() above rather than a third opts-flag on it: the
+// data shape differs (groups carry `loops` + a per-loop `viewed` flag
+// instead of `moments`), the ring needs a seen/unseen state Moments never
+// had once they went permanent, and the "own" affordance opens the create
+// wizard directly instead of the Moments-specific upload modal - trying to
+// thread all of that through one shared function would leave more
+// conditionals than shared code. Own dedicated CSS classes too
+// (.loop-rect-*, mirroring .moment-rect-*) for the same reason.
+function renderLoopGroupsBar(containerEl, groups, opts) {
+  const mine = opts && opts.ownUserId ? groups.find((g) => g.userId === opts.ownUserId) : null;
+  const hasOwn = !!(mine && mine.loops.length);
+  let html = "";
+  if (opts && opts.ownUserId) {
+    const thumb = hasOwn && mine.loops[0].mediaType === "photo" ? mine.loops[0].mediaUrl : opts.ownPhoto;
+    html += `
+      <div class="loop-rect-wrap loop-rect-add" id="loop-add-circle" style="${thumb ? `background-image:url('${thumb}')` : ""}">
+        ${!thumb ? `<div class="loop-rect-placeholder">${initials(opts.ownName || "")}</div>` : ""}
+        <span class="loop-rect-shade"></span>
+        <span class="loop-rect-add-badge" id="loop-add-badge" title="${I18N.t("loops.add")}">+</span>
+        <span class="loop-rect-name">${I18N.t("loops.yourLoop")}</span>
+      </div>`;
+  }
+  const others = opts && opts.ownUserId ? groups.filter((g) => g.userId !== opts.ownUserId) : groups;
+  others.forEach((g) => {
+    // Ring reads "unviewed" (colored/gold, same treatment the always-gold
+    // .moment-rect-avatar border used to signal "new") as long as ANY of
+    // this author's Loops hasn't been seen by the current viewer yet, and
+    // flips to a plain/gray ring only once every one of them has - same
+    // all-or-nothing rule Instagram/FB Stories use for a person's ring.
+    const allViewed = g.loops.every((l) => l.viewed);
+    const thumb = g.loops[0] && g.loops[0].mediaType === "photo" ? g.loops[0].mediaUrl : g.userPhoto;
+    html += `
+      <div class="loop-rect-wrap" data-uid="${g.userId}" style="${thumb ? `background-image:url('${thumb}')` : ""}">
+        ${!thumb ? `<div class="loop-rect-placeholder">${initials(g.userName)}</div>` : ""}
+        <span class="loop-rect-shade"></span>
+        <div class="loop-rect-avatar ${allViewed ? "loop-rect-avatar-viewed" : "loop-rect-avatar-unviewed"}">
+          ${g.userPhoto ? `<img src="${g.userPhoto}" />` : `<div class="loop-rect-avatar-placeholder">${initials(g.userName)}</div>`}
+        </div>
+        <span class="loop-rect-name">${escapeHtml(g.userName)}</span>
+      </div>`;
+  });
+  containerEl.innerHTML = html;
+
+  if (opts && opts.ownUserId) {
+    const addCircle = document.getElementById("loop-add-circle");
+    if (addCircle) {
+      addCircle.addEventListener("click", () => {
+        if (mine && mine.loops.length) {
+          openLoopsViewer(mine.loops, 0, mine);
+        } else {
+          openCreateWizard("loop");
+        }
+      });
+    }
+    // The small "+" badge always opens the capture flow to add another Loop,
+    // even if the user already has active ones - tapping the rest of the
+    // circle views your current Loop(s), same split as the Moments bar's
+    // add badge vs. circle.
+    const addBadge = document.getElementById("loop-add-badge");
+    if (addBadge) {
+      addBadge.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openCreateWizard("loop");
+      });
+    }
+  }
+  containerEl.querySelectorAll(".loop-rect-wrap[data-uid]").forEach((wrap) => {
+    wrap.addEventListener("click", () => {
+      const g = groups.find((x) => x.userId === wrap.dataset.uid);
+      if (g) openLoopsViewer(g.loops, 0, g);
+    });
+  });
+}
 
 function renderProfileMomentsBar(userId, userName, userPhoto, moments, isMe) {
   const el = document.getElementById("profile-moments-bar");
@@ -3593,6 +3686,162 @@ function stepMomentViewer(dir) {
   drawMomentViewer();
 }
 
+// ---------------- Loops full-screen viewer ----------------
+// Its own function rather than a second mode bolted onto
+// openMomentsViewer()/drawMomentViewer() above: the interaction model is
+// genuinely different (tap-to-advance + auto-advance timing vs. that
+// viewer's like/message/share/repost/save action rail and follow button),
+// and Loops has no equivalent of any of those social actions in v1 (see the
+// scope note in the PR/report - out of scope for now, tap-through +
+// seen/unseen + owner view count + delete is the full v1 feature set).
+// Reuses the same overlay-back-button pattern (guardOverlayForBack /
+// closeOverlayViaBack) as every other full-screen overlay in the app.
+let loopViewerState = null; // { loops, index, group, viewedIds: Set<loopId> }
+let loopViewerTimer = null; // photo auto-advance timer - always cleared before being reassigned or on close, so it can never leak or double-fire
+const LOOP_PHOTO_DURATION_MS = 5000; // same fixed "how long a photo stays up" as the Moments viewer uses
+
+function openLoopsViewer(loops, startIndex, group) {
+  if (!loops || !loops.length) return;
+  loopViewerState = { loops: loops.slice(), index: startIndex || 0, group, viewedIds: new Set() };
+  const overlay = document.createElement("div");
+  overlay.className = "loop-viewer-overlay";
+  overlay.id = "loop-viewer-overlay";
+  document.body.appendChild(overlay);
+  guardOverlayForBack(closeLoopsViewer);
+  drawLoopViewer();
+}
+
+function closeLoopsViewer() {
+  if (loopViewerTimer) {
+    clearTimeout(loopViewerTimer);
+    loopViewerTimer = null;
+  }
+  const overlay = document.getElementById("loop-viewer-overlay");
+  if (overlay) overlay.remove();
+  loopViewerState = null;
+}
+
+function drawLoopViewer() {
+  const overlay = document.getElementById("loop-viewer-overlay");
+  if (!overlay || !loopViewerState) return;
+  // Always clear any still-pending photo-advance timer before redrawing -
+  // drawLoopViewer() is called both on navigation and after an in-place
+  // mutation (delete), so without this a stale timer from the previous
+  // loop could fire after the DOM (and its progress bar) has moved on.
+  if (loopViewerTimer) {
+    clearTimeout(loopViewerTimer);
+    loopViewerTimer = null;
+  }
+  const { loops, index, group } = loopViewerState;
+  const m = loops[index];
+  const isOwn = state.user && m.userId === state.user.id;
+
+  // Record the view once per loop per viewer-session (the endpoint is
+  // idempotent server-side too, but no need to re-fire it every time the
+  // user steps back and forth over the same loop in one sitting).
+  if (!loopViewerState.viewedIds.has(m.id)) {
+    loopViewerState.viewedIds.add(m.id);
+    api("/api/loops/" + m.id + "/view", { method: "POST", auth: true }).catch(() => {});
+  }
+
+  const bars = loops
+    .map((_, i) => `<div class="loop-viewer-progress-bar ${i < index ? "done" : ""}"><div class="loop-viewer-progress-fill" id="loop-progress-fill-${i}"></div></div>`)
+    .join("");
+
+  overlay.innerHTML = `
+    <div class="loop-viewer-media-wrap">
+      <div class="loop-viewer-progress">${bars}</div>
+      <div class="loop-viewer-head">
+        <button class="loop-viewer-head-link" id="loop-viewer-head-link" ${group && group.userId ? "" : "disabled"}>
+          ${group && group.userPhoto ? `<img src="${group.userPhoto}" />` : ""}
+          <span class="loop-viewer-head-name">${escapeHtml((group && group.userName) || "")}${group && group.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        </button>
+        ${isOwn ? `<span class="loop-viewer-view-count" title="${I18N.t("loops.views")}">&#128065; ${m.viewCount || 0}</span>` : ""}
+        <button class="loop-viewer-close" id="loop-viewer-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      ${
+        m.mediaType === "video"
+          ? `<video class="loop-viewer-media" id="loop-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>`
+          : `<img class="loop-viewer-media" id="loop-viewer-media" src="${m.mediaUrl}" />`
+      }
+      ${m.caption ? `<div class="loop-viewer-caption">${linkifyHashtags(escapeHtml(m.caption))}</div>` : ""}
+      ${isOwn ? `<button class="loop-viewer-delete" id="loop-viewer-delete">${I18N.t("loops.delete")}</button>` : ""}
+      <button class="loop-viewer-nav prev" id="loop-viewer-prev"></button>
+      <button class="loop-viewer-nav next" id="loop-viewer-next"></button>
+    </div>
+  `;
+
+  document.getElementById("loop-viewer-close").addEventListener("click", () => closeOverlayViaBack(closeLoopsViewer));
+  document.getElementById("loop-viewer-prev").addEventListener("click", () => stepLoopViewer(-1));
+  document.getElementById("loop-viewer-next").addEventListener("click", () => stepLoopViewer(1));
+  const headLink = document.getElementById("loop-viewer-head-link");
+  if (headLink && !headLink.disabled) {
+    headLink.addEventListener("click", () => {
+      const uid = group && group.userId;
+      if (!uid) return;
+      closeOverlayViaBack(closeLoopsViewer);
+      location.hash = "#/profile/" + uid;
+    });
+  }
+  const delBtn = document.getElementById("loop-viewer-delete");
+  if (delBtn) {
+    delBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("loops.confirmDelete"))) return;
+      try {
+        await api("/api/loops/" + m.id, { method: "DELETE", auth: true });
+        loopViewerState.loops.splice(index, 1);
+        if (!loopViewerState.loops.length) {
+          closeOverlayViaBack(closeLoopsViewer);
+          router();
+          return;
+        }
+        loopViewerState.index = Math.min(index, loopViewerState.loops.length - 1);
+        drawLoopViewer();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+
+  const fill = document.getElementById("loop-progress-fill-" + index);
+  if (m.mediaType === "video") {
+    const videoEl = document.getElementById("loop-viewer-media");
+    if (videoEl) {
+      videoEl.muted = false;
+      videoEl.volume = 1;
+      videoEl.addEventListener("loadedmetadata", () => {
+        if (fill && videoEl.duration && isFinite(videoEl.duration)) {
+          requestAnimationFrame(() => {
+            fill.style.transition = "width " + videoEl.duration * 1000 + "ms linear";
+            fill.style.width = "100%";
+          });
+        }
+      });
+      videoEl.addEventListener("ended", () => stepLoopViewer(1));
+    }
+  } else {
+    if (fill) {
+      requestAnimationFrame(() => {
+        fill.style.transition = "width " + LOOP_PHOTO_DURATION_MS + "ms linear";
+        fill.style.width = "100%";
+      });
+    }
+    loopViewerTimer = setTimeout(() => stepLoopViewer(1), LOOP_PHOTO_DURATION_MS);
+  }
+}
+
+function stepLoopViewer(dir) {
+  if (!loopViewerState) return;
+  const next = loopViewerState.index + dir;
+  if (next < 0) return;
+  if (next >= loopViewerState.loops.length) {
+    closeLoopsViewer();
+    return;
+  }
+  loopViewerState.index = next;
+  drawLoopViewer();
+}
+
 // ---------------- Shared vertical swipe-feed engine ----------------
 // Both the full-screen "Clips" player ("#/clips": a TikTok-style takeover
 // with the topbar/bottom nav hidden) and the inline Home feed (mixed
@@ -3990,6 +4239,10 @@ function wireSwipeGestures(rootEl, sw) {
 
 const MAX_ACTIVE_MOMENTS = 3;
 const MAX_MOMENT_VIDEO_SECONDS = 180;
+// Client-side mirrors of server.js's MAX_ACTIVE_MOMENTS (reused as-is for
+// Loops' active-count cap - see server.js) and MAX_LOOP_VIDEO_SECONDS, kept
+// in sync by hand the same way MAX_MOMENT_VIDEO_SECONDS above already is.
+const MAX_LOOP_VIDEO_SECONDS = 60;
 
 function openMomentUploadModal() {
   if (!state.token) {
@@ -4028,17 +4281,11 @@ function openMomentUploadModal() {
   const videoInput = document.getElementById("moment-video-input");
   const msgEl = document.getElementById("moment-upload-msg");
 
-  // Block uploads up front if the user already has 3 active moments.
-  api("/api/moments/user/" + state.user.id)
-    .then((moments) => {
-      if (moments.length >= MAX_ACTIVE_MOMENTS) {
-        msgEl.textContent = I18N.t("moments.limitReached");
-        msgEl.className = "form-msg error";
-        photoInput.disabled = true;
-        videoInput.disabled = true;
-      }
-    })
-    .catch(() => {});
+  // No more upfront "already have 3 active moments" block - Moments are
+  // permanent now and the server no longer caps how many a user can post
+  // (see server.js POST /api/moments). MAX_ACTIVE_MOMENTS is kept defined
+  // below only because the upcoming "Loops" (24h stories) feature will
+  // likely want an equivalent small-active-items cap.
 
   function readAsDataUrl(file, type) {
     const reader = new FileReader();
@@ -4141,7 +4388,14 @@ const WIZARD_HOLD_THRESHOLD_MS = 380;
 // tap rather than an intentional video, and the shutter falls back to
 // taking a photo (see pauseHoldRecording()).
 const WIZARD_MIN_INTENTIONAL_HOLD_MS = 500;
-const WIZARD_RING_TARGET_MS = MAX_MOMENT_VIDEO_SECONDS * 1000;
+
+// Max hold-record duration for the current wizard session's target - a
+// function rather than a fixed constant (the old WIZARD_RING_TARGET_MS)
+// specifically so a Loop capture stops recording at MAX_LOOP_VIDEO_SECONDS
+// instead of letting the user hold for the full 3-minute Moment length.
+function wizardRingTargetMs() {
+  return (createWizard && createWizard.target === "loop" ? MAX_LOOP_VIDEO_SECONDS : MAX_MOMENT_VIDEO_SECONDS) * 1000;
+}
 
 function createWizardFilterCss(id) {
   const f = CREATE_WIZARD_FILTERS.find((x) => x.id === id);
@@ -4170,7 +4424,13 @@ function closeCreateWizard() {
   createWizard = null;
 }
 
-function openCreateWizard() {
+// `target` distinguishes what the wizard's final publish step posts to:
+// "moment" (default - POST /api/moments) or "loop" (POST /api/loops, see the
+// "Loop" option in the create dropdown). Every other step of the wizard
+// (capture, filters, caption) behaves identically for both - only the
+// publish call and a couple of labels branch on it - see the
+// wizard-publish click handler in drawCreateWizard()'s step-3 branch.
+function openCreateWizard(target) {
   if (!state.token) {
     location.hash = "#/login";
     return;
@@ -4180,7 +4440,7 @@ function openCreateWizard() {
     stream: null, recorder: null, chunks: [], durationSeconds: null,
     facingMode: "user", flashOn: false, timerMode: 0,
     recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
-    overlays: [], gridOn: false,
+    overlays: [], gridOn: false, target: target === "loop" ? "loop" : "moment",
   };
   const overlay = document.createElement("div");
   overlay.id = "create-wizard-overlay";
@@ -4224,7 +4484,7 @@ function startWizardRing() {
   const tick = () => {
     if (!createWizard || !createWizard.recording) return;
     const elapsed = createWizard.recordAccumMs + (Date.now() - createWizard.segmentStartTs);
-    const frac = Math.min(1, elapsed / WIZARD_RING_TARGET_MS);
+    const frac = Math.min(1, elapsed / wizardRingTargetMs());
     if (circle) circle.style.strokeDashoffset = String(C * (1 - frac));
     if (timeLabel) timeLabel.textContent = wizardFormatTime(elapsed);
     if (frac >= 1) {
@@ -4516,7 +4776,7 @@ function wireWizardCaptureGesture() {
     const doneBtn = document.getElementById("wizard-fs-done-btn");
     if (doneBtn) doneBtn.removeAttribute("disabled");
     updateWizardHint(I18N.t("create.addMoreOrDone"));
-    if (createWizard.recordAccumMs >= WIZARD_RING_TARGET_MS) {
+    if (createWizard.recordAccumMs >= wizardRingTargetMs()) {
       finalizeWizardRecording();
     }
   };
@@ -4753,7 +5013,7 @@ function drawCreateWizard() {
     overlay.className = "modal-overlay create-wizard-overlay";
     overlay.innerHTML = `
       <div class="modal-box wizard-box">
-        <h2 class="section-heading">${I18N.t("create.step2Title")}</h2>
+        <h2 class="section-heading">${I18N.t(createWizard.target === "loop" ? "create.step2TitleLoop" : "create.step2Title")}</h2>
         <div class="wizard-edit-toolbar">
           <button class="wizard-edit-tool-btn" id="wizard-add-text-btn" title="${I18N.t("create.addText")}">Aa</button>
           <button class="wizard-edit-tool-btn" id="wizard-add-sticker-btn" title="${I18N.t("create.addSticker")}">&#128512;</button>
@@ -4856,8 +5116,9 @@ function drawCreateWizard() {
   document.getElementById("wizard-publish").addEventListener("click", async () => {
     const publishBtn = document.getElementById("wizard-publish");
     const msgEl = document.getElementById("wizard-publish-msg");
+    const isLoop = createWizard.target === "loop";
     publishBtn.disabled = true;
-    msgEl.textContent = I18N.t("moments.uploading");
+    msgEl.textContent = I18N.t(isLoop ? "loops.uploading" : "moments.uploading");
     msgEl.className = "form-msg";
     try {
       let finalMedia = createWizard.rawDataUrl;
@@ -4878,17 +5139,33 @@ function drawCreateWizard() {
       const captionText = captionEl.value.trim();
       const fullCaption = hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText;
 
-      await api("/api/moments", {
-        method: "POST",
-        auth: true,
-        body: {
-          mediaType: createWizard.mediaType,
-          media: finalMedia,
-          caption: fullCaption,
-          durationSeconds: createWizard.durationSeconds,
-        },
-      });
-      msgEl.textContent = I18N.t("moments.posted");
+      if (isLoop) {
+        // server.js's mkt_loops schema uses "photo"/"video" for media_type
+        // (not "image"/"video" like Moments) - see POST /api/loops - so the
+        // wizard's internal "image" value needs translating at the door.
+        await api("/api/loops", {
+          method: "POST",
+          auth: true,
+          body: {
+            mediaType: createWizard.mediaType === "video" ? "video" : "photo",
+            media: finalMedia,
+            caption: fullCaption,
+            durationSeconds: createWizard.durationSeconds,
+          },
+        });
+      } else {
+        await api("/api/moments", {
+          method: "POST",
+          auth: true,
+          body: {
+            mediaType: createWizard.mediaType,
+            media: finalMedia,
+            caption: fullCaption,
+            durationSeconds: createWizard.durationSeconds,
+          },
+        });
+      }
+      msgEl.textContent = I18N.t(isLoop ? "loops.posted" : "moments.posted");
       msgEl.className = "form-msg ok";
       setTimeout(() => {
         closeOverlayViaBack(closeCreateWizard);
@@ -5104,6 +5381,7 @@ async function renderProfile(userId) {
         ${isMe ? `<button class="tab-btn" data-tab="saved">${I18N.t("profile.savedTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="blocked">${I18N.t("profile.blockedTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="offers">${I18N.t("profile.myOffers")}</button>` : ""}
+        ${isMe ? `<button class="tab-btn" data-tab="analytics">${I18N.t("profile.analyticsTab")}</button>` : ""}
         ${isMe && state.token ? `<button class="tab-btn" data-tab="notifications">${I18N.t("notif.tabTitle")}</button>` : ""}
         ${isMe && state.user && state.user.isOwner ? `<button class="tab-btn" data-tab="ads">${I18N.t("ads.manageAds")}</button>` : ""}
       </div>
@@ -5171,6 +5449,7 @@ async function renderProfile(userId) {
       ${isMe ? `<div id="tab-saved" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-blocked" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-offers" style="display:none;"></div>` : ""}
+      ${isMe ? `<div id="tab-analytics" style="display:none;"></div>` : ""}
       ${isMe && state.token ? `<div id="tab-notifications" style="display:none;"></div>` : ""}
       ${isMe && state.user && state.user.isOwner ? `<div id="tab-ads" style="display:none;"></div>` : ""}
     </div>
@@ -5183,7 +5462,7 @@ async function renderProfile(userId) {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "photos", "reviews", "friends", "requests", "saved", "blocked", "offers", "notifications", "ads"].forEach((t) => {
+      ["listings", "photos", "reviews", "friends", "requests", "saved", "blocked", "offers", "analytics", "notifications", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
@@ -5192,6 +5471,7 @@ async function renderProfile(userId) {
       if (btn.dataset.tab === "saved" && isMe) await renderSavedTab();
       if (btn.dataset.tab === "blocked" && isMe) await renderBlockedTab();
       if (btn.dataset.tab === "offers" && isMe) await renderMyOffers();
+      if (btn.dataset.tab === "analytics" && isMe) await renderCreatorAnalyticsTab();
       if (btn.dataset.tab === "notifications" && isMe && state.token) await renderNotificationSettings();
       if (btn.dataset.tab === "ads" && isMe && state.user && state.user.isOwner) await renderAdsManager();
     });
@@ -5496,6 +5776,104 @@ async function renderMyOffers() {
         )
         .join("")
     : `<div class="empty-state">${I18N.t("profile.noOffers")}</div>`;
+}
+
+// Creator Analytics tab: lazy-loaded on first click, same pattern as
+// renderSavedTab/renderMyOffers above. Combines lifetime like/save/comment
+// counters (see server.js incrementUserStat) with a real
+// 7-day-vs-previous-7-day views trend and per-Moment stats for the user's
+// most recent Moments (Moments are permanent now, so this is no longer
+// filtered to "active"/non-expired ones - see server.js /api/creator/stats).
+// The percent-change math for the views trend is computed client-side from
+// the raw views7d/views7dPrev counts the backend returns, guarding the
+// views7dPrev === 0 case (nothing to compare against).
+async function renderCreatorAnalyticsTab() {
+  const el = document.getElementById("tab-analytics");
+  if (!el) return;
+  el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  let data;
+  try {
+    data = await api("/api/creator/stats", { auth: true });
+  } catch (e) {
+    el.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const lifetime = data.lifetime || { likesReceived: 0, savesReceived: 0, commentsReceived: 0 };
+
+  let trendHtml;
+  if (!data.views7dPrev) {
+    trendHtml = I18N.t("analytics.viewsTrendNoPrev").replace("{views}", data.views7d);
+  } else {
+    const pctChange = ((data.views7d - data.views7dPrev) / data.views7dPrev) * 100;
+    const sign = pctChange >= 0 ? "▲" : "▼";
+    trendHtml = I18N.t("analytics.viewsTrend")
+      .replace("{views}", data.views7d)
+      .replace("{sign}", sign)
+      .replace("{pct}", Math.abs(Math.round(pctChange)));
+  }
+
+  const completionHtml =
+    data.completionRate7d === null || data.completionRate7d === undefined
+      ? I18N.t("analytics.completionRateUnavailable")
+      : Math.round(data.completionRate7d * 100) + "%";
+
+  const recentMoments = data.recentMoments || [];
+
+  el.innerHTML = `
+    <div class="form-panel" style="max-width:none;">
+      <h3 class="section-subheading">${I18N.t("analytics.sectionTitle")}</h3>
+      <p class="analytics-disclaimer">${I18N.t("analytics.disclaimer")}</p>
+
+      <div class="analytics-stat-grid">
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${data.followerCount || 0}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.followers")}</span>
+        </div>
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${lifetime.likesReceived}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.likesReceived")}</span>
+        </div>
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${lifetime.savesReceived}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.savesReceived")}</span>
+        </div>
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${lifetime.commentsReceived}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.commentsReceived")}</span>
+        </div>
+      </div>
+
+      <p class="analytics-trend-line">${trendHtml}</p>
+      <p class="analytics-trend-line">${I18N.t("analytics.completionRate")}: <strong>${completionHtml}</strong></p>
+
+      <h4 class="section-subheading">${I18N.t("analytics.recentMomentsTitle")}</h4>
+      ${
+        recentMoments.length
+          ? `<div class="analytics-moment-list">
+              ${recentMoments
+                .map(
+                  (m) => `
+                <div class="analytics-moment-row">
+                  <div class="analytics-moment-meta">
+                    <span class="analytics-moment-caption">${escapeHtml(m.caption || (m.mediaType === "video" ? "\u{1F3A5}" : "\u{1F5BC}️"))}</span>
+                    <span class="analytics-moment-expires">${I18N.t("analytics.postedOn")}: ${fmtDate(m.createdAt)}</span>
+                  </div>
+                  <div class="analytics-moment-stats">
+                    <span>${I18N.t("analytics.momentViews")}: ${m.viewCount}</span>
+                    <span>${I18N.t("analytics.momentLikes")}: ${m.likeCount}</span>
+                    <span>${I18N.t("analytics.momentSaves")}: ${m.saveCount}</span>
+                    <span>${I18N.t("analytics.momentComments")}: ${m.commentCount}</span>
+                  </div>
+                </div>`
+                )
+                .join("")}
+            </div>`
+          : `<div class="empty-state">${I18N.t("analytics.recentMomentsEmpty")}</div>`
+      }
+    </div>
+  `;
 }
 
 // Pinterest-style "Guardado" tab: the user's saved products, grouped into
