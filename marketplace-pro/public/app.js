@@ -1148,6 +1148,24 @@ function buildHomeFeedItems(groups) {
   return items;
 }
 
+// Task #204 - renders the text/sticker overlays a creator dragged onto a
+// VIDEO capture (see createWizard.overlays / server.js's mkt_moments.overlay_json)
+// as a plain absolutely-positioned HTML layer on top of the <video> element,
+// at every place a video with overlays is actually played back. Photos never
+// call this - their overlays are baked straight into the JPEG pixels at
+// publish time instead (see bakeWizardOverlays()), so there's nothing left
+// to render as a separate layer for them.
+function renderMediaOverlayLayer(overlays) {
+  if (!overlays || !overlays.length) return "";
+  return `<div class="media-overlay-layer">${overlays
+    .map((ov) => {
+      const sizeClass = "size-" + (ov.size || "md");
+      const colorStyle = ov.type === "text" ? `color:${ov.color || "#FFD84D"};` : "";
+      return `<div class="media-overlay-item ${ov.type === "sticker" ? "sticker" : "text"} ${sizeClass}" style="left:${ov.xPct}%;top:${ov.yPct}%;${colorStyle}">${escapeHtml(ov.value || "")}</div>`;
+    })
+    .join("")}</div>`;
+}
+
 function feedMomentCardHtml(m) {
   return `
     <div class="feed-moment-card" data-moment-id="${m.id}">
@@ -1165,7 +1183,7 @@ function feedMomentCardHtml(m) {
       <div class="feed-moment-media-wrap">
         ${
           m.mediaType === "video"
-            ? `<video class="feed-moment-media" src="${m.mediaUrl}" muted loop playsinline autoplay></video>`
+            ? `<video class="feed-moment-media" src="${m.mediaUrl}" muted loop playsinline autoplay></video>${renderMediaOverlayLayer(m.overlays)}`
             : `<img class="feed-moment-media" src="${m.mediaUrl}" />`
         }
         <div class="feed-moment-actions">
@@ -3661,7 +3679,7 @@ function drawMomentViewer() {
       </div>
       ${
         m.mediaType === "video"
-          ? `<video class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>`
+          ? `<video class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>${renderMediaOverlayLayer(m.overlays)}`
           : `<img class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" />`
       }
       ${m.caption ? `<div class="moment-viewer-caption">${linkifyHashtags(escapeHtml(m.caption))}</div>` : ""}
@@ -4097,7 +4115,10 @@ async function renderVideoWatch(id) {
 
   viewEl.innerHTML = `
     <div class="video-watch-wrap" id="moment-viewer-overlay">
-      <video class="video-watch-player" id="moment-viewer-media" src="${v.mediaUrl}" controls playsinline></video>
+      <div class="video-watch-player-wrap">
+        <video class="video-watch-player" id="moment-viewer-media" src="${v.mediaUrl}" controls playsinline></video>
+        ${renderMediaOverlayLayer(v.overlays)}
+      </div>
       <div class="video-watch-body">
         <h1 class="video-watch-title">${escapeHtml(v.title || "")}</h1>
         <a class="video-watch-channel" href="#/profile/${v.userId}">
@@ -4284,7 +4305,7 @@ function drawSwipeItem(sw) {
       ${
         isPhoto
           ? `<img class="clips-video clips-photo" id="clips-video" src="${v.mediaUrl}" />`
-          : `<video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>`
+          : `<video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>${renderMediaOverlayLayer(v.overlays)}`
       }
       ${sw.closable ? `<button class="clips-close" id="clips-close" aria-label="${I18N.t("common.close")}">&times;</button>` : ""}
       <div class="clips-info">
@@ -4631,6 +4652,19 @@ const CREATE_WIZARD_FILTERS = [
 
 const CREATE_WIZARD_STICKERS = ["\u{1F600}", "\u{1F602}", "\u{1F60D}", "\u{1F525}", "\u{1F389}", "\u{1F4DA}", "❤️", "\u{1F44D}", "\u{1F60E}", "✨", "\u{1F973}", "\u{1F4D6}"];
 
+// Task #204 - text overlay preset colors (white/black first so there's
+// always a readable choice against any background) and the three-step
+// size scale shared by both text and sticker overlays (in the wizard editor
+// and again wherever a video with baked-in overlay metadata is played back).
+const WIZARD_TEXT_COLORS = ["#FFFFFF", "#000000", "#FFD84D", "#FF3B30", "#34C759", "#0A84FF"];
+const WIZARD_OVERLAY_SIZE_STEPS = ["sm", "md", "lg"];
+const WIZARD_OVERLAY_SIZE_SCALE = { sm: 0.7, md: 1, lg: 1.4 };
+
+// Task #203 - procedurally-generated (Web Audio API oscillators, not
+// licensed/recorded audio - see playWizardSoundPreset()) background sound
+// presets offered from the create-wizard's "Add sound" pill.
+const WIZARD_SOUND_PRESETS = ["none", "upbeat", "chill", "dramatic", "retro"];
+
 const WIZARD_HOLD_THRESHOLD_MS = 380;
 // Below this much accumulated hold time, a press is treated as an oversized
 // tap rather than an intentional video, and the shutter falls back to
@@ -4651,6 +4685,20 @@ function createWizardFilterCss(id) {
   return f ? f.css : "";
 }
 
+// Task #202 - the live camera <video> preview's filter combines the chosen
+// look (CREATE_WIZARD_FILTERS) with the manual brightness/exposure slider.
+// Photos bake this in at capture time (see takePhoto()'s ctx.filter); video
+// recording does NOT bake it in - MediaRecorder here records straight off
+// createWizard.stream (the raw camera MediaStream), and a CSS filter on the
+// <video> preview element never reaches captureStream()/track data, so for
+// video captures this only affects what the creator sees while framing the
+// shot, not the saved file. See wireWizardCaptureGesture()/beginHoldRecording().
+function wizardLiveFilterCss() {
+  const base = createWizardFilterCss(createWizard.filter);
+  const brightness = "brightness(" + (createWizard.brightness || 100) + "%)";
+  return base ? base + " " + brightness : brightness;
+}
+
 let createWizard = null;
 
 function stopCreateWizardCamera() {
@@ -4664,6 +4712,10 @@ function stopCreateWizardCamera() {
       createWizard.recorder.stop();
     } catch (e) {}
   }
+  // Safety net for task #203's sound-preset mixing graph - normally already
+  // torn down in finalizeWizardVideo()/the discarded-tiny-hold path below,
+  // but this covers any exit (e.g. closing the wizard mid-recording).
+  stopWizardSoundMix();
 }
 
 function closeCreateWizard() {
@@ -4694,6 +4746,15 @@ function openCreateWizard(target) {
     facingMode: "user", flashOn: false, timerMode: 0,
     recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
     overlays: [], gridOn: false, target: resolvedTarget,
+    // Task #202 - live preview/capture exposure, 50-150%, default 100
+    // (no adjustment). Lives on createWizard so it survives multiple shots
+    // within one wizard session, and is reset back to 100 automatically
+    // every time openCreateWizard() rebuilds a fresh createWizard object.
+    brightness: 100,
+    // Task #203 - chosen background-sound preset id (see
+    // WIZARD_SOUND_PRESETS) and whether the mic track is kept alongside it
+    // when mixing into a recorded video. Reset the same way as brightness.
+    soundPreset: "none", soundKeepMic: true,
     // AI auto-clip (task #160): the trim window the creator confirmed, if
     // any - both null means "publish the full video". Set from a
     // POST /api/ai/suggest-clip suggestion in step 3; see wireWizardAiClip().
@@ -4768,6 +4829,13 @@ function updateWizardSideRailEnabled() {
     const el = document.getElementById("wizard-rail-" + a);
     if (el) el.disabled = locked;
   });
+  // Task #203 - the sound preset/mic choice feeds the audio graph built at
+  // the start of a recording (see buildWizardRecordingStream()); changing
+  // it mid-clip wouldn't affect audio already recorded, so lock it out
+  // while a hold-recording is in progress or accumulating to avoid a
+  // misleading "I changed the sound" UI state.
+  const soundPill = document.getElementById("wizard-fs-sound-pill");
+  if (soundPill) soundPill.disabled = locked;
 }
 
 function showWizardRecBadge(show) {
@@ -4795,6 +4863,30 @@ function wizardToggleGrid() {
   if (gridEl) gridEl.classList.toggle("show", createWizard.gridOn);
   const btn = document.getElementById("wizard-rail-grid");
   if (btn) btn.classList.toggle("active", createWizard.gridOn);
+}
+
+// Task #202 - toggles the brightness/exposure slider panel over the live
+// camera preview. The slider itself lives in the step-1 markup (see
+// drawCreateWizard()) and is wired in wireWizardBrightnessPanel() below.
+function wizardToggleBrightnessPanel() {
+  const panel = document.getElementById("wizard-fs-brightness-panel");
+  if (!panel) return;
+  const show = panel.hidden;
+  panel.hidden = !show;
+  const btn = document.getElementById("wizard-rail-lighting");
+  if (btn) btn.classList.toggle("active", show);
+}
+
+function wireWizardBrightnessPanel() {
+  const slider = document.getElementById("wizard-fs-brightness-slider");
+  const valueEl = document.getElementById("wizard-fs-brightness-value");
+  if (!slider) return;
+  slider.addEventListener("input", () => {
+    createWizard.brightness = parseInt(slider.value, 10) || 100;
+    if (valueEl) valueEl.textContent = createWizard.brightness + "%";
+    const video = document.getElementById("wizard-fs-video");
+    if (video) video.style.filter = wizardLiveFilterCss();
+  });
 }
 
 function wizardToggleFlash() {
@@ -4834,6 +4926,218 @@ function wizardToggleFilterStrip() {
   if (strip) strip.hidden = !strip.hidden;
 }
 
+// ---- Task #203: procedurally-generated sound presets (Web Audio API) ----
+// Every preset is built from plain oscillator/gain nodes at call time - no
+// audio files, no samples, no third-party/commercial music of any kind, so
+// there's no licensing/IP exposure. `destGain` is the GainNode the preset's
+// oscillators should feed (either a live speaker preview node, or the
+// GainNode inside the recording mix graph built by buildWizardRecordingStream()
+// below). Returns a stop() function that tears down every node/timer it
+// created; callers are responsible for calling it exactly once when the
+// preset should end.
+function playWizardSoundPreset(audioCtx, presetId, destGain) {
+  if (!presetId || presetId === "none") return () => {};
+  const stopFns = [];
+
+  function makeOsc(type, freq) {
+    const osc = audioCtx.createOscillator();
+    osc.type = type;
+    osc.frequency.value = freq;
+    const g = audioCtx.createGain();
+    g.gain.value = 0.0001;
+    osc.connect(g).connect(destGain);
+    osc.start();
+    stopFns.push(() => {
+      try { osc.stop(); } catch (e) {}
+      try { osc.disconnect(); } catch (e) {}
+      try { g.disconnect(); } catch (e) {}
+    });
+    return { osc, gain: g };
+  }
+
+  function pluckLoop(type, notes, stepMs, peakGain, decayMs) {
+    const { osc, gain } = makeOsc(type, notes[0]);
+    let step = 0;
+    const iv = setInterval(() => {
+      const t = audioCtx.currentTime;
+      const f = notes[step % notes.length];
+      osc.frequency.setValueAtTime(f, t);
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.setValueAtTime(peakGain, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + decayMs / 1000);
+      step++;
+    }, stepMs);
+    stopFns.push(() => clearInterval(iv));
+  }
+
+  if (presetId === "upbeat") {
+    // Bright square-wave arpeggio, quick tempo.
+    pluckLoop("square", [330, 392, 440, 392], 260, 0.22, 0.18);
+  } else if (presetId === "chill") {
+    // Slow sine pad with a gentle volume swell, no percussive beat.
+    const { osc, gain } = makeOsc("sine", 220);
+    const osc2 = audioCtx.createOscillator();
+    osc2.type = "sine";
+    osc2.frequency.value = 330;
+    const g2 = audioCtx.createGain();
+    g2.gain.value = 0.06;
+    osc2.connect(g2).connect(destGain);
+    osc2.start();
+    stopFns.push(() => {
+      try { osc2.stop(); } catch (e) {}
+      try { osc2.disconnect(); } catch (e) {}
+      try { g2.disconnect(); } catch (e) {}
+    });
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.12, audioCtx.currentTime + 1.5);
+    const iv = setInterval(() => {
+      const t = audioCtx.currentTime;
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.setValueAtTime(gain.gain.value, t);
+      gain.gain.linearRampToValueAtTime(0.05, t + 2);
+      gain.gain.linearRampToValueAtTime(0.14, t + 4);
+    }, 4000);
+    stopFns.push(() => clearInterval(iv));
+  } else if (presetId === "dramatic") {
+    // Low sawtooth drone that slowly bends, tension-building.
+    const { osc, gain } = makeOsc("sawtooth", 80);
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 2);
+    const iv = setInterval(() => {
+      osc.frequency.linearRampToValueAtTime(55 + Math.random() * 45, audioCtx.currentTime + 1.4);
+    }, 1500);
+    stopFns.push(() => clearInterval(iv));
+  } else if (presetId === "retro") {
+    // Fast stepped square-wave arpeggio, 8-bit game vibe.
+    pluckLoop("square", [440, 523, 587, 659, 523], 150, 0.16, 0.12);
+  }
+
+  return () => stopFns.forEach((fn) => fn());
+}
+
+// Short (~1.2s) speaker preview of a preset, played through the device's own
+// output rather than mixed into any recording - used by the sound picker so
+// a creator can hear a preset before committing to it.
+function wizardPreviewSoundPreset(presetId) {
+  if (!presetId || presetId === "none") return;
+  const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtxClass) return;
+  try {
+    const ctx = new AudioCtxClass();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.3;
+    gain.connect(ctx.destination);
+    const stop = playWizardSoundPreset(ctx, presetId, gain);
+    setTimeout(() => {
+      stop();
+      ctx.close().catch(() => {});
+    }, 1200);
+  } catch (e) {}
+}
+
+function updateWizardSoundPillLabel() {
+  const pill = document.getElementById("wizard-fs-sound-pill");
+  if (!pill) return;
+  const label = createWizard.soundPreset && createWizard.soundPreset !== "none" ? I18N.t("camera.soundPicker." + createWizard.soundPreset) : I18N.t("create.addSound");
+  pill.innerHTML = "&#9835; " + label;
+}
+
+function wizardOpenSoundPicker() {
+  const existing = document.getElementById("wizard-sound-picker");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const wrap = document.getElementById("wizard-fs-video-wrap");
+  if (!wrap) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-sound-picker";
+  panel.id = "wizard-sound-picker";
+  panel.innerHTML = `
+    <p class="wizard-sound-picker-title">${I18N.t("camera.soundPicker.title")}</p>
+    <div class="wizard-sound-picker-list">
+      ${WIZARD_SOUND_PRESETS.map(
+        (p) => `<button type="button" class="wizard-sound-preset-btn ${createWizard.soundPreset === p ? "active" : ""}" data-preset="${p}">${I18N.t("camera.soundPicker." + p)}</button>`
+      ).join("")}
+    </div>
+    <label class="wizard-sound-mic-toggle">
+      <input type="checkbox" id="wizard-sound-keep-mic" ${createWizard.soundKeepMic ? "checked" : ""} />
+      ${I18N.t("camera.soundPicker.keepMic")}
+    </label>
+    <button type="button" class="wizard-sound-picker-close" id="wizard-sound-picker-close">${I18N.t("common.close")}</button>
+  `;
+  wrap.appendChild(panel);
+  panel.querySelectorAll(".wizard-sound-preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard.soundPreset = btn.dataset.preset;
+      panel.querySelectorAll(".wizard-sound-preset-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === createWizard.soundPreset));
+      updateWizardSoundPillLabel();
+      wizardPreviewSoundPreset(createWizard.soundPreset);
+    });
+  });
+  const micToggle = document.getElementById("wizard-sound-keep-mic");
+  if (micToggle) {
+    micToggle.addEventListener("change", (e) => {
+      createWizard.soundKeepMic = !!e.target.checked;
+    });
+  }
+  const closeBtn = document.getElementById("wizard-sound-picker-close");
+  if (closeBtn) closeBtn.addEventListener("click", () => panel.remove());
+}
+
+// Builds the MediaStream actually handed to `new MediaRecorder(...)` when a
+// hold-recording starts. When no sound preset is selected this is just
+// createWizard.stream unchanged (the mic audio track that was already part
+// of the getUserMedia() stream - see startWizardCameraStream()). When a
+// preset IS selected, it creates an AudioContext, routes the mic (if
+// "keep my voice" is on) and the generated preset both through their own
+// GainNode into one MediaStreamAudioDestinationNode, and returns a new
+// MediaStream combining the camera's video track(s) with that mixed audio
+// track - so the generated sound is genuinely encoded into the saved
+// recording, not just played live for vibe. See beginHoldRecording()/
+// pauseHoldRecording() for how it's paused/resumed/torn down.
+function buildWizardRecordingStream() {
+  const camStream = createWizard.stream;
+  if (!camStream) return camStream;
+  if (!createWizard.soundPreset || createWizard.soundPreset === "none") return camStream;
+  const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtxClass) return camStream;
+  try {
+    const audioCtx = new AudioCtxClass();
+    const dest = audioCtx.createMediaStreamDestination();
+    const micTracks = camStream.getAudioTracks();
+    if (createWizard.soundKeepMic && micTracks.length) {
+      const micSource = audioCtx.createMediaStreamSource(new MediaStream(micTracks));
+      const micGain = audioCtx.createGain();
+      micGain.gain.value = 1;
+      micSource.connect(micGain).connect(dest);
+    }
+    const musicGain = audioCtx.createGain();
+    musicGain.gain.value = 0.35;
+    musicGain.connect(dest);
+    const stopMusic = playWizardSoundPreset(audioCtx, createWizard.soundPreset, musicGain);
+    createWizard._soundAudioCtx = audioCtx;
+    createWizard._soundStopFn = stopMusic;
+    createWizard._soundMusicGain = musicGain;
+    return new MediaStream([...camStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+  } catch (e) {
+    return camStream;
+  }
+}
+
+function stopWizardSoundMix() {
+  if (!createWizard) return;
+  if (createWizard._soundStopFn) {
+    try { createWizard._soundStopFn(); } catch (e) {}
+    createWizard._soundStopFn = null;
+  }
+  if (createWizard._soundAudioCtx) {
+    try { createWizard._soundAudioCtx.close().catch(() => {}); } catch (e) {}
+    createWizard._soundAudioCtx = null;
+  }
+  createWizard._soundMusicGain = null;
+}
+
 // Right-hand options rail: layout inspired by mainstream camera apps but
 // built from our own generic Unicode glyphs (not copied icon assets).
 // Tier 1 items show by default; tier 2 items reveal via the "more" toggle,
@@ -4853,11 +5157,21 @@ const CREATE_WIZARD_RAIL_ITEMS = [
   { action: "flash", tier: 2, icon: "&#9889;" },
 ];
 
+// Task #202 - the "lighting" rail item (already present as an unwired
+// tier-2 placeholder) is repurposed as the brightness/exposure toggle
+// rather than adding a brand-new rail button, so it inherits the exact
+// same rail styling/placement/tap-to-reveal-label behavior as every other
+// item (grid, flip, timer, ...) for free. Its label/tooltip uses the
+// dedicated camera.brightnessToggle i18n key instead of the generic
+// create.rail_lighting one.
+const WIZARD_RAIL_LABEL_KEY_OVERRIDE = { lighting: "camera.brightnessToggle" };
+
 function wizardRailItemsHtml() {
   const items = CREATE_WIZARD_RAIL_ITEMS.map((it) => {
     const hiddenStyle = it.action === "flash" ? ' style="display:none;"' : "";
-    return `<button class="wizard-fs-rail-item" data-tier="${it.tier}" data-action="${it.action}" id="wizard-rail-${it.action}"${hiddenStyle}>
-      <span class="rail-label">${I18N.t("create.rail_" + it.action)}</span>
+    const labelKey = WIZARD_RAIL_LABEL_KEY_OVERRIDE[it.action] || ("create.rail_" + it.action);
+    return `<button class="wizard-fs-rail-item" data-tier="${it.tier}" data-action="${it.action}" id="wizard-rail-${it.action}" title="${I18N.t(labelKey)}"${hiddenStyle}>
+      <span class="rail-label">${I18N.t(labelKey)}</span>
       <span class="rail-icon">${it.icon}</span>
     </button>`;
   }).join("");
@@ -4885,6 +5199,7 @@ function wireWizardRail() {
       else if (action === "flip") wizardFlipCamera();
       else if (action === "timer") wizardCycleTimer();
       else if (action === "flash") wizardToggleFlash();
+      else if (action === "lighting") wizardToggleBrightnessPanel();
       else if (action === "effects" || action === "filters") wizardToggleFilterStrip();
       else if (action === "duration") wizardShowToast(I18N.t("create.durationHint"));
       else wizardShowToast(I18N.t("create.comingSoon"));
@@ -4964,6 +5279,10 @@ function finalizeWizardRecording() {
 }
 
 function finalizeWizardVideo() {
+  // Task #203 - tear down the sound-preset audio graph (if any) now that
+  // MediaRecorder has flushed its last chunk; leaving the AudioContext/
+  // oscillators running past this point would just waste battery/CPU.
+  stopWizardSoundMix();
   const blob = new Blob(createWizard.chunks, { type: "video/webm" });
   createWizard.durationSeconds = createWizard.recordAccumMs / 1000;
   const reader = new FileReader();
@@ -4985,8 +5304,15 @@ function wireWizardCaptureGesture() {
   const beginHoldRecording = () => {
     if (!createWizard.stream) return;
     if (!createWizard.recorder) {
+      // Task #203 - if a sound preset is selected, this returns a MediaStream
+      // whose audio track is the generated preset (optionally mixed with
+      // the mic) instead of the camera's raw audio track, so the recorded
+      // file actually carries the sound - not just the live preview. With
+      // no preset selected it's createWizard.stream unchanged (identical to
+      // pre-#203 behavior).
+      const recordingStream = buildWizardRecordingStream();
       try {
-        createWizard.recorder = new MediaRecorder(createWizard.stream);
+        createWizard.recorder = new MediaRecorder(recordingStream);
       } catch (e) {
         alert(I18N.t("create.cameraUnavailable"));
         return;
@@ -4999,6 +5325,9 @@ function wireWizardCaptureGesture() {
       createWizard.recorder.start(250);
     } else if (createWizard.recorder.state === "paused") {
       createWizard.recorder.resume();
+      // Resuming a multi-clip hold - bring the sound preset's volume back
+      // up from the 0 it was set to when the previous segment paused.
+      if (createWizard._soundMusicGain) createWizard._soundMusicGain.gain.value = 0.35;
     }
     createWizard.recording = true;
     createWizard.segmentStartTs = Date.now();
@@ -5016,6 +5345,10 @@ function wireWizardCaptureGesture() {
     if (createWizard.recorder && createWizard.recorder.state === "recording") {
       createWizard.recorder.pause();
     }
+    // Task #203 - mute (not tear down) the sound preset between hold
+    // segments of the same multi-clip recording; it's brought back up in
+    // beginHoldRecording()'s resume branch above.
+    if (createWizard._soundMusicGain) createWizard._soundMusicGain.gain.value = 0;
     btn.classList.remove("recording");
     showWizardRecBadge(false);
     stopWizardRing();
@@ -5031,6 +5364,10 @@ function wireWizardCaptureGesture() {
         createWizard.recorder.onstop = null;
         createWizard.recorder.stop();
       }
+      // Task #203 - onstop is nulled out above so finalizeWizardVideo() (and
+      // its stopWizardSoundMix() call) never runs for this discarded clip;
+      // tear the sound graph down explicitly instead.
+      stopWizardSoundMix();
       createWizard.recorder = null;
       createWizard.chunks = [];
       createWizard.recordAccumMs = 0;
@@ -5057,6 +5394,13 @@ function wireWizardCaptureGesture() {
       ctx.translate(canvas.width, 0);
       ctx.scale(-1, 1);
     }
+    // Task #202 - bake the manual exposure/brightness adjustment into the
+    // still right away (canvas 2D .filter works the same as CSS filter).
+    // The style filter (CREATE_WIZARD_FILTERS) stays un-baked here and is
+    // applied later at publish time via bakeImageFilter() instead, same as
+    // before this task - brightness is captured immediately since, unlike
+    // the style filter, there's no later step where it can be re-chosen.
+    ctx.filter = "brightness(" + (createWizard.brightness || 100) + "%)";
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     createWizard.rawDataUrl = canvas.toDataURL("image/jpeg", 0.92);
     createWizard.mediaType = "image";
@@ -5150,24 +5494,65 @@ function wizardHandleMediaFile(file) {
   probe.src = objectUrl;
 }
 
+// Task #204 - cycles an overlay's size through WIZARD_OVERLAY_SIZE_STEPS
+// (sm -> md -> lg -> sm...), used by the small resize button rendered on
+// each overlay in the editor (see renderWizardOverlays() below).
+function wizardCycleOverlaySize(ov) {
+  const idx = WIZARD_OVERLAY_SIZE_STEPS.indexOf(ov.size || "md");
+  ov.size = WIZARD_OVERLAY_SIZE_STEPS[(idx + 1) % WIZARD_OVERLAY_SIZE_STEPS.length];
+}
+
 function renderWizardOverlays(interactive) {
   const wrap = document.getElementById("wizard-preview-wrap");
   if (!wrap) return;
   wrap.querySelectorAll(".wizard-overlay-item").forEach((el) => el.remove());
   createWizard.overlays.forEach((ov) => {
     const el = document.createElement("div");
-    el.className = "wizard-overlay-item " + ov.type;
+    el.className = "wizard-overlay-item " + ov.type + " size-" + (ov.size || "md");
     el.style.left = ov.xPct + "%";
     el.style.top = ov.yPct + "%";
-    el.textContent = ov.value;
-    if (ov.type === "text") el.style.color = ov.color;
-    if (interactive) wireWizardOverlayDrag(el, wrap, ov);
+    const contentSpan = document.createElement("span");
+    contentSpan.className = "wizard-overlay-content";
+    contentSpan.textContent = ov.value;
+    if (ov.type === "text") contentSpan.style.color = ov.color;
+    el.appendChild(contentSpan);
+    if (interactive) {
+      // Small always-visible resize-cycle and remove (×) controls on every
+      // overlay, per task #204 - both stop propagation so tapping them
+      // doesn't also start a drag (see wireWizardOverlayDrag() below).
+      const resizeBtn = document.createElement("button");
+      resizeBtn.type = "button";
+      resizeBtn.className = "wizard-overlay-resize";
+      resizeBtn.title = I18N.t("create.overlayResize");
+      resizeBtn.textContent = (ov.size || "md").toUpperCase();
+      resizeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        wizardCycleOverlaySize(ov);
+        renderWizardOverlays(true);
+      });
+      el.appendChild(resizeBtn);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "wizard-overlay-remove";
+      removeBtn.title = I18N.t("create.removeOverlay");
+      removeBtn.innerHTML = "&times;";
+      removeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        createWizard.overlays = createWizard.overlays.filter((o) => o.id !== ov.id);
+        renderWizardOverlays(true);
+      });
+      el.appendChild(removeBtn);
+
+      wireWizardOverlayDrag(el, wrap, ov);
+    }
     wrap.appendChild(el);
   });
 }
 
 function wireWizardOverlayDrag(el, wrap, ov) {
   el.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".wizard-overlay-resize") || e.target.closest(".wizard-overlay-remove")) return;
     e.preventDefault();
     el.classList.add("dragging");
     try { el.setPointerCapture(e.pointerId); } catch (err) {}
@@ -5207,10 +5592,67 @@ function drawWizardStickerPicker() {
   toolbar.insertAdjacentElement("afterend", picker);
   picker.querySelectorAll("button").forEach((btn) => {
     btn.addEventListener("click", () => {
-      createWizard.overlays.push({ id: "s" + Date.now(), type: "sticker", value: btn.dataset.emoji, xPct: 50, yPct: 50 });
+      createWizard.overlays.push({ id: "s" + Date.now(), type: "sticker", value: btn.dataset.emoji, size: "md", xPct: 50, yPct: 50 });
       renderWizardOverlays(true);
       picker.remove();
     });
+  });
+}
+
+// Task #204 - replaces the old bare prompt() text-add flow with a small
+// composer offering a size toggle (sm/md/lg, shared with stickers - see
+// WIZARD_OVERLAY_SIZE_STEPS) and 6 preset colors (WIZARD_TEXT_COLORS,
+// white/black first for guaranteed contrast against any background). No
+// font-family picker - out of scope per task #204's MVP note.
+function drawWizardTextComposer() {
+  const existing = document.getElementById("wizard-text-composer");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const toolbar = document.querySelector(".wizard-edit-toolbar");
+  if (!toolbar) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-text-composer";
+  panel.id = "wizard-text-composer";
+  panel.innerHTML = `
+    <textarea id="wizard-text-input" maxlength="60" rows="2" placeholder="${I18N.t("create.addTextPrompt")}"></textarea>
+    <div class="wizard-text-size-row">
+      ${WIZARD_OVERLAY_SIZE_STEPS.map((s) => `<button type="button" class="wizard-text-size-btn ${s === "md" ? "active" : ""}" data-size="${s}">${I18N.t("create.textSize_" + s)}</button>`).join("")}
+    </div>
+    <div class="wizard-text-color-row">
+      ${WIZARD_TEXT_COLORS.map(
+        (c, i) => `<button type="button" class="wizard-text-color-swatch ${i === 0 ? "active" : ""}" data-color="${c}" style="background:${c};" aria-label="${c}"></button>`
+      ).join("")}
+    </div>
+    <div class="action-row">
+      <button type="button" class="btn btn-secondary" id="wizard-text-cancel">${I18N.t("common.cancel")}</button>
+      <button type="button" class="btn btn-primary" id="wizard-text-confirm">${I18N.t("create.addText")}</button>
+    </div>
+  `;
+  toolbar.insertAdjacentElement("afterend", panel);
+
+  let chosenSize = "md";
+  let chosenColor = WIZARD_TEXT_COLORS[0];
+  panel.querySelectorAll(".wizard-text-size-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      chosenSize = btn.dataset.size;
+      panel.querySelectorAll(".wizard-text-size-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    });
+  });
+  panel.querySelectorAll(".wizard-text-color-swatch").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      chosenColor = btn.dataset.color;
+      panel.querySelectorAll(".wizard-text-color-swatch").forEach((b) => b.classList.toggle("active", b === btn));
+    });
+  });
+  document.getElementById("wizard-text-cancel").addEventListener("click", () => panel.remove());
+  document.getElementById("wizard-text-confirm").addEventListener("click", () => {
+    const val = document.getElementById("wizard-text-input").value.trim();
+    panel.remove();
+    if (!val) return;
+    createWizard.overlays.push({ id: "t" + Date.now(), type: "text", value: val.slice(0, 60), color: chosenColor, size: chosenSize, xPct: 50, yPct: 35 });
+    renderWizardOverlays(true);
   });
 }
 
@@ -5223,17 +5665,24 @@ function drawCreateWizard() {
     const ringC = 2 * Math.PI * 30;
     overlay.innerHTML = `
       <div class="wizard-fs-video-wrap ${createWizard.facingMode === "user" ? "mirrored" : ""}" id="wizard-fs-video-wrap">
-        <video id="wizard-fs-video" autoplay playsinline muted style="filter:${createWizardFilterCss(createWizard.filter)};"></video>
+        <video id="wizard-fs-video" autoplay playsinline muted style="filter:${wizardLiveFilterCss()};"></video>
         <div class="wizard-fs-fallback" id="wizard-fs-fallback" style="display:none;">
           <p>${I18N.t("create.cameraUnavailable")}</p>
         </div>
         <div class="wizard-fs-grid ${createWizard.gridOn ? "show" : ""}" id="wizard-fs-grid" aria-hidden="true"></div>
         <div class="wizard-fs-topbar">
           <button class="wizard-fs-icon-btn" id="wizard-fs-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
-          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${I18N.t("create.addSound")}</button>
+          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${
+            createWizard.soundPreset && createWizard.soundPreset !== "none" ? I18N.t("camera.soundPicker." + createWizard.soundPreset) : I18N.t("create.addSound")
+          }</button>
           <button class="wizard-fs-icon-btn" id="wizard-fs-effects-btn" title="${I18N.t("create.rail_effects")}">&#10024;</button>
         </div>
         <div class="wizard-fs-rec-badge" id="wizard-fs-rec-badge" style="display:none;"><span class="wizard-fs-rec-dot"></span><span id="wizard-fs-rec-time">0:00</span></div>
+        <div class="wizard-fs-brightness-panel" id="wizard-fs-brightness-panel" hidden>
+          <span class="wizard-fs-brightness-icon" aria-hidden="true">&#9788;</span>
+          <input type="range" id="wizard-fs-brightness-slider" min="50" max="150" step="5" value="${createWizard.brightness}" aria-label="${I18N.t("camera.brightnessToggle")}" />
+          <span class="wizard-fs-brightness-value" id="wizard-fs-brightness-value">${createWizard.brightness}%</span>
+        </div>
         <div class="wizard-fs-rail" id="wizard-fs-rail">${wizardRailItemsHtml()}</div>
       </div>
       <div class="wizard-fs-bottom">
@@ -5265,12 +5714,12 @@ function drawCreateWizard() {
         createWizard.filter = btn.dataset.filter;
         document.querySelectorAll(".wizard-fs-filter-item").forEach((b) => b.classList.toggle("active", b.dataset.filter === createWizard.filter));
         const v = document.getElementById("wizard-fs-video");
-        if (v) v.style.filter = createWizardFilterCss(createWizard.filter);
+        if (v) v.style.filter = wizardLiveFilterCss();
       });
     });
 
     document.getElementById("wizard-fs-close").addEventListener("click", () => closeOverlayViaBack(closeCreateWizard));
-    document.getElementById("wizard-fs-sound-pill").addEventListener("click", () => wizardShowToast(I18N.t("create.comingSoon")));
+    document.getElementById("wizard-fs-sound-pill").addEventListener("click", wizardOpenSoundPicker);
     document.getElementById("wizard-fs-effects-btn").addEventListener("click", wizardToggleFilterStrip);
     document.getElementById("wizard-fs-gallery-btn").addEventListener("click", () => document.getElementById("wizard-file-media").click());
     document.getElementById("wizard-file-media").addEventListener("change", (e) => wizardHandleMediaFile(e.target.files[0]));
@@ -5278,6 +5727,7 @@ function drawCreateWizard() {
       if (createWizard.recordAccumMs > 0) finalizeWizardRecording();
     });
     wireWizardRail();
+    wireWizardBrightnessPanel();
     wireWizardCaptureGesture();
     return;
   }
@@ -5318,12 +5768,7 @@ function drawCreateWizard() {
       if (img) img.style.filter = createWizardFilterCss(createWizard.filter);
       else if (vid) vid.style.filter = createWizardFilterCss(createWizard.filter);
     });
-    document.getElementById("wizard-add-text-btn").addEventListener("click", () => {
-      const val = prompt(I18N.t("create.addTextPrompt"));
-      if (!val) return;
-      createWizard.overlays.push({ id: "t" + Date.now(), type: "text", value: val.slice(0, 60), color: "#FFD84D", xPct: 50, yPct: 35 });
-      renderWizardOverlays(true);
-    });
+    document.getElementById("wizard-add-text-btn").addEventListener("click", drawWizardTextComposer);
     document.getElementById("wizard-add-sticker-btn").addEventListener("click", drawWizardStickerPicker);
     document.getElementById("wizard-back").addEventListener("click", () => {
       createWizard.step = 1;
@@ -5573,6 +6018,10 @@ function drawCreateWizard() {
             // "publish the full video"; see POST /api/moments in server.js.
             trimStartSec: createWizard.clipStartSec,
             trimEndSec: createWizard.clipEndSec,
+            // Task #204 - only videos send overlay metadata; photo overlays
+            // are already baked into `finalMedia`'s pixels above and would
+            // just be drawn twice if sent again here.
+            overlays: createWizard.mediaType === "video" ? createWizard.overlays : undefined,
           },
         });
       }
@@ -5687,6 +6136,9 @@ function drawCreateWizard() {
             // "publish the full video"; see POST /api/moments in server.js.
             trimStartSec: createWizard.clipStartSec,
             trimEndSec: createWizard.clipEndSec,
+            // Task #204 - long-form Videos-hub uploads are always video, so
+            // overlay metadata (if any) always goes along.
+            overlays: createWizard.overlays,
           },
         });
         msgEl.textContent = I18N.t("videos.posted");
@@ -5914,10 +6366,14 @@ function bakeWizardOverlays(dataUrl, overlays) {
       overlays.forEach((ov) => {
         const x = (ov.xPct / 100) * canvas.width;
         const y = (ov.yPct / 100) * canvas.height;
+        // Task #204 - the sm/md/lg size picked in the editor scales the same
+        // base font sizes used here (WIZARD_OVERLAY_SIZE_SCALE), so what got
+        // dragged into place is what ends up baked into the JPEG.
+        const scale = WIZARD_OVERLAY_SIZE_SCALE[ov.size] || 1;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         if (ov.type === "text") {
-          const fontSize = Math.round(canvas.width * 0.06);
+          const fontSize = Math.round(canvas.width * 0.06 * scale);
           ctx.font = `800 ${fontSize}px sans-serif`;
           ctx.fillStyle = ov.color || "#FFD84D";
           ctx.shadowColor = "rgba(0,0,0,0.5)";
@@ -5925,7 +6381,7 @@ function bakeWizardOverlays(dataUrl, overlays) {
           ctx.fillText(ov.value, x, y);
           ctx.shadowBlur = 0;
         } else {
-          const fontSize = Math.round(canvas.width * 0.12);
+          const fontSize = Math.round(canvas.width * 0.12 * scale);
           ctx.font = `${fontSize}px sans-serif`;
           ctx.fillText(ov.value, x, y);
         }

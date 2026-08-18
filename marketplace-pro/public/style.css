@@ -423,6 +423,40 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .wizard-fs-grid.show { opacity: 1; }
 
+/* Task #202 - brightness/exposure slider panel, toggled from the "lighting"
+   rail item. Sits low over the preview so it doesn't collide with the
+   top-bar/rail, matching the dark rgba pill styling used elsewhere in this
+   overlay (wizard-fs-sound-pill, wizard-fs-toast, ...). */
+.wizard-fs-brightness-panel {
+  position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; z-index: 3;
+  background: rgba(0,0,0,0.55); border-radius: 999px; padding: 8px 16px;
+  width: min(78%, 320px);
+}
+.wizard-fs-brightness-panel[hidden] { display: none; }
+.wizard-fs-brightness-icon { color: #fff; font-size: 14px; flex: 0 0 auto; }
+.wizard-fs-brightness-panel input[type="range"] { flex: 1; accent-color: var(--gold); }
+.wizard-fs-brightness-value { color: #fff; font-size: 12px; font-weight: 700; flex: 0 0 auto; min-width: 34px; text-align: right; }
+
+/* Task #203 - sound preset picker panel, opened from the "Add sound" pill. */
+.wizard-sound-picker {
+  position: absolute; left: 50%; top: 56px; transform: translateX(-50%);
+  z-index: 4; background: rgba(20,20,20,0.9); border-radius: 16px; padding: 14px;
+  width: min(86%, 340px); display: flex; flex-direction: column; gap: 10px;
+}
+.wizard-sound-picker-title { color: #fff; font-size: 13px; font-weight: 700; margin: 0; text-align: center; }
+.wizard-sound-picker-list { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.wizard-sound-preset-btn {
+  border: 1px solid rgba(255,255,255,0.3); background: rgba(255,255,255,0.08); color: #fff;
+  border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.wizard-sound-preset-btn.active { background: var(--gold); border-color: var(--gold); color: #2b1810; }
+.wizard-sound-mic-toggle { display: flex; align-items: center; gap: 8px; color: #fff; font-size: 12px; justify-content: center; }
+.wizard-sound-picker-close {
+  align-self: center; border: none; background: none; color: rgba(255,255,255,0.75);
+  font-size: 12px; text-decoration: underline; cursor: pointer; padding: 2px;
+}
+
 /* Right-side labeled options rail, full-screen vertical-video-app layout with our own icon glyphs */
 .wizard-fs-rail {
   position: absolute; top: 70px; right: 6px; width: 62px; max-height: calc(100% - 230px);
@@ -601,11 +635,57 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   position: absolute; cursor: grab; user-select: none; touch-action: none;
   padding: 4px 8px; white-space: nowrap; transform: translate(-50%, -50%);
 }
-.wizard-overlay-item.text { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); border-radius: 6px; }
-.wizard-overlay-item.sticker { font-size: 36px; }
+.wizard-overlay-item.text .wizard-overlay-content { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+.wizard-overlay-item.sticker .wizard-overlay-content { font-size: 36px; }
+/* Task #204 - three-step size scale (higher specificity than the base
+   .text/.sticker rules above so sm/lg reliably override the md default). */
+.wizard-overlay-item.text.size-sm .wizard-overlay-content { font-size: 14px; }
+.wizard-overlay-item.text.size-lg .wizard-overlay-content { font-size: 30px; }
+.wizard-overlay-item.sticker.size-sm .wizard-overlay-content { font-size: 24px; }
+.wizard-overlay-item.sticker.size-lg .wizard-overlay-content { font-size: 52px; }
 .wizard-overlay-item.dragging { cursor: grabbing; outline: 1px dashed var(--gold); }
+.wizard-overlay-resize, .wizard-overlay-remove {
+  position: absolute; top: -10px; width: 20px; height: 20px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,0.75); color: #fff; font-weight: 700; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0;
+}
+.wizard-overlay-resize { right: 18px; font-size: 9px; }
+.wizard-overlay-remove { right: -8px; font-size: 13px; }
 .wizard-sticker-picker { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; padding: 8px 0; }
 .wizard-sticker-picker button { font-size: 24px; background: none; border: none; cursor: pointer; padding: 4px; }
+
+/* Task #204 - the "add text" composer panel (size toggle + color swatches),
+   replaces the old bare prompt() flow. */
+.wizard-text-composer {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); margin-bottom: 10px;
+}
+.wizard-text-composer textarea { width: 100%; resize: none; font-family: inherit; }
+.wizard-text-size-row, .wizard-text-color-row { display: flex; gap: 8px; justify-content: center; }
+.wizard-text-size-btn {
+  border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary);
+  border-radius: 8px; width: 34px; height: 30px; font-weight: 700; cursor: pointer;
+}
+.wizard-text-size-btn.active { border-color: var(--gold); color: var(--gold); }
+.wizard-text-color-swatch {
+  width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--border-color); cursor: pointer; padding: 0;
+}
+.wizard-text-color-swatch.active { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold); }
+
+/* Task #204 - static (non-interactive) rendering of text/sticker overlay
+   metadata on top of a <video> wherever a Moment/Video with saved overlays
+   is played back (feed cards, moment viewer, video watch page, Shorts/Clips
+   swipe player). Photos never use this - their overlays are already baked
+   into the JPEG pixels before upload. */
+.media-overlay-layer { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.media-overlay-item { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; }
+.media-overlay-item.text { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+.media-overlay-item.sticker { font-size: 36px; }
+.media-overlay-item.text.size-sm { font-size: 14px; }
+.media-overlay-item.text.size-lg { font-size: 30px; }
+.media-overlay-item.sticker.size-sm { font-size: 24px; }
+.media-overlay-item.sticker.size-lg { font-size: 52px; }
+.video-watch-player-wrap { position: relative; }
 @media (max-width: 640px) {
   /* Primary nav moves to the bottom of the screen on phones, same place
      Instagram/TikTok/Facebook put it - reachable with a thumb without
