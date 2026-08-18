@@ -249,6 +249,12 @@ function setAuth(token, user) {
   applyUserTheme(state.user);
   updateNavUI();
   pollUnread();
+  // Task #234 - the chat WebSocket is app-wide (live typing/presence/message
+  // delivery need to work even when #/messages isn't the open route), so it
+  // opens/closes on login/logout rather than only when a thread is open.
+  // See connectChatSocket()/disconnectChatSocket() further down.
+  if (token) connectChatSocket();
+  else disconnectChatSocket();
 }
 
 async function refreshMe() {
@@ -7387,16 +7393,254 @@ function openEditProfileModal(profile) {
   });
 }
 
-// ---------------- Messages ----------------
+// ---------------- Realtime chat (WebSocket client) - task #234 ----------------
+// Talks to the wire contract documented in server.js's "realtime chat
+// (WebSocket)" section (task #233) - read that doc-comment block first if
+// touching anything below. The socket is opened app-wide on login (see
+// setAuth() and the bottom "Init" section) and kept alive across page
+// navigation, not just while #/messages is open, so presence/typing/live
+// delivery and the unread badge all work from anywhere in the app.
+//
+// Progressive enhancement: the REST endpoints (GET /api/conversations,
+// GET /api/conversations/:id) remain the single source of truth and are
+// always used for the initial load of any view. The poll loop started in
+// renderMessages() below only actually performs a fetch while
+// chatSocketConnected is false - i.e. it's a fallback for when the socket
+// never connects at all (old browser, blocked WS, flaky network), not a
+// second parallel update path once the socket is live.
+
+let chatSocket = null;
+let chatSocketConnected = false; // true once THIS socket's "connected" frame arrived
+let chatReconnectAttempts = 0;
+let chatReconnectTimer = null;
+const CHAT_RECONNECT_BASE_MS = 1000;
+const CHAT_RECONNECT_MAX_MS = 30000;
+
+const chatState = {
+  activeOtherId: null, // otherUserId of the open thread, or null
+  otherUser: null, // { id, name, photo } of the open thread's other participant
+  messages: [], // open thread's messages, oldest -> newest, id-keyed source of truth
+  convos: [], // last loaded conversation list (cache, not authoritative)
+  presence: {}, // userId -> { online, lastSeenAt }
+  typingTimer: null, // clears the "typing..." indicator if typing:stop never arrives
+  replyTarget: null, // message object currently staged as a reply quote, or null
+  myTypingActive: false,
+  myTypingIdleTimer: null,
+  pendingAttachment: null, // { dataUrl, kind: "image"|"video" } staged before sending
+};
+
+function chatWsUrl() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return proto + "//" + location.host + "/ws?token=" + encodeURIComponent(state.token);
+}
+
+function connectChatSocket() {
+  if (!state.token) return;
+  if (chatSocket && (chatSocket.readyState === WebSocket.OPEN || chatSocket.readyState === WebSocket.CONNECTING)) return;
+  if (chatReconnectTimer) { clearTimeout(chatReconnectTimer); chatReconnectTimer = null; }
+  let ws;
+  try {
+    ws = new WebSocket(chatWsUrl());
+  } catch (e) {
+    scheduleChatReconnect();
+    return;
+  }
+  chatSocket = ws;
+  ws.addEventListener("message", (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    handleChatSocketMessage(msg);
+  });
+  ws.addEventListener("close", () => {
+    chatSocketConnected = false;
+    if (chatSocket === ws) chatSocket = null;
+    if (state.token) scheduleChatReconnect();
+  });
+  ws.addEventListener("error", () => {
+    // The browser always follows "error" with "close" for WebSocket, which
+    // does the actual reconnect scheduling above - nothing extra needed here.
+  });
+}
+
+function scheduleChatReconnect() {
+  if (chatReconnectTimer || !state.token) return;
+  // Exponential backoff (1s, 2s, 4s, ... capped at 30s) so a dropped
+  // connection (mobile network blip, backgrounding) doesn't hammer the
+  // server, but chat quietly comes back on its own without the user having
+  // to refresh the page.
+  const delay = Math.min(CHAT_RECONNECT_BASE_MS * Math.pow(2, chatReconnectAttempts), CHAT_RECONNECT_MAX_MS);
+  chatReconnectAttempts++;
+  chatReconnectTimer = setTimeout(() => {
+    chatReconnectTimer = null;
+    connectChatSocket();
+  }, delay);
+}
+
+function disconnectChatSocket() {
+  if (chatReconnectTimer) { clearTimeout(chatReconnectTimer); chatReconnectTimer = null; }
+  chatReconnectAttempts = 0;
+  chatSocketConnected = false;
+  if (chatSocket) {
+    // The "close" listener registered in connectChatSocket() will still
+    // fire after this - harmless, since it only schedules a reconnect when
+    // state.token is set, and setAuth(null, null) always clears the token
+    // before calling this on logout.
+    try { chatSocket.close(); } catch (e) {}
+    chatSocket = null;
+  }
+}
+
+function wsSendChat(obj) {
+  if (chatSocket && chatSocket.readyState === WebSocket.OPEN) {
+    try { chatSocket.send(JSON.stringify(obj)); } catch (e) {}
+  }
+}
+
+function handleChatSocketMessage(msg) {
+  if (!msg || typeof msg.type !== "string") return;
+  if (msg.type === "connected") {
+    chatSocketConnected = true;
+    chatReconnectAttempts = 0;
+    return;
+  }
+  if (msg.type === "message:new") return onChatMessageNew(msg.message);
+  if (msg.type === "message:read") return onChatMessageRead(msg);
+  if (msg.type === "reaction:added" || msg.type === "reaction:removed") return onChatReactionChanged(msg);
+  if (msg.type === "message:deleted") return onChatMessageDeleted(msg);
+  if (msg.type === "presence:update" || msg.type === "presence:result") return onChatPresenceUpdate(msg);
+  if (msg.type === "typing") return onChatTyping(msg);
+  // Unknown types (pong, auth:error, ...) are ignored client-side too - same
+  // forward-compatible convention as the server's envelope contract.
+}
+
+function isMessagesRouteOpen() {
+  return !!document.getElementById("convo-list");
+}
+
+function onChatMessageNew(message) {
+  if (!state.user) return;
+  const myId = state.user.id;
+  const otherId = message.fromUserId === myId ? message.toUserId : message.fromUserId;
+  pollUnread();
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+  if (chatState.activeOtherId && otherId === chatState.activeOtherId) {
+    // Re-fetch the thread from the server (rather than just appending the
+    // pushed message locally) so read-receipts flip correctly - per
+    // server.js's documented contract, `read` only flips via a GET
+    // /api/conversations/:id call, which this triggers.
+    loadChatThread(otherId, { keepSkeleton: true });
+  }
+}
+
+function onChatMessageRead(msg) {
+  if (msg.conversationWith !== chatState.activeOtherId) return;
+  let changed = false;
+  chatState.messages.forEach((m) => {
+    if (msg.messageIds.includes(m.id)) { m.read = true; changed = true; }
+  });
+  if (changed) renderThreadMessages([]);
+}
+
+function onChatReactionChanged(msg) {
+  const m = chatState.messages.find((x) => x.id === msg.messageId);
+  if (m) {
+    m.reactions = msg.reactions;
+    renderThreadMessages([]);
+  }
+}
+
+function onChatMessageDeleted(msg) {
+  if (msg.mode === "forEveryone") {
+    const m = chatState.messages.find((x) => x.id === msg.messageId);
+    if (m) {
+      m.deleted = true;
+      m.text = "";
+      m.attachmentUrl = null;
+      m.attachmentType = null;
+      m.reactions = {};
+      renderThreadMessages([]);
+    }
+  } else if (msg.mode === "forMe") {
+    // Only echoed to the caller's OWN other tabs/sessions (see server.js) -
+    // safe to always apply since it can only ever be about our own view.
+    const idx = chatState.messages.findIndex((x) => x.id === msg.messageId);
+    if (idx !== -1) {
+      chatState.messages.splice(idx, 1);
+      renderThreadMessages([]);
+    }
+  }
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+  pollUnread();
+}
+
+function onChatPresenceUpdate(msg) {
+  chatState.presence[msg.userId] = { online: msg.online, lastSeenAt: msg.lastSeenAt };
+  updatePresenceDom(msg.userId);
+}
+
+function onChatTyping(msg) {
+  if (msg.from !== chatState.activeOtherId) return;
+  const row = document.getElementById("chat-typing-row");
+  if (!row) return;
+  clearTimeout(chatState.typingTimer);
+  if (msg.state === "start") {
+    row.style.display = "";
+    // Safety timeout in case a typing:stop frame is lost (dropped
+    // connection mid-type) - the indicator doesn't stick around forever.
+    chatState.typingTimer = setTimeout(() => { row.style.display = "none"; }, 6000);
+    const container = document.getElementById("chat-messages");
+    if (container && container.scrollHeight - container.scrollTop - container.clientHeight < 150) {
+      container.scrollTop = container.scrollHeight;
+    }
+  } else {
+    row.style.display = "none";
+  }
+}
+
+async function fetchPresenceOnce(userId) {
+  try {
+    const p = await api("/api/users/" + userId + "/presence", { auth: true });
+    chatState.presence[userId] = p;
+    updatePresenceDom(userId);
+  } catch (e) {}
+}
+
+function updatePresenceDom(userId) {
+  const p = chatState.presence[userId];
+  if (!p) return;
+  document.querySelectorAll('[data-presence-dot-for="' + userId + '"]').forEach((el) => {
+    el.classList.toggle("online", !!p.online);
+  });
+  if (chatState.activeOtherId === userId) {
+    const sub = document.getElementById("chat-thread-presence");
+    if (sub) sub.innerHTML = presenceLineHtml(p);
+    renderThreadMessages([]); // read-receipt "delivered" state depends on the other user's online-ness
+  }
+}
+
+function presenceLineHtml(p) {
+  if (!p) return I18N.t("messages.offline");
+  if (p.online) return `<span class="presence-dot online inline"></span>${I18N.t("messages.online")}`;
+  if (p.lastSeenAt) return escapeHtml(I18N.t("messages.lastSeenPrefix") + " " + timeAgoStr(p.lastSeenAt));
+  return I18N.t("messages.offline");
+}
+
+// ---------------- Messages (conversation list + thread view) ----------------
 
 let convoPollTimer = null;
+let presenceRefreshTimer = null;
 
 async function renderMessages(otherUserId) {
   if (!state.token) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
     return;
   }
-  if (convoPollTimer) clearInterval(convoPollTimer);
+  if (convoPollTimer) { clearInterval(convoPollTimer); convoPollTimer = null; }
+  if (presenceRefreshTimer) { clearInterval(presenceRefreshTimer); presenceRefreshTimer = null; }
+  chatState.activeOtherId = otherUserId || null;
+  chatState.messages = [];
+  chatState.replyTarget = null;
+  chatState.pendingAttachment = null;
 
   viewEl.innerHTML = `
     <h2 class="section-heading">${I18N.t("messages.inbox")}</h2>
@@ -7406,79 +7650,786 @@ async function renderMessages(otherUserId) {
     </div>
   `;
 
-  await loadConvoList(otherUserId);
-  if (otherUserId) await loadChat(otherUserId);
+  connectChatSocket(); // no-op if already open/connecting
 
+  await loadConvoList(otherUserId);
+  if (otherUserId) await loadChatThread(otherUserId);
+
+  // REST fallback poll - only actually fetches while the socket hasn't
+  // connected (see the doc-comment at the top of this section).
   convoPollTimer = setInterval(async () => {
-    await loadConvoList(otherUserId);
-    if (otherUserId) await loadChat(otherUserId, true);
+    if (chatSocketConnected) return;
+    await loadConvoList(chatState.activeOtherId);
+    if (chatState.activeOtherId) await loadChatThread(chatState.activeOtherId, { keepSkeleton: true });
   }, 4000);
+
+  if (otherUserId) {
+    presenceRefreshTimer = setInterval(() => {
+      if (chatState.activeOtherId) fetchPresenceOnce(chatState.activeOtherId);
+    }, 30000);
+  }
+}
+
+function convoPreviewText(c) {
+  if (c.lastMessageDeleted) return I18N.t("messages.deletedTombstone");
+  if (c.lastMessageAttachmentType === "audio") return "\u{1F3A4} " + I18N.t("messages.voiceMessage");
+  if (c.lastMessageAttachmentType === "video") return "\u{1F3A5} " + I18N.t("messages.video");
+  if (c.lastMessageAttachmentType === "image") return "\u{1F4F7} " + I18N.t("messages.photo");
+  return c.lastMessage || "";
 }
 
 async function loadConvoList(activeId) {
   const list = document.getElementById("convo-list");
   if (!list) return;
-  const convos = await api("/api/conversations", { auth: true });
+  let convos;
+  try {
+    convos = await api("/api/conversations", { auth: true });
+  } catch (e) {
+    return;
+  }
+  chatState.convos = convos;
   setUnreadBadge(convos.filter((c) => c.unread).length);
   list.innerHTML = convos.length
     ? convos
-        .map(
-          (c) => `
-      <a class="convo-item ${c.userId === activeId ? "active" : ""}" href="#/messages/${c.userId}">
-        ${c.userPhoto ? `<img class="mini-avatar" style="width:32px;height:32px;" src="${c.userPhoto}" />` : `<div class="seller-avatar-placeholder" style="width:32px;height:32px;font-size:13px;">${initials(c.userName)}</div>`}
-        <div>
+        .map((c) => {
+          const presence = chatState.presence[c.userId];
+          const online = presence ? presence.online : false;
+          return `
+      <a class="convo-item ${c.userId === activeId ? "active" : ""} ${c.unread ? "unread" : ""}" href="#/messages/${c.userId}">
+        <span class="convo-avatar-wrap">
+          ${c.userPhoto ? `<img class="convo-avatar" src="${c.userPhoto}" />` : `<div class="seller-avatar-placeholder convo-avatar">${initials(c.userName)}</div>`}
+          <span class="presence-dot ${online ? "online" : ""}" data-presence-dot-for="${c.userId}"></span>
+        </span>
+        <div class="convo-text">
           <div class="convo-name">${escapeHtml(c.userName)}</div>
-          <div class="convo-preview">${escapeHtml(c.lastMessage)}</div>
+          <div class="convo-preview">${escapeHtml(convoPreviewText(c))}</div>
         </div>
-        ${c.unread ? `<span class="convo-dot"></span>` : ""}
-      </a>`
-        )
+        <div class="convo-meta">
+          <span class="convo-time">${timeAgoStr(c.lastAt)}</span>
+          ${c.unread ? `<span class="convo-unread-badge" aria-label="${I18N.t("messages.unread")}"></span>` : ""}
+        </div>
+      </a>`;
+        })
         .join("")
     : `<div class="empty-state messages-empty">
         <p>${I18N.t("messages.noConversations")}</p>
         <a href="#/marketplace" class="btn btn-secondary">${I18N.t("messages.emptyBrowseCta")}</a>
       </div>`;
+  // Best-effort presence for conversation partners not yet covered by a live
+  // presence:update - one request per partner, only for what's on screen.
+  convos.slice(0, 20).forEach((c) => {
+    if (!chatState.presence[c.userId]) fetchPresenceOnce(c.userId);
+  });
 }
 
-async function loadChat(otherUserId, silent) {
+// ---- Thread view ----
+
+function chatPanelSkeletonHtml(other) {
+  return `
+    <div class="chat-thread-header">
+      <a href="#/profile/${other.id}" class="chat-thread-avatar-link">
+        ${other.photo ? `<img src="${other.photo}" alt="" />` : `<div class="seller-avatar-placeholder">${initials(other.name)}</div>`}
+      </a>
+      <div class="chat-thread-headtext">
+        <a href="#/profile/${other.id}" class="chat-thread-name">${escapeHtml(other.name || "")}</a>
+        <div class="chat-thread-presence" id="chat-thread-presence">${I18N.t("messages.offline")}</div>
+      </div>
+    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-typing-row" id="chat-typing-row" style="display:none;">
+      <div class="chat-bubble theirs typing-bubble"><span></span><span></span><span></span></div>
+    </div>
+    <div class="chat-reply-preview" id="chat-reply-preview" style="display:none;"></div>
+    <div class="chat-attach-preview" id="chat-attach-preview" style="display:none;"></div>
+    <div class="chat-record-overlay" id="chat-record-overlay" style="display:none;"></div>
+    <div class="chat-input-row">
+      <button type="button" class="chat-icon-btn" id="chat-attach-btn" title="${I18N.t("messages.attach")}" aria-label="${I18N.t("messages.attach")}">\u{1F4CE}</button>
+      <input type="file" id="chat-file-input" accept="image/*,video/*" style="display:none;" />
+      <input id="chat-text" placeholder="${I18N.t("messages.typeMessage")}" autocomplete="off" />
+      <button type="button" class="chat-icon-btn chat-mic-btn" id="chat-mic-btn" title="${I18N.t("messages.holdToRecord")}" aria-label="${I18N.t("messages.holdToRecord")}">\u{1F3A4}</button>
+      <button type="button" class="btn btn-primary chat-send-btn" id="chat-send" style="display:none;">${I18N.t("messages.send")}</button>
+    </div>
+  `;
+}
+
+async function loadChatThread(otherUserId, opts) {
+  opts = opts || {};
   const panel = document.getElementById("chat-panel");
   if (!panel) return;
-  if (!silent) panel.innerHTML = `<div class="chat-messages" id="chat-messages"></div><div class="chat-input-row"><input id="chat-text" placeholder="${I18N.t("messages.typeMessage")}" /><button class="btn btn-primary" id="chat-send">${I18N.t("messages.send")}</button></div>`;
 
-  const messages = await api("/api/conversations/" + otherUserId, { auth: true });
-  const other = await api("/api/users/" + otherUserId);
+  if (panel.dataset.threadFor !== otherUserId) {
+    let other;
+    try {
+      other = await api("/api/users/" + otherUserId);
+    } catch (e) {
+      other = { id: otherUserId, name: "?" };
+    }
+    chatState.otherUser = other;
+    panel.dataset.threadFor = otherUserId;
+    panel.innerHTML = chatPanelSkeletonHtml(other);
+    wireChatPanel(otherUserId);
+    fetchPresenceOnce(otherUserId);
+  }
+
+  let messages;
+  try {
+    messages = await api("/api/conversations/" + otherUserId, { auth: true });
+  } catch (e) {
+    return;
+  }
+  const prevIds = new Set(chatState.messages.map((m) => m.id));
+  chatState.messages = messages;
+  const newIds = messages.filter((m) => !prevIds.has(m.id)).map((m) => m.id);
+  renderThreadMessages(newIds);
+  pollUnread();
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+}
+
+function mergeIncomingMessage(m) {
+  const idx = chatState.messages.findIndex((x) => x.id === m.id);
+  if (idx === -1) chatState.messages.push(m);
+  else chatState.messages[idx] = m;
+  chatState.messages.sort((a, b) => a.createdAt - b.createdAt);
+  renderThreadMessages([m.id]);
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+}
+
+function renderThreadMessages(newIds) {
   const container = document.getElementById("chat-messages");
-  if (container) {
-    container.innerHTML = messages
-      .map(
-        (m) =>
-          `<div class="chat-bubble ${m.fromUserId === state.user.id ? "mine" : "theirs"}">${escapeHtml(m.text)}</div>`
-      )
-      .join("");
-    container.scrollTop = container.scrollHeight;
-  }
+  if (!container) return;
+  const newSet = new Set(newIds || []);
+  const wasEmpty = !container.dataset.everRendered;
+  const nearBottom = wasEmpty || container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+  container.innerHTML = chatState.messages.map((m) => messageRowHtml(m, newSet.has(m.id))).join("");
+  container.dataset.everRendered = "1";
+  wireVoicePlayers(container);
+  // Only auto-scroll if the user was already near the bottom (or this is
+  // the first render) - don't yank them away from history they scrolled up
+  // to read, per task #234's UX requirement.
+  if (nearBottom) container.scrollTop = container.scrollHeight;
+}
 
-  const sendBtn = document.getElementById("chat-send");
-  if (sendBtn && !sendBtn.dataset.wired) {
-    sendBtn.dataset.wired = "1";
-    const send = async () => {
-      const input = document.getElementById("chat-text");
-      const text = input.value.trim();
-      if (!text) return;
-      input.value = "";
-      try {
-        await api("/api/conversations/" + otherUserId, { method: "POST", auth: true, body: { text } });
-        await loadChat(otherUserId, true);
-        await loadConvoList(otherUserId);
-      } catch (e) {
-        alert(e.message);
-      }
-    };
-    sendBtn.addEventListener("click", send);
-    document.getElementById("chat-text").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") send();
-    });
+const CHAT_REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"];
+
+function attachmentPreviewLabel(m) {
+  if (m.attachmentType === "audio") return "\u{1F3A4} " + I18N.t("messages.voiceMessage");
+  if (m.attachmentType === "video") return "\u{1F3A5} " + I18N.t("messages.video");
+  if (m.attachmentType === "image") return "\u{1F4F7} " + I18N.t("messages.photo");
+  return "";
+}
+
+function truncateText(s, n) {
+  s = s || "";
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function replyQuoteHtml(replyToId) {
+  const orig = chatState.messages.find((x) => x.id === replyToId);
+  if (!orig) return `<div class="chat-reply-quote" data-scroll-to="${replyToId}">${I18N.t("messages.originalMessage")}</div>`;
+  const label = orig.deleted ? I18N.t("messages.deletedTombstone") : orig.text || attachmentPreviewLabel(orig);
+  return `<div class="chat-reply-quote" data-scroll-to="${replyToId}">${escapeHtml(truncateText(label, 80))}</div>`;
+}
+
+function attachmentHtml(m) {
+  if (!m.attachmentType || !m.attachmentUrl) return "";
+  if (m.attachmentType === "image") {
+    return `<img class="chat-attach-img" src="${m.attachmentUrl}" data-lightbox-url="${m.attachmentUrl}" data-lightbox-type="image" alt="" />`;
   }
+  if (m.attachmentType === "video") {
+    return `<div class="chat-attach-video" data-lightbox-url="${m.attachmentUrl}" data-lightbox-type="video">
+      <video src="${m.attachmentUrl}#t=0.1" preload="metadata" muted playsinline></video>
+      <span class="chat-attach-play-badge">▶</span>
+    </div>`;
+  }
+  if (m.attachmentType === "audio") {
+    return `<div class="voice-player">
+      <audio src="${m.attachmentUrl}" preload="metadata"></audio>
+      <button type="button" class="voice-player-btn" aria-label="${I18N.t("messages.play")}">▶</button>
+      <div class="voice-player-track"><div class="voice-player-fill"></div></div>
+      <span class="voice-player-time">0:00</span>
+    </div>`;
+  }
+  return "";
+}
+
+function reactionPillsHtml(m) {
+  const entries = Object.entries(m.reactions || {}).filter(([, users]) => users && users.length);
+  if (!entries.length) return "";
+  const myId = state.user.id;
+  return `<div class="chat-reaction-pills">${entries
+    .map(
+      ([emoji, users]) =>
+        `<button type="button" class="chat-reaction-pill ${users.includes(myId) ? "mine" : ""}" data-message-id="${m.id}" data-emoji="${emoji}">${emoji} <span>${users.length}</span></button>`
+    )
+    .join("")}</div>`;
+}
+
+function fmtMsgTime(ts) {
+  return new Date(ts).toLocaleTimeString(I18N.lang === "es" ? "es-ES" : "en-US", { hour: "2-digit", minute: "2-digit" });
+}
+
+function receiptHtml(m) {
+  if (m.read) return `<span class="chat-receipt read" title="${I18N.t("messages.read")}">✓✓</span>`;
+  const other = chatState.presence[m.toUserId];
+  if (other && other.online) return `<span class="chat-receipt delivered" title="${I18N.t("messages.delivered")}">✓✓</span>`;
+  return `<span class="chat-receipt sent" title="${I18N.t("messages.sent")}">✓</span>`;
+}
+
+function messageRowHtml(m, isNew) {
+  const mine = m.fromUserId === state.user.id;
+  const rowClasses = ["chat-msg-row", mine ? "mine" : "theirs"];
+  if (isNew) rowClasses.push("msg-enter");
+  let inner;
+  if (m.deleted) {
+    inner = `<div class="chat-bubble ${mine ? "mine" : "theirs"} deleted">${I18N.t("messages.deletedTombstone")}</div>`;
+  } else {
+    inner = `
+      <div class="chat-bubble ${mine ? "mine" : "theirs"} ${!m.text && m.attachmentType ? "media-only" : ""}">
+        ${m.replyToId ? replyQuoteHtml(m.replyToId) : ""}
+        ${attachmentHtml(m)}
+        ${m.text ? `<div class="chat-bubble-text">${escapeHtml(m.text)}</div>` : ""}
+        <div class="chat-bubble-meta">
+          <span class="chat-bubble-time">${fmtMsgTime(m.createdAt)}</span>
+          ${mine ? receiptHtml(m) : ""}
+        </div>
+      </div>
+      ${reactionPillsHtml(m)}
+    `;
+  }
+  return `<div class="${rowClasses.join(" ")}" data-message-id="${m.id}" data-from-id="${m.fromUserId}">${inner}</div>`;
+}
+
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+// Minimal custom voice-note player (play/pause + elapsed/total time + a
+// slim progress bar) instead of a raw <audio controls> element, matching
+// the app's own visual style. `timeupdate`/`loadedmetadata`/`ended` don't
+// bubble, so each <audio> needs its own listeners wired once (tracked via
+// dataset.wired, same one-time-wiring convention used elsewhere in app.js).
+function wireVoicePlayers(container) {
+  container.querySelectorAll(".voice-player audio").forEach((audio) => {
+    if (audio.dataset.wired) return;
+    audio.dataset.wired = "1";
+    const wrap = audio.closest(".voice-player");
+    const btn = wrap.querySelector(".voice-player-btn");
+    const fill = wrap.querySelector(".voice-player-fill");
+    const timeEl = wrap.querySelector(".voice-player-time");
+    audio.addEventListener("loadedmetadata", () => {
+      if (isFinite(audio.duration)) timeEl.textContent = fmtDuration(audio.duration);
+    });
+    audio.addEventListener("timeupdate", () => {
+      if (audio.duration) {
+        fill.style.width = (audio.currentTime / audio.duration) * 100 + "%";
+        timeEl.textContent = fmtDuration(audio.currentTime);
+      }
+    });
+    audio.addEventListener("play", () => { btn.textContent = "⏸"; });
+    audio.addEventListener("pause", () => {
+      btn.textContent = "▶";
+      if (audio.ended) { fill.style.width = "0%"; timeEl.textContent = isFinite(audio.duration) ? fmtDuration(audio.duration) : "0:00"; }
+    });
+  });
+}
+
+function scrollToMessage(id) {
+  const row = document.querySelector('.chat-msg-row[data-message-id="' + id + '"]');
+  if (!row) return;
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.classList.add("highlight-flash");
+  setTimeout(() => row.classList.remove("highlight-flash"), 1200);
+}
+
+function openChatLightbox(url, type) {
+  const overlay = document.createElement("div");
+  overlay.className = "chat-lightbox-overlay";
+  overlay.innerHTML = `
+    <button type="button" class="chat-lightbox-close" aria-label="${I18N.t("common.close")}">×</button>
+    <div class="chat-lightbox-media-wrap">
+      ${
+        type === "video"
+          ? `<video src="${url}" controls autoplay playsinline class="chat-lightbox-media"></video>`
+          : `<img src="${url}" class="chat-lightbox-media" alt="" />`
+      }
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay || e.target.closest(".chat-lightbox-close")) overlay.remove();
+  });
+}
+
+async function toggleMyReaction(messageId, emoji) {
+  const m = chatState.messages.find((x) => x.id === messageId);
+  if (!m) return;
+  const myId = state.user.id;
+  const already = !!(m.reactions && m.reactions[emoji] && m.reactions[emoji].includes(myId));
+  try {
+    const res = await api("/api/messages/" + messageId + "/react", { method: already ? "DELETE" : "POST", auth: true, body: { emoji } });
+    m.reactions = res.reactions;
+    renderThreadMessages([]);
+  } catch (e) {}
+}
+
+async function deleteChatMessage(messageId, mode) {
+  try {
+    await api("/api/messages/" + messageId, { method: "DELETE", auth: true, body: { mode } });
+    if (mode === "forMe") {
+      const idx = chatState.messages.findIndex((x) => x.id === messageId);
+      if (idx !== -1) chatState.messages.splice(idx, 1);
+    } else {
+      const m = chatState.messages.find((x) => x.id === messageId);
+      if (m) {
+        m.deleted = true;
+        m.text = "";
+        m.attachmentUrl = null;
+        m.attachmentType = null;
+        m.reactions = {};
+      }
+    }
+    renderThreadMessages([]);
+    loadConvoList(chatState.activeOtherId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function setReplyTargetById(id) {
+  const m = chatState.messages.find((x) => x.id === id);
+  if (!m || m.deleted) return;
+  chatState.replyTarget = m;
+  renderReplyPreview();
+  const input = document.getElementById("chat-text");
+  if (input) input.focus();
+}
+
+function clearReplyTarget() {
+  chatState.replyTarget = null;
+  renderReplyPreview();
+}
+
+function renderReplyPreview() {
+  const el = document.getElementById("chat-reply-preview");
+  if (!el) return;
+  if (!chatState.replyTarget) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  const m = chatState.replyTarget;
+  const label = m.text || attachmentPreviewLabel(m);
+  el.style.display = "flex";
+  el.innerHTML = `
+    <div class="chat-reply-preview-bar">
+      <span class="chat-reply-preview-text">${escapeHtml(truncateText(label, 90))}</span>
+      <button type="button" class="chat-reply-cancel" data-reply-cancel aria-label="${I18N.t("common.close")}">×</button>
+    </div>`;
+}
+
+function closeMessageActionSheet() {
+  const existing = document.getElementById("chat-action-overlay");
+  if (existing) existing.remove();
+}
+
+function openMessageActionSheet(messageId) {
+  const m = chatState.messages.find((x) => x.id === messageId);
+  if (!m || m.deleted) return;
+  closeMessageActionSheet();
+  const mine = m.fromUserId === state.user.id;
+  const overlay = document.createElement("div");
+  overlay.className = "chat-action-overlay";
+  overlay.id = "chat-action-overlay";
+  overlay.innerHTML = `
+    <div class="chat-action-sheet">
+      <div class="chat-reaction-row">
+        ${CHAT_REACTION_EMOJIS.map((em) => `<button type="button" class="chat-reaction-choice" data-emoji="${em}">${em}</button>`).join("")}
+      </div>
+      <button type="button" class="chat-action-item" data-action="reply">${I18N.t("messages.reply")}</button>
+      <button type="button" class="chat-action-item" data-action="deleteForMe">${I18N.t("messages.deleteForMe")}</button>
+      ${mine ? `<button type="button" class="chat-action-item danger" data-action="deleteForEveryone">${I18N.t("messages.deleteForEveryone")}</button>` : ""}
+      <button type="button" class="chat-action-item" data-action="cancel">${I18N.t("common.cancel")}</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", async (e) => {
+    if (e.target === overlay) return closeMessageActionSheet();
+    const emojiBtn = e.target.closest(".chat-reaction-choice");
+    if (emojiBtn) {
+      await toggleMyReaction(messageId, emojiBtn.dataset.emoji);
+      closeMessageActionSheet();
+      return;
+    }
+    const actionBtn = e.target.closest(".chat-action-item");
+    if (!actionBtn) return;
+    const action = actionBtn.dataset.action;
+    closeMessageActionSheet();
+    if (action === "reply") setReplyTargetById(messageId);
+    else if (action === "deleteForMe") deleteChatMessage(messageId, "forMe");
+    else if (action === "deleteForEveryone") deleteChatMessage(messageId, "forEveryone");
+  });
+}
+
+// Long-press (mouse+touch, via Pointer Events) opens the reaction/action
+// sheet; a short horizontal drag on a bubble is the WhatsApp-style
+// swipe-to-reply gesture. Both share one pointerdown->move->up state
+// machine per container so they don't fight each other.
+function wireLongPressAndSwipe(container) {
+  const LONG_PRESS_MS = 450;
+  const SWIPE_THRESHOLD = 56;
+  let pressTimer = null;
+  let pressTarget = null;
+  let startX = 0, startY = 0, tracking = false, swiped = false;
+
+  const clearPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+
+  container.addEventListener("pointerdown", (e) => {
+    const row = e.target.closest(".chat-msg-row");
+    if (!row || row.classList.contains("deleted")) return;
+    if (e.target.closest(".chat-reaction-pill, .voice-player-btn, [data-lightbox-url], .chat-reply-quote")) return;
+    pressTarget = row;
+    startX = e.clientX;
+    startY = e.clientY;
+    tracking = true;
+    swiped = false;
+    pressTimer = setTimeout(() => {
+      if (!tracking) return;
+      openMessageActionSheet(row.dataset.messageId);
+      tracking = false;
+    }, LONG_PRESS_MS);
+  });
+  container.addEventListener("pointermove", (e) => {
+    if (!tracking || !pressTarget) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if (Math.abs(dy) > 30) {
+      clearPress();
+      tracking = false;
+      pressTarget.classList.remove("swiping");
+      pressTarget.style.transform = "";
+      return;
+    }
+    if (dx > 12 && dx < 140) {
+      clearPress(); // horizontal drag cancels the long-press timer and becomes a swipe
+      pressTarget.classList.add("swiping");
+      pressTarget.style.transform = "translateX(" + dx + "px)";
+      swiped = dx > SWIPE_THRESHOLD;
+    }
+  });
+  const endPress = () => {
+    clearPress();
+    if (pressTarget) {
+      if (swiped) setReplyTargetById(pressTarget.dataset.messageId);
+      pressTarget.classList.remove("swiping");
+      pressTarget.style.transform = "";
+    }
+    tracking = false;
+    swiped = false;
+    pressTarget = null;
+  };
+  container.addEventListener("pointerup", endPress);
+  container.addEventListener("pointerleave", endPress);
+  container.addEventListener("pointercancel", endPress);
+}
+
+function toggleComposeButtons() {
+  const input = document.getElementById("chat-text");
+  const sendBtn = document.getElementById("chat-send");
+  const micBtn = document.getElementById("chat-mic-btn");
+  if (!input || !sendBtn || !micBtn) return;
+  const hasText = input.value.trim().length > 0;
+  sendBtn.style.display = hasText ? "" : "none";
+  micBtn.style.display = hasText ? "none" : "";
+}
+
+function handleMyTyping(otherUserId) {
+  if (!chatState.myTypingActive) {
+    chatState.myTypingActive = true;
+    wsSendChat({ type: "typing:start", to: otherUserId });
+  }
+  clearTimeout(chatState.myTypingIdleTimer);
+  chatState.myTypingIdleTimer = setTimeout(() => stopMyTyping(otherUserId), 3000);
+}
+
+function stopMyTyping(otherUserId) {
+  clearTimeout(chatState.myTypingIdleTimer);
+  chatState.myTypingIdleTimer = null;
+  if (chatState.myTypingActive) {
+    chatState.myTypingActive = false;
+    wsSendChat({ type: "typing:stop", to: otherUserId });
+  }
+}
+
+async function sendChatText() {
+  const input = document.getElementById("chat-text");
+  const otherId = chatState.activeOtherId;
+  if (!input || !otherId) return;
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  toggleComposeButtons();
+  stopMyTyping(otherId);
+  const body = { text };
+  if (chatState.replyTarget) body.replyToId = chatState.replyTarget.id;
+  clearReplyTarget();
+  try {
+    const sent = await api("/api/conversations/" + otherId, { method: "POST", auth: true, body });
+    mergeIncomingMessage(sent);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function stageChatAttachment(file) {
+  const isImage = file.type.startsWith("image/");
+  const isVideo = file.type.startsWith("video/");
+  if (!isImage && !isVideo) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    chatState.pendingAttachment = { dataUrl: reader.result, kind: isImage ? "image" : "video" };
+    renderAttachPreview();
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderAttachPreview() {
+  const el = document.getElementById("chat-attach-preview");
+  if (!el) return;
+  const a = chatState.pendingAttachment;
+  if (!a) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  el.style.display = "flex";
+  el.innerHTML = `
+    <div class="chat-attach-preview-bar">
+      ${a.kind === "image" ? `<img src="${a.dataUrl}" class="chat-attach-preview-thumb" />` : `<video src="${a.dataUrl}" class="chat-attach-preview-thumb" muted></video>`}
+      <span class="chat-attach-preview-label">${a.kind === "image" ? I18N.t("messages.photo") : I18N.t("messages.video")}</span>
+      <button type="button" class="chat-icon-btn" data-attach-cancel aria-label="${I18N.t("common.cancel")}">×</button>
+      <button type="button" class="btn btn-primary chat-attach-send-btn" data-attach-send>${I18N.t("messages.send")}</button>
+    </div>`;
+  el.querySelector("[data-attach-cancel]").addEventListener("click", () => {
+    chatState.pendingAttachment = null;
+    renderAttachPreview();
+  });
+  el.querySelector("[data-attach-send]").addEventListener("click", sendChatAttachment);
+}
+
+async function sendChatAttachment() {
+  const a = chatState.pendingAttachment;
+  const otherId = chatState.activeOtherId;
+  if (!a || !otherId) return;
+  chatState.pendingAttachment = null;
+  renderAttachPreview();
+  try {
+    const up = await api("/api/messages/attachments", { method: "POST", auth: true, body: { media: a.dataUrl, type: a.kind, conversationWith: otherId } });
+    const body = { attachmentUrl: up.url, attachmentType: up.type };
+    if (chatState.replyTarget) body.replyToId = chatState.replyTarget.id;
+    clearReplyTarget();
+    const sent = await api("/api/conversations/" + otherId, { method: "POST", auth: true, body });
+    mergeIncomingMessage(sent);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// Voice-note hold-to-record: pointerdown starts recording immediately (a
+// dedicated mic button, so no hold-threshold delay is needed the way the
+// camera wizard needs one to disambiguate hold-vs-tap on a shared shutter
+// button), pointerup releases + sends, sliding the pointer up past a
+// threshold cancels - the standard WhatsApp voice-note gesture. Reuses the
+// same MediaRecorder + getUserMedia({audio:true}) approach as
+// wireWizardCaptureGesture()/beginHoldRecording() in the camera wizard.
+function wireVoiceNoteGesture(micBtn, otherUserId) {
+  if (!micBtn) return;
+  let recorder = null;
+  let chunks = [];
+  let stream = null;
+  let startTs = 0;
+  let durationTimer = null;
+  let canceled = false;
+  let startY = 0;
+
+  const overlayEl = () => document.getElementById("chat-record-overlay");
+
+  const updateOverlay = (elapsedMs, dragY) => {
+    const el = overlayEl();
+    if (!el) return;
+    const cancelZone = dragY < -70;
+    el.classList.toggle("cancel-armed", cancelZone);
+    el.innerHTML = `
+      <div class="chat-record-pulse"></div>
+      <span class="chat-record-time">${fmtDuration(Math.floor(elapsedMs / 1000))}</span>
+      <span class="chat-record-hint">${cancelZone ? I18N.t("messages.releaseToCancel") : I18N.t("messages.slideToCancel")}</span>
+    `;
+  };
+
+  const startRecording = async () => {
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      alert(I18N.t("messages.micUnavailable"));
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      alert(I18N.t("messages.micUnavailable"));
+      return;
+    }
+    try {
+      recorder = new MediaRecorder(stream);
+    } catch (e) {
+      stream.getTracks().forEach((t) => t.stop());
+      alert(I18N.t("messages.micUnavailable"));
+      return;
+    }
+    chunks = [];
+    canceled = false;
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunks.push(e.data);
+    };
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      if (!canceled && Date.now() - startTs >= 500) {
+        finalizeVoiceNote(chunks, recorder.mimeType || "audio/webm", otherUserId);
+      }
+      chunks = [];
+    };
+    recorder.start(250);
+    startTs = Date.now();
+    micBtn.classList.add("recording");
+    const el = overlayEl();
+    if (el) el.style.display = "flex";
+    durationTimer = setInterval(() => updateOverlay(Date.now() - startTs, 0), 200);
+    updateOverlay(0, 0);
+  };
+
+  const stopRecording = (didCancel) => {
+    canceled = didCancel;
+    clearInterval(durationTimer);
+    durationTimer = null;
+    micBtn.classList.remove("recording");
+    const el = overlayEl();
+    if (el) {
+      el.style.display = "none";
+      el.classList.remove("cancel-armed");
+    }
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+  };
+
+  micBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { micBtn.setPointerCapture(e.pointerId); } catch (err) {}
+    startY = e.clientY;
+    startRecording();
+  });
+  micBtn.addEventListener("pointermove", (e) => {
+    if (!recorder || recorder.state !== "recording") return;
+    const dy = e.clientY - startY;
+    updateOverlay(Date.now() - startTs, dy);
+    if (dy < -90) stopRecording(true);
+  });
+  const release = () => {
+    if (recorder && recorder.state === "recording") stopRecording(false);
+  };
+  micBtn.addEventListener("pointerup", release);
+  micBtn.addEventListener("pointercancel", () => {
+    if (recorder && recorder.state === "recording") stopRecording(true);
+  });
+}
+
+function finalizeVoiceNote(chunks, mimeType, otherUserId) {
+  const blob = new Blob(chunks, { type: mimeType.split(";")[0] || "audio/webm" });
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const up = await api("/api/messages/attachments", { method: "POST", auth: true, body: { media: reader.result, type: "audio", conversationWith: otherUserId } });
+      const body = { attachmentUrl: up.url, attachmentType: up.type };
+      if (chatState.replyTarget) body.replyToId = chatState.replyTarget.id;
+      clearReplyTarget();
+      const sent = await api("/api/conversations/" + otherUserId, { method: "POST", auth: true, body });
+      mergeIncomingMessage(sent);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+  reader.readAsDataURL(blob);
+}
+
+// One-time wiring for a freshly-built thread panel skeleton (called from
+// loadChatThread() only when the panel is rebuilt for a new otherUserId,
+// not on every message update - message-level interactions use event
+// delegation on #chat-messages so they keep working across re-renders).
+function wireChatPanel(otherUserId) {
+  const container = document.getElementById("chat-messages");
+  const input = document.getElementById("chat-text");
+  const sendBtn = document.getElementById("chat-send");
+  const micBtn = document.getElementById("chat-mic-btn");
+  const attachBtn = document.getElementById("chat-attach-btn");
+  const fileInput = document.getElementById("chat-file-input");
+  const replyPreview = document.getElementById("chat-reply-preview");
+
+  input.addEventListener("input", () => {
+    toggleComposeButtons();
+    handleMyTyping(otherUserId);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendChatText();
+    }
+  });
+  input.addEventListener("blur", () => stopMyTyping(otherUserId));
+  sendBtn.addEventListener("click", sendChatText);
+
+  attachBtn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (file) stageChatAttachment(file);
+    fileInput.value = "";
+  });
+
+  wireVoiceNoteGesture(micBtn, otherUserId);
+
+  container.addEventListener("click", (e) => {
+    const reactPill = e.target.closest(".chat-reaction-pill");
+    if (reactPill) {
+      toggleMyReaction(reactPill.dataset.messageId, reactPill.dataset.emoji);
+      return;
+    }
+    const voiceBtn = e.target.closest(".voice-player-btn");
+    if (voiceBtn) {
+      const audio = voiceBtn.closest(".voice-player").querySelector("audio");
+      if (audio.paused) {
+        document.querySelectorAll(".voice-player audio").forEach((a) => {
+          if (a !== audio) a.pause();
+        });
+        audio.play().catch(() => {});
+      } else {
+        audio.pause();
+      }
+      return;
+    }
+    const lightboxTarget = e.target.closest("[data-lightbox-url]");
+    if (lightboxTarget) {
+      openChatLightbox(lightboxTarget.dataset.lightboxUrl, lightboxTarget.dataset.lightboxType);
+      return;
+    }
+    const quote = e.target.closest(".chat-reply-quote");
+    if (quote) {
+      scrollToMessage(quote.dataset.scrollTo);
+      return;
+    }
+  });
+
+  wireLongPressAndSwipe(container);
+
+  replyPreview.addEventListener("click", (e) => {
+    if (e.target.closest("[data-reply-cancel]")) clearReplyTarget();
+  });
+
+  toggleComposeButtons();
 }
 
 // ---------------- International (producer/distributor cross-border matching) ----------------
@@ -8105,3 +9056,7 @@ router();
 pollUnread();
 unreadPollTimer = setInterval(pollUnread, 20000);
 registerServiceWorker();
+// Task #234 - open the app-wide chat socket immediately on page load if a
+// session already exists (returning visitor), not just right after a fresh
+// login via setAuth().
+if (state.token) connectChatSocket();
