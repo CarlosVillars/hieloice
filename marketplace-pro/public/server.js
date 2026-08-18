@@ -2577,14 +2577,19 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { friends: friendsSection, suggested: suggestedSection });
   }
 
-  // "Clips" feed v2: every active video moment on the platform, ranked by a
-  // blend of TikTok-style behavior signals and the same social graph bonuses
-  // from v1. Works for guests too (falls back to recency + global popularity)
-  // so the section always has content; personalization kicks in once
-  // authenticated. Still JS-computed like v1 - the "real ranker" upgrade
-  // path is to move this into a proper feature store once volume justifies
-  // it, but the signal set (completion, skip, like, per-author affinity) is
-  // now the same shape a production ranker would use, just simpler math.
+  // Unified ranked feed v2: every active moment on the platform - video AND
+  // photo - ranked by a blend of TikTok-style behavior signals and the same
+  // social graph bonuses from v1. Originally video-only (the endpoint name
+  // is kept as-is so the existing "#/clips" route doesn't need to change),
+  // now also backs the merged photo+video swipe feed on Home. Works for
+  // guests too (falls back to recency + global popularity) so the section
+  // always has content; personalization kicks in once authenticated. Not
+  // filtered by the friend graph, only boosted by it, so it already covers
+  // the zero-friends cold-start case without a separate fallback path. Still
+  // JS-computed like v1 - the "real ranker" upgrade path is to move this
+  // into a proper feature store once volume justifies it, but the signal set
+  // (completion, skip, like, per-author affinity) is now the same shape a
+  // production ranker would use, just simpler math.
   if (method === "GET" && pathname === "/api/moments/videos/feed") {
     const me = await getAuthUser(req);
     let friendIds = [];
@@ -2603,7 +2608,6 @@ async function handleApi(req, res, pathname, query) {
     }
 
     const videos = await db.select("mkt_moments", {
-      media_type: "eq.video",
       expires_at: "gt." + Date.now(),
       order: "created_at.desc",
       select: "*",
@@ -2935,11 +2939,20 @@ async function handleApi(req, res, pathname, query) {
 
   const INTL_ROLE_TYPES = ["producer", "distributor"];
   const INTL_STATUSES = ["pending", "in_review", "verified", "rejected"];
+  // Structured book-focused service tags a company can offer - lets the
+  // directory be filtered by what a buyer/seller actually needs (sourcing a
+  // rare title, shipping books abroad, buying in bulk) instead of a vague
+  // free-text "industry" field. Stored as a comma-joined string.
+  const INTL_BOOK_SERVICES = ["sourcing", "foreign_language", "academic", "logistics", "wholesale"];
+  function sanitizeBookServices(input) {
+    const arr = Array.isArray(input) ? input : String(input || "").split(",");
+    return arr.map((s) => String(s).trim()).filter((s) => INTL_BOOK_SERVICES.includes(s)).join(",");
+  }
 
   // Full view - includes internal verification notes. Only ever sent to the
   // owner of the profile or an admin (isOwner), never to the public directory.
   function companyOut(c) {
-    const { owner_user_id, company_name, role_type, contact_email, contact_phone, logo_url, verification_notes, verified_at, created_at, ...rest } = c;
+    const { owner_user_id, company_name, role_type, contact_email, contact_phone, logo_url, verification_notes, verified_at, created_at, book_services, ...rest } = c;
     return {
       ...rest,
       ownerUserId: owner_user_id,
@@ -2951,6 +2964,7 @@ async function handleApi(req, res, pathname, query) {
       verificationNotes: verification_notes,
       verifiedAt: verified_at,
       createdAt: created_at,
+      bookServices: book_services ? book_services.split(",").filter(Boolean) : [],
     };
   }
 
@@ -2975,7 +2989,7 @@ async function handleApi(req, res, pathname, query) {
       return sendJson(res, 429, { error: "Too many submissions. Please try again later." });
     }
     const body = await readBody(req);
-    const { companyName, roleType, country, industry, description, contactEmail, contactPhone, website } = body;
+    const { companyName, roleType, country, industry, description, contactEmail, contactPhone, website, bookServices } = body;
 
     if (!companyName || !String(companyName).trim()) return sendJson(res, 400, { error: "Company name is required" });
     if (!INTL_ROLE_TYPES.includes(roleType)) return sendJson(res, 400, { error: "Invalid role type" });
@@ -2993,6 +3007,7 @@ async function handleApi(req, res, pathname, query) {
       contact_phone: String(contactPhone || "").trim().slice(0, 40),
       website: String(website || "").trim().slice(0, 300),
       logo_url: "",
+      book_services: sanitizeBookServices(bookServices),
       status: "pending",
       verification_notes: "",
       verified_at: null,
@@ -3027,6 +3042,9 @@ async function handleApi(req, res, pathname, query) {
     if (query.country) params.country = "ilike.*" + enc(query.country) + "*";
     if (query.industry) params.industry = "ilike.*" + enc(query.industry) + "*";
     if (query.roleType && INTL_ROLE_TYPES.includes(query.roleType)) params.role_type = "eq." + enc(query.roleType);
+    if (query.bookService && INTL_BOOK_SERVICES.includes(query.bookService)) {
+      params.book_services = "ilike.*" + enc(query.bookService) + "*";
+    }
     const verified = await db.select("mkt_intl_companies", params);
     return sendJson(res, 200, verified.map(companyPublicOut));
   }
@@ -3063,6 +3081,7 @@ async function handleApi(req, res, pathname, query) {
     if (body.contactPhone !== undefined) patch.contact_phone = String(body.contactPhone).trim().slice(0, 40);
     if (body.website !== undefined) patch.website = String(body.website).trim().slice(0, 300);
     if (body.logoUrl !== undefined) patch.logo_url = String(body.logoUrl).trim().slice(0, 1000);
+    if (body.bookServices !== undefined) patch.book_services = sanitizeBookServices(body.bookServices);
     const updated = await db.update("mkt_intl_companies", { id: "eq." + enc(c.id) }, patch);
     return sendJson(res, 200, companyOut(updated[0]));
   }
