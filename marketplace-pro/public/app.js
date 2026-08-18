@@ -1359,6 +1359,7 @@ function renderProductActions(p) {
       ${p.allowOffers ? `<button class="btn btn-outline" id="btn-offer">${I18N.t("product.makeOffer")}</button>` : ""}
       <button class="btn btn-gold" id="btn-buy">${I18N.t("product.buyNow")}</button>
     </div>
+    <p class="buy-safety-note">${I18N.t("product.buySafetyNote")}</p>
   `;
 }
 
