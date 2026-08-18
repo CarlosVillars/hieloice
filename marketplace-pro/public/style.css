@@ -319,12 +319,6 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .icon-nav-cartbooks.pop { animation: iconBagPop 0.4s ease; }
 .icon-nav-btn:hover { color: var(--accent-text); border-bottom-color: var(--gold); }
 .icon-nav-emoji { font-size: 21px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; }
-/* Replaced raw phone emoji with a consistent single-color line-icon set
-   across nav + dropdown items - emoji render differently per OS/phone and
-   read as a chat app rather than a marketplace. currentColor means these
-   automatically follow the existing hover/active color transitions. */
-.icon-nav-svg { display: block; }
-.icon-nav-dropdown-svg { display: inline-block; vertical-align: -3px; margin-right: 3px; flex-shrink: 0; }
 .icon-nav-label { white-space: nowrap; }
 .icon-nav-badge { position: absolute; top: 3px; right: 8px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; }
 /* Unread-messages badge next to the desktop top-bar "Messages" link (a
