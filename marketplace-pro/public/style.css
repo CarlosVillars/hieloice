@@ -1165,6 +1165,32 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .moment-upload-choices label { flex: 1; text-align: center; background: var(--bg-surface-alt); color: var(--accent-text); border: 1px dashed var(--accent-text); border-radius: 8px; padding: 14px 8px; font-size: 13px; font-weight: 700; cursor: pointer; }
 .moment-upload-choices input { display: none; }
 
+/* ---- Home: thin "stories" strip above the swipe feed ----
+   Same renderMomentGroupsBar()/.moment-rect-wrap markup the old full-size
+   friends bar used, just scaled down so it reads as a slim shelf sitting
+   right under the topbar instead of a full section with its own heading. */
+.home-stories-strip { padding: 8px 2px 2px; background: var(--bg-surface); border-bottom: 1px solid var(--border-color); }
+.home-stories-strip .moments-bar { padding: 0 6px 8px; margin-bottom: 0; gap: 8px; }
+.home-stories-strip .moment-rect-wrap { width: 56px; height: 76px; border-radius: 8px; }
+.home-stories-strip .moment-rect-avatar { width: 20px; height: 20px; top: 5px; left: 5px; border-width: 1.5px; }
+.home-stories-strip .moment-rect-add-badge { width: 18px; height: 18px; bottom: 20px; left: 5px; font-size: 12px; border-width: 1.5px; }
+.home-stories-strip .moment-rect-name { left: 5px; right: 5px; bottom: 4px; font-size: 9px; }
+.home-stories-strip .moment-rect-add .moment-rect-name { left: 6px; right: 6px; bottom: 6px; }
+.home-stories-strip .moment-rect-placeholder { font-size: 15px; }
+
+/* ---- Home: inline swipe feed ----
+   Mixed photo+video moments, ranked by /api/moments/videos/feed, rendered
+   via the same shared drawSwipeItem()/wireSwipeGestures() engine (and the
+   same .clips-* classes below) as the full-screen Clips player - just
+   mounted in normal document flow instead of a fixed full-viewport overlay,
+   so the topbar and bottom icon-nav stay visible around it instead of being
+   covered. Height is set in JS (sizeHomeSwipeFeed() in app.js) since it
+   depends on how much room the topbar/stories-strip/bottom-nav chrome
+   around it takes up, which isn't a fixed number - see that function's
+   comment for why. */
+.home-swipe-feed { position: relative; z-index: 1; width: 100%; overflow: hidden; background: #000; }
+.home-swipe-feed .clips-item { max-height: 100%; }
+
 /* ---- Moments video feed ("#/clips" - full-screen vertical video player) ---- */
 .clips-overlay { position: fixed; inset: 0; background: #000; z-index: 500; display: flex; align-items: center; justify-content: center; }
 .clips-item { position: relative; width: 100%; max-width: 480px; height: 100%; max-height: 100vh; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: pan-x; }

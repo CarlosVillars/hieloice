@@ -696,38 +696,136 @@ function categoryCardsHtml() {
   ).join("");
 }
 
-// Home ("#/"): the moments feed for logged-in users (Facebook-style focus on
-// sharing), falling back to the marketplace grid for guests who have nothing
-// to see in a feed yet.
+// Home ("#/"): a single ranked vertical feed mixing every author's video AND
+// photo moments (Facebook-style focus on sharing, TikTok-style continuous
+// swipe), falling back to the marketplace grid for guests who have nothing
+// to see in a feed yet. Two pieces, both fed by real endpoints:
+//   (a) a thin "stories" strip (friends' active moments, rect layout) -
+//       loadHomeStoriesStrip() below.
+//   (b) the full swipe feed itself, sharing its render/gesture engine with
+//       the full-screen Clips player - see drawSwipeItem()/
+//       wireSwipeGestures() above and loadHomeSwipeFeed() below.
+// This replaces the old design (stories bar -> chronological list of
+// friends' posts -> a "Suggested" section): that content is now folded
+// into the single ranked feed instead of being three separate lists.
 function renderHome() {
   if (!state.token) return renderMarketplaceHome();
 
   viewEl.innerHTML = `
     <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
-    <div class="feed-section" id="feed-section-friends">
-      <h2 class="section-heading">${I18N.t("feed.friendsHeading")}</h2>
+    <div class="home-stories-strip" id="home-stories-strip">
       <div class="moments-bar" id="home-moments-bar-friends"></div>
     </div>
-    <div class="home-feed-posts" id="home-feed-posts" style="display:none;"></div>
-    <div class="feed-section" id="feed-section-suggested" style="display:none;">
-      <h2 class="section-heading">${I18N.t("feed.suggestedHeading")}</h2>
-      <div class="moments-bar" id="home-moments-bar-suggested" style="display:none;"></div>
-    </div>
+    <div class="home-swipe-feed" id="home-swipe-feed"><p style="color:var(--text-secondary);text-align:center;padding:40px 0;">${I18N.t("common.loading")}</p></div>
   `;
   // Draw the "your moment" circle (yellow ring if you already posted one today,
   // plain "+" to add one otherwise) immediately, from data already in memory -
   // don't wait on the /api/moments/feed round trip for it, and don't let a
-  // failed/slow fetch hide it later (see loadHomeFeed()'s catch below). This
-  // was previously only drawn after the feed loaded, so on a slow connection
-  // or a feed error it silently never appeared at all.
+  // failed/slow fetch hide it later (see loadHomeStoriesStrip()'s catch below).
+  // This was previously only drawn after the feed loaded, so on a slow
+  // connection or a feed error it silently never appeared at all.
   renderMomentGroupsBar(document.getElementById("home-moments-bar-friends"), [], {
     showAddForUserId: state.user.id,
     ownPhoto: state.user.photo,
     ownName: state.user.name,
     layout: "rect",
   });
+  wireHomeSwipeFeedResize();
+  sizeHomeSwipeFeed();
   loadAdCarousel();
-  loadHomeFeed();
+  loadHomeStoriesStrip();
+  loadHomeSwipeFeed();
+}
+
+// Thin "stories" strip at the top of Home - just the friends' active-moments
+// bar from the old /api/moments/feed endpoint, still in rect layout (sized
+// down via .home-stories-strip in style.css). The "suggested" half of that
+// same response isn't shown here anymore - the unified swipe feed below
+// covers suggested content too.
+async function loadHomeStoriesStrip() {
+  const elFriends = document.getElementById("home-moments-bar-friends");
+  if (!elFriends) return;
+  try {
+    const data = await api("/api/moments/feed", { auth: true });
+    elFriends.style.display = "flex";
+    renderMomentGroupsBar(elFriends, data.friends || [], {
+      showAddForUserId: state.user.id,
+      ownPhoto: state.user.photo,
+      ownName: state.user.name,
+      layout: "rect",
+    });
+  } catch (e) {
+    // Best-effort: leave the "your moment" circle drawn by renderHome() as-is
+    // rather than wiping the strip - a failed fetch shouldn't make the
+    // add-a-moment entry point disappear too.
+  }
+}
+
+// The unified ranked Home feed - video AND photo moments from every author,
+// friend/follow-boosted but not friend-filtered (see the comment on
+// /api/moments/videos/feed in server.js), rendered via the same
+// drawSwipeItem()/wireSwipeGestures() engine the full-screen Clips player
+// uses, just mounted inline in normal document flow (see .home-swipe-feed
+// in style.css and sizeHomeSwipeFeed() below) instead of a fixed overlay,
+// so the topbar and bottom nav stay visible around it.
+async function loadHomeSwipeFeed() {
+  const container = document.getElementById("home-swipe-feed");
+  if (!container) return;
+  let items = [];
+  try {
+    items = await api("/api/moments/videos/feed", { auth: true });
+  } catch (e) {}
+  if (!items.length) {
+    // Only happens on a genuinely empty platform (or every moment expired) -
+    // this endpoint isn't friend-filtered, so a normal account with zero
+    // friends still gets content. Same friendly empty state the old
+    // home-feed-posts list used instead of leaving a blank scroller.
+    container.innerHTML = `
+      <div class="empty-state home-feed-empty">
+        <p>${I18N.t("home.feedEmpty")}</p>
+        <div class="home-feed-empty-actions">
+          <a href="#/friends" class="btn btn-secondary">${I18N.t("home.feedEmptyFindPeople")}</a>
+          <a href="#/marketplace" class="btn btn-secondary">${I18N.t("home.feedEmptyBrowse")}</a>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  homeSwipeState = { videos: items, index: 0, rootEl: container, closable: false };
+  drawSwipeItem(homeSwipeState);
+  wireSwipeGestures(container, homeSwipeState);
+}
+
+// The Home swipe feed sits in normal document flow (not a full-screen fixed
+// overlay like Clips) so the topbar and bottom icon-nav stay visible around
+// it - which means its height can't be a fixed vh value, it's "whatever
+// vertical space is actually left" after that chrome, and that differs by
+// screen size (icon-nav moves to a fixed bottom bar under 640px - see the
+// media query in style.css - and the topbar's own height varies with the
+// tagline text wrapping). Measuring it live is simpler and more correct
+// than trying to hardcode every combination in CSS.
+function sizeHomeSwipeFeed() {
+  const container = document.getElementById("home-swipe-feed");
+  if (!container) return;
+  const top = container.getBoundingClientRect().top;
+  const mobileBottomNav = window.innerWidth <= 640;
+  const iconNavEl = document.getElementById("icon-nav");
+  const bottomReserved = mobileBottomNav && iconNavEl ? iconNavEl.offsetHeight : 0;
+  const h = Math.max(320, window.innerHeight - top - bottomReserved);
+  container.style.height = h + "px";
+}
+
+// Wired once ever (idempotent), not per Home visit: renderHome() replaces
+// #home-swipe-feed's own DOM on every visit, but a window-level resize
+// listener added inside renderHome() would otherwise pile up a new one on
+// every navigation back to Home. The handler itself re-queries the DOM
+// fresh each time, so it's a no-op whenever Home isn't the current route.
+let homeSwipeFeedResizeWired = false;
+function wireHomeSwipeFeedResize() {
+  if (homeSwipeFeedResizeWired) return;
+  homeSwipeFeedResizeWired = true;
+  window.addEventListener("resize", sizeHomeSwipeFeed);
+  window.addEventListener("orientationchange", sizeHomeSwipeFeed);
 }
 
 // ---------------- Full-screen overlay back-button support ----------------
@@ -947,7 +1045,14 @@ function buildHomeFeedItems(groups) {
   const items = [];
   for (const g of groups) {
     for (const m of g.moments) {
-      items.push({ ...m, userId: g.userId, userName: g.userName, userPhoto: g.userPhoto, isPage: g.isPage });
+      // Mutate the SAME object reference from group.moments (do NOT spread-copy).
+      // The full-screen viewer (openMomentsViewer/drawMomentViewer) reads
+      // group.moments via homeFeedGroupsById, while this list feeds the inline
+      // feed cards. If they were distinct objects, a like/save tap on one
+      // surface wouldn't be reflected on the other. Keeping them as the same
+      // reference means either surface's mutation is instantly visible on both.
+      Object.assign(m, { userId: g.userId, userName: g.userName, userPhoto: g.userPhoto, isPage: g.isPage });
+      items.push(m);
     }
   }
   items.sort((a, b) => b.createdAt - a.createdAt);
@@ -3485,13 +3590,30 @@ function stepMomentViewer(dir) {
   drawMomentViewer();
 }
 
-// ---------------- "Moments" full-screen video feed ("#/clips") ----------------
-// A single vertical stream of every active video Moment on the platform,
-// ranked by /api/moments/videos/feed (friends > followed Pages > Pages >
-// recency). Distinct from the story-style moments-bar above: this is a
-// continuous scroll/swipe feed, browsing all video content.
+// ---------------- Shared vertical swipe-feed engine ----------------
+// Both the full-screen "Clips" player ("#/clips": a TikTok-style takeover
+// with the topbar/bottom nav hidden) and the inline Home feed (mixed
+// photo+video moments, scrolling in normal document flow with the topbar
+// and bottom nav still visible - see renderHome()/loadHomeSwipeFeed() far
+// below) show the same ranked list from /api/moments/videos/feed and need
+// identical per-item rendering, swipe/wheel gestures, and watch-time
+// reporting. Every function here takes an explicit swipe-feed state object
+// (called `sw` below - NOT the unrelated global session `state`, which is
+// why the param isn't named `state`) shaped like
+// { videos, index, rootEl, closable, watchStart, currentDurationMs } so the
+// two surfaces run as fully independent instances instead of fighting over
+// one global. `clipsState` (the full-screen player) and `homeSwipeState`
+// (the inline Home feed) are the two live instances of that shape.
+
+// A photo has no natural "duration" to wait out the way a video does, so a
+// swipe-away after roughly this long counts as "watched it", short of that
+// counts as a "skip" - the same complete/skip signal the ranking in
+// /api/moments/videos/feed already consumes for videos, just fed a fixed
+// nominal duration instead of a real one (see reportSwipeWatch()).
+const SWIPE_PHOTO_DWELL_MS = 4000;
 
 let clipsState = null;
+let homeSwipeState = null;
 
 async function renderClips() {
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
@@ -3508,160 +3630,90 @@ async function renderClips() {
 }
 
 function openClipsPlayer(videos, startIndex) {
-  clipsState = { videos, index: startIndex || 0 };
   const overlay = document.createElement("div");
   overlay.className = "clips-overlay";
   overlay.id = "clips-overlay";
   document.body.appendChild(overlay);
-  drawClips();
+  clipsState = { videos, index: startIndex || 0, rootEl: overlay, closable: true };
+  drawSwipeItem(clipsState);
+  wireSwipeGestures(overlay, clipsState);
+}
 
-  overlay.addEventListener(
-    "wheel",
-    (e) => {
-      if (overlay.dataset.wheelLock === "1") return;
-      overlay.dataset.wheelLock = "1";
-      setTimeout(() => (overlay.dataset.wheelLock = "0"), 500);
-      if (e.deltaY > 30) stepClips(1);
-      else if (e.deltaY < -30) stepClips(-1);
-    },
-    { passive: true }
-  );
-
-  // ---- Vertical swipe navigation (TikTok/Reels style) ----
-  // The current video visibly follows the finger as you drag, then either
-  // completes the transition to the next/previous video on release or
-  // snaps back if the swipe was too short. Replaces the old up/down arrow
-  // buttons entirely - this is the only way to move between moments now.
-  let touchStartY = null;
-  let touchStartX = null;
-  let dragging = false;
-  let lockedAxis = null; // "y" | "x" | null - decided a few px into the gesture
-
-  overlay.addEventListener(
-    "touchstart",
-    (e) => {
-      if (e.touches.length !== 1) return;
-      touchStartY = e.touches[0].clientY;
-      touchStartX = e.touches[0].clientX;
-      dragging = true;
-      lockedAxis = null;
-      const item = overlay.querySelector(".clips-item");
-      if (item) item.style.transition = "none";
-    },
-    { passive: true }
-  );
-
-  overlay.addEventListener(
-    "touchmove",
-    (e) => {
-      if (!dragging || touchStartY === null) return;
-      const dy = e.touches[0].clientY - touchStartY;
-      const dx = e.touches[0].clientX - touchStartX;
-      if (!lockedAxis) {
-        if (Math.abs(dy) < 6 && Math.abs(dx) < 6) return;
-        lockedAxis = Math.abs(dy) > Math.abs(dx) ? "y" : "x";
-      }
-      if (lockedAxis !== "y") return;
-      e.preventDefault();
-      const atFirst = clipsState.index === 0 && dy > 0;
-      const atLast = clipsState.index === clipsState.videos.length - 1 && dy < 0;
-      const damped = atFirst || atLast ? dy * 0.35 : dy;
-      const item = overlay.querySelector(".clips-item");
-      if (item) item.style.transform = `translateY(${damped}px)`;
-    },
-    { passive: false }
-  );
-
-  overlay.addEventListener(
-    "touchend",
-    (e) => {
-      if (!dragging || touchStartY === null) {
-        dragging = false;
-        return;
-      }
-      dragging = false;
-      const dy = e.changedTouches[0].clientY - touchStartY;
-      touchStartY = null;
-      touchStartX = null;
-      if (lockedAxis !== "y") return;
-      const item = overlay.querySelector(".clips-item");
-      const THRESHOLD = 60;
-      if (dy < -THRESHOLD) {
-        stepClips(1);
-      } else if (dy > THRESHOLD) {
-        stepClips(-1);
-      } else if (item) {
-        item.style.transition = "transform 0.2s ease";
-        item.style.transform = "translateY(0)";
-      }
-    },
-    { passive: true }
-  );
+// Shared close path for any closable swipe-feed instance (today only the
+// full-screen Clips overlay sets closable:true - the inline Home feed has
+// no "X", it just scrolls away). Reports the outgoing item's watch time,
+// tears down the overlay DOM, and - only for the Clips instance
+// specifically - resets the "#/clips" hash back to Home.
+function closeSwipeFeed(sw) {
+  reportSwipeWatch(sw);
+  if (sw && sw.closable && sw.rootEl) sw.rootEl.remove();
+  if (sw === clipsState) {
+    clipsState = null;
+    if (location.hash.startsWith("#/clips")) location.hash = "#/";
+  }
 }
 
 function closeClipsPlayer() {
-  reportClipsWatch();
-  const overlay = document.getElementById("clips-overlay");
-  if (overlay) overlay.remove();
-  clipsState = null;
-  if (location.hash.startsWith("#/clips")) location.hash = "#/";
+  closeSwipeFeed(clipsState);
 }
 
-// Reports how the viewer engaged with the video currently on screen -
-// "complete" if they stuck around for most of it (it loops, so a near-full
-// watch counts even without a real "ended" event), "skip" otherwise. Called
-// right before we move away from a video, feeding the affinity/popularity
-// signals the v2 ranking in /api/moments/videos/feed uses.
-function reportClipsWatch() {
-  if (!clipsState) return;
-  const v = clipsState.videos[clipsState.index];
-  if (!v || !clipsState.watchStart) return;
-  const watchMs = Date.now() - clipsState.watchStart;
-  const durationMs = clipsState.currentDurationMs || 0;
+// Reports how the viewer engaged with the item currently on screen -
+// "complete" if they stuck around for most of it (video loops, so a
+// near-full watch counts even without a real "ended" event; photos use the
+// fixed SWIPE_PHOTO_DWELL_MS above), "skip" otherwise. Called right before
+// we move away from an item, feeding the affinity/popularity signals the
+// v2 ranking in /api/moments/videos/feed uses.
+function reportSwipeWatch(sw) {
+  if (!sw) return;
+  const v = sw.videos[sw.index];
+  if (!v || !sw.watchStart) return;
+  const watchMs = Date.now() - sw.watchStart;
+  const durationMs = sw.currentDurationMs || 0;
   const type = durationMs && watchMs >= durationMs * 0.85 ? "complete" : "skip";
   api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type, watchMs, durationMs } }).catch(() => {});
-  clipsState.watchStart = null;
+  sw.watchStart = null;
 }
 
-function toggleClipsLike() {
-  if (!clipsState) return;
+function toggleSwipeLike(sw) {
+  if (!sw) return;
   if (!state.token) {
     location.hash = "#/login";
     return;
   }
-  const v = clipsState.videos[clipsState.index];
+  const v = sw.videos[sw.index];
   const wasLiked = v.liked;
   v.liked = !wasLiked;
   v.likeCount = Math.max(0, (v.likeCount || 0) + (v.liked ? 1 : -1));
-  updateClipsLikeUI();
+  updateSwipeLikeUI(sw);
   api("/api/moments/" + v.id + "/like", { method: v.liked ? "POST" : "DELETE", auth: true, body: {} }).catch(() => {
     v.liked = wasLiked;
     v.likeCount = Math.max(0, (v.likeCount || 0) + (wasLiked ? 1 : -1));
-    updateClipsLikeUI();
+    updateSwipeLikeUI(sw);
   });
   if (v.liked) {
     api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type: "like" } }).catch(() => {});
   }
 }
 
-function updateClipsLikeUI() {
-  if (!clipsState) return;
-  const v = clipsState.videos[clipsState.index];
+function updateSwipeLikeUI(sw) {
+  if (!sw) return;
+  const v = sw.videos[sw.index];
   const btn = document.getElementById("clips-like");
   const countEl = document.getElementById("clips-like-count");
   if (btn) btn.classList.toggle("active", !!v.liked);
   if (countEl) countEl.textContent = v.likeCount || 0;
 }
 
-// Comment/share/repost/save for the Clips player - mirrors
-// wireMomentViewerActions() so both surfaces behave identically (optimistic
-// toggle, revert on failure, same icon set and "active" styling).
-function wireClipsActions(v) {
+// Comment/share/repost/save for a swipe-feed item - mirrors
+// wireMomentViewerActions() so all three surfaces (story viewer, Clips,
+// Home) behave identically (optimistic toggle, revert on failure, same
+// icon set and "active" styling).
+function wireSwipeActions(sw, v) {
   const msgBtn = document.getElementById("clips-message");
   if (msgBtn) {
     msgBtn.addEventListener("click", () => {
       flashMomentAction(msgBtn);
-      openMomentComments(v, "clips-overlay", "clips");
+      openMomentComments(v, sw.rootEl.id, "clips");
     });
   }
 
@@ -3719,8 +3771,8 @@ function wireClipsActions(v) {
   }
 }
 
-function burstClipsHeart() {
-  const item = document.querySelector(".clips-item");
+function burstSwipeHeart(sw) {
+  const item = sw.rootEl.querySelector(".clips-item");
   if (!item) return;
   const heart = document.createElement("div");
   heart.className = "clips-heart-burst";
@@ -3729,18 +3781,27 @@ function burstClipsHeart() {
   setTimeout(() => heart.remove(), 900);
 }
 
-function drawClips() {
-  const overlay = document.getElementById("clips-overlay");
-  if (!overlay || !clipsState) return;
-  const { videos, index } = clipsState;
+// Renders the currently-indexed item of `sw` into sw.rootEl - a photo
+// <img> or a video <video>, plus the shared author/caption/action-rail
+// chrome. `sw.closable` controls whether the full-screen-only "X" close
+// button is included (see closeSwipeFeed() above).
+function drawSwipeItem(sw) {
+  const root = sw.rootEl;
+  if (!root) return;
+  const { videos, index } = sw;
   const v = videos[index];
   const isOwn = state.user && v.userId === state.user.id;
   const showFollow = v.isPage && state.token && !isOwn;
+  const isPhoto = v.mediaType !== "video";
 
-  overlay.innerHTML = `
+  root.innerHTML = `
     <div class="clips-item">
-      <video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>
-      <button class="clips-close" id="clips-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      ${
+        isPhoto
+          ? `<img class="clips-video clips-photo" id="clips-video" src="${v.mediaUrl}" />`
+          : `<video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>`
+      }
+      ${sw.closable ? `<button class="clips-close" id="clips-close" aria-label="${I18N.t("common.close")}">&times;</button>` : ""}
       <div class="clips-info">
         <a class="clips-author-link" href="#/profile/${v.userId}">
           ${v.userPhoto ? `<img class="clips-avatar" src="${v.userPhoto}" />` : `<div class="clips-avatar-placeholder">${initials(v.userName)}</div>`}
@@ -3770,27 +3831,31 @@ function drawClips() {
     </div>
   `;
 
-  document.getElementById("clips-close").addEventListener("click", closeClipsPlayer);
-  document.getElementById("clips-like").addEventListener("click", toggleClipsLike);
-  wireClipsActions(v);
+  const closeBtn = document.getElementById("clips-close");
+  if (closeBtn) closeBtn.addEventListener("click", () => closeSwipeFeed(sw));
+  const likeBtn = document.getElementById("clips-like");
+  if (likeBtn) likeBtn.addEventListener("click", () => toggleSwipeLike(sw));
+  wireSwipeActions(sw, v);
 
-  clipsState.watchStart = Date.now();
-  clipsState.currentDurationMs = 0;
+  sw.watchStart = Date.now();
+  sw.currentDurationMs = isPhoto ? SWIPE_PHOTO_DWELL_MS : 0;
 
-  const videoEl = document.getElementById("clips-video");
-  if (videoEl) {
-    videoEl.muted = false;
-    videoEl.volume = 1;
-    videoEl.addEventListener("loadedmetadata", () => {
-      if (clipsState) clipsState.currentDurationMs = (videoEl.duration || 0) * 1000;
+  const mediaEl = document.getElementById("clips-video");
+  if (mediaEl && !isPhoto) {
+    mediaEl.muted = false;
+    mediaEl.volume = 1;
+    mediaEl.addEventListener("loadedmetadata", () => {
+      if (sw.videos[sw.index] === v) sw.currentDurationMs = (mediaEl.duration || 0) * 1000;
     });
+  }
+  if (mediaEl) {
     let lastTap = 0;
-    videoEl.addEventListener("click", () => {
+    mediaEl.addEventListener("click", () => {
       const now = Date.now();
       if (now - lastTap < 300) {
-        const cur = clipsState.videos[clipsState.index];
-        if (!cur.liked) toggleClipsLike();
-        burstClipsHeart();
+        const cur = sw.videos[sw.index];
+        if (!cur.liked) toggleSwipeLike(sw);
+        burstSwipeHeart(sw);
       }
       lastTap = now;
     });
@@ -3825,13 +3890,99 @@ function drawClips() {
   }
 }
 
-function stepClips(dir) {
-  if (!clipsState) return;
-  const next = clipsState.index + dir;
-  if (next < 0 || next >= clipsState.videos.length) return;
-  reportClipsWatch();
-  clipsState.index = next;
-  drawClips();
+function stepSwipeFeed(sw, dir) {
+  if (!sw) return;
+  const next = sw.index + dir;
+  if (next < 0 || next >= sw.videos.length) return;
+  reportSwipeWatch(sw);
+  sw.index = next;
+  drawSwipeItem(sw);
+}
+
+// ---- Vertical swipe navigation (TikTok/Reels style), shared by the
+// full-screen Clips overlay and the inline Home feed ----
+// The current item visibly follows the finger as you drag, then either
+// completes the transition to the next/previous item on release or snaps
+// back if the swipe was too short. This (plus the wheel handler) is the
+// only way to move between items - there are no up/down arrow buttons.
+function wireSwipeGestures(rootEl, sw) {
+  rootEl.addEventListener(
+    "wheel",
+    (e) => {
+      if (rootEl.dataset.wheelLock === "1") return;
+      rootEl.dataset.wheelLock = "1";
+      setTimeout(() => (rootEl.dataset.wheelLock = "0"), 500);
+      if (e.deltaY > 30) stepSwipeFeed(sw, 1);
+      else if (e.deltaY < -30) stepSwipeFeed(sw, -1);
+    },
+    { passive: true }
+  );
+
+  let touchStartY = null;
+  let touchStartX = null;
+  let dragging = false;
+  let lockedAxis = null; // "y" | "x" | null - decided a few px into the gesture
+
+  rootEl.addEventListener(
+    "touchstart",
+    (e) => {
+      if (e.touches.length !== 1) return;
+      touchStartY = e.touches[0].clientY;
+      touchStartX = e.touches[0].clientX;
+      dragging = true;
+      lockedAxis = null;
+      const item = rootEl.querySelector(".clips-item");
+      if (item) item.style.transition = "none";
+    },
+    { passive: true }
+  );
+
+  rootEl.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!dragging || touchStartY === null) return;
+      const dy = e.touches[0].clientY - touchStartY;
+      const dx = e.touches[0].clientX - touchStartX;
+      if (!lockedAxis) {
+        if (Math.abs(dy) < 6 && Math.abs(dx) < 6) return;
+        lockedAxis = Math.abs(dy) > Math.abs(dx) ? "y" : "x";
+      }
+      if (lockedAxis !== "y") return;
+      e.preventDefault();
+      const atFirst = sw.index === 0 && dy > 0;
+      const atLast = sw.index === sw.videos.length - 1 && dy < 0;
+      const damped = atFirst || atLast ? dy * 0.35 : dy;
+      const item = rootEl.querySelector(".clips-item");
+      if (item) item.style.transform = `translateY(${damped}px)`;
+    },
+    { passive: false }
+  );
+
+  rootEl.addEventListener(
+    "touchend",
+    (e) => {
+      if (!dragging || touchStartY === null) {
+        dragging = false;
+        return;
+      }
+      dragging = false;
+      const dy = e.changedTouches[0].clientY - touchStartY;
+      touchStartY = null;
+      touchStartX = null;
+      if (lockedAxis !== "y") return;
+      const item = rootEl.querySelector(".clips-item");
+      const THRESHOLD = 60;
+      if (dy < -THRESHOLD) {
+        stepSwipeFeed(sw, 1);
+      } else if (dy > THRESHOLD) {
+        stepSwipeFeed(sw, -1);
+      } else if (item) {
+        item.style.transition = "transform 0.2s ease";
+        item.style.transform = "translateY(0)";
+      }
+    },
+    { passive: true }
+  );
 }
 
 const MAX_ACTIVE_MOMENTS = 3;
