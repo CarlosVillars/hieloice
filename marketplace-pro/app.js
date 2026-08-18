@@ -287,8 +287,18 @@ function updateNavUI() {
     const canAdmin = loggedIn && state.user && (state.user.role === "admin" || state.user.isOwner);
     navAdmin.style.display = canAdmin ? "inline" : "none";
   }
+  // The bottom/top icon bar stays visible for guests too (not just logged-in
+  // users) so a first-time visitor can still find Marketplace, International
+  // and Communities - those live inside the Marketplace dropdown. Only the
+  // items that require an account (Friends, Moments/Clips, Create,
+  // Notifications) are hidden until the person logs in.
   const iconNav = document.getElementById("icon-nav");
-  if (iconNav) iconNav.style.display = loggedIn ? "flex" : "none";
+  if (iconNav) iconNav.style.display = "flex";
+  setDisplay("icon-nav-friends", loggedIn ? "flex" : "none");
+  setDisplay("icon-nav-clips", loggedIn ? "flex" : "none");
+  const createWrap = document.getElementById("icon-nav-create");
+  if (createWrap) createWrap.style.display = loggedIn ? "flex" : "none";
+  setDisplay("icon-nav-notifications", loggedIn ? "flex" : "none");
   if (!loggedIn) {
     setUnreadBadge(0);
     setIconNavBadge(0);
@@ -371,17 +381,21 @@ function applyStaticI18n() {
   if (langEsBtnEl) langEsBtnEl.classList.toggle("active", I18N.lang === "es");
   setText("icon-nav-home-label", I18N.t("iconnav.home"));
   setText("icon-nav-friends-label", I18N.t("iconnav.friends"));
-  setText("icon-nav-shorts-label", I18N.t("iconnav.shorts"));
+  setText("icon-nav-clips-label", I18N.t("iconnav.clips"));
   setText("icon-nav-marketplace-label", I18N.t("iconnav.marketplace"));
   setText("icon-nav-notifications-label", I18N.t("iconnav.notifications"));
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
-  setText("icon-nav-create-moment-label", I18N.t("iconnav.createMoment"));
+  setText("icon-nav-create-camera-label", I18N.t("iconnav.createCamera"));
+  setText("icon-nav-create-record-label", I18N.t("iconnav.createRecord"));
+  setText("icon-nav-create-upload-moment-label", I18N.t("iconnav.createUploadMoment"));
+  setText("icon-nav-create-upload-picture-label", I18N.t("iconnav.createUploadPicture"));
+  setText("icon-nav-create-loop-label", I18N.t("iconnav.createLoop"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
-  setText("icon-nav-books-publish-label", I18N.t("iconnav.booksPublish"));
+  setText("icon-nav-dropdown-soon-label", I18N.t("iconnav.comingSoon"));
   setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
   setText("icon-nav-books-recommend-label", I18N.t("iconnav.booksRecommend"));
   setText("icon-nav-books-auction-label", I18N.t("iconnav.booksAuction"));
@@ -532,12 +546,66 @@ function updateGlobalSearchPlaceholder() {
       createDropdown.style.display = willOpen ? "block" : "none";
     });
     createDropdown.addEventListener("click", (e) => e.stopPropagation());
-    const momentLink = document.getElementById("icon-nav-create-moment");
-    if (momentLink) {
-      momentLink.addEventListener("click", (e) => {
+    // "Camera" and "Record a Moment" both open the same live-camera screen:
+    // it already supports tap-for-photo / hold-for-video in one shutter
+    // button (see the "tap and hold" hint shown there), so there's no
+    // separate photo-only vs video-only capture mode to route to.
+    const cameraLink = document.getElementById("icon-nav-create-camera");
+    if (cameraLink) {
+      cameraLink.addEventListener("click", (e) => {
         e.preventDefault();
         createDropdown.style.display = "none";
         openCreateWizard();
+      });
+    }
+    const recordLink = document.getElementById("icon-nav-create-record");
+    if (recordLink) {
+      recordLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+      });
+    }
+    // "Upload a Moment" / "Upload a Picture" open the same wizard but skip
+    // straight to the device's file picker instead of the live camera,
+    // pre-filtered to video or image files respectively.
+    const uploadMomentLink = document.getElementById("icon-nav-create-upload-moment");
+    if (uploadMomentLink) {
+      uploadMomentLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+        const fileInput = document.getElementById("wizard-file-media");
+        if (fileInput) {
+          fileInput.accept = "video/*";
+          fileInput.click();
+        }
+      });
+    }
+    const uploadPictureLink = document.getElementById("icon-nav-create-upload-picture");
+    if (uploadPictureLink) {
+      uploadPictureLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+        const fileInput = document.getElementById("wizard-file-media");
+        if (fileInput) {
+          fileInput.accept = "image/*";
+          fileInput.click();
+        }
+      });
+    }
+    // "Loop" opens the same camera-wizard flow as "Camera"/"Record a Moment"
+    // (see openCreateWizard() below) - it takes an optional target argument
+    // that tells the wizard's final publish step which endpoint to post to
+    // (POST /api/loops instead of POST /api/moments) rather than this
+    // needing its own separate capture UI.
+    const loopLink = document.getElementById("icon-nav-create-loop");
+    if (loopLink) {
+      loopLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard("loop");
       });
     }
     const productLink = document.getElementById("icon-nav-create-product");
@@ -586,7 +654,7 @@ async function router() {
     if (parts.length === 0) return renderHome();
     if (parts[0] === "marketplace") return renderMarketplaceHome();
     if (parts[0] === "friends") return renderFriendsPage();
-    if (parts[0] === "shorts") return renderShorts();
+    if (parts[0] === "clips") return renderClips();
     if (parts[0] === "groups" && parts[1]) return renderGroupDetail(parts[1]);
     if (parts[0] === "groups") return renderGroupsHome();
     if (parts[0] === "notifications") return renderNotificationsPage();
@@ -611,9 +679,9 @@ async function router() {
     if (parts[0] === "intl") return renderIntlHome();
     if (parts[0] === "admin" && parts[1]) return renderAdminPanel(parts[1]);
     if (parts[0] === "admin") return renderAdminPanel("reports");
-    viewEl.innerHTML = "<p>Not found.</p>";
+    viewEl.innerHTML = `<div class="not-found-state"><p>${I18N.t("common.notFound")}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
   } catch (e) {
-    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    viewEl.innerHTML = `<div class="not-found-state"><p class="form-msg error">${escapeHtml(e.message)}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
   }
 }
 window.addEventListener("hashchange", router);
@@ -642,39 +710,178 @@ function categoryCardsHtml() {
   ).join("");
 }
 
-// Home ("#/"): the moments feed for logged-in users (Facebook-style focus on
-// sharing), falling back to the marketplace grid for guests who have nothing
-// to see in a feed yet.
+// Home ("#/"): a single ranked vertical feed mixing every author's video AND
+// photo moments (Facebook-style focus on sharing, TikTok-style continuous
+// swipe), falling back to the marketplace grid for guests who have nothing
+// to see in a feed yet. Two pieces, both fed by real endpoints:
+//   (a) a thin "stories" strip - genuinely ephemeral "Loops" (24h,
+//       tap-through viewer, seen/unseen ring), NOT the (now-permanent)
+//       Moments below - loadHomeStoriesStrip() below. Moments were made
+//       permanent on 2026-08-18 (see server.js), which is exactly why this
+//       strip no longer shows them: a "stories" rail stops making sense once
+//       its content never expires. Loops exists as a separate feature/table
+//       (see server.js's "LOOPS" section) specifically to keep that Stories
+//       mechanic alive under its own name.
+//   (b) the full swipe feed itself, sharing its render/gesture engine with
+//       the full-screen Clips player - see drawSwipeItem()/
+//       wireSwipeGestures() above and loadHomeSwipeFeed() below.
+// This replaces the old design (stories bar -> chronological list of
+// friends' posts -> a "Suggested" section): that content is now folded
+// into the single ranked feed instead of being three separate lists.
 function renderHome() {
   if (!state.token) return renderMarketplaceHome();
 
+  // No ad-carousel here on purpose: Home is now a full-bleed content feed,
+  // and a banner above it would eat into the swipe viewport and compete
+  // with the feed the same way the old friends-post list used to. Ads still
+  // run on Marketplace (renderMarketplaceHome), which is the shopping-intent
+  // page where they belong.
   viewEl.innerHTML = `
-    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
-    <div class="feed-section" id="feed-section-friends">
-      <h2 class="section-heading">${I18N.t("feed.friendsHeading")}</h2>
-      <div class="moments-bar" id="home-moments-bar-friends"></div>
+    <div class="home-stories-strip" id="home-stories-strip">
+      <div class="moments-bar" id="home-loops-bar"></div>
     </div>
-    <div class="home-feed-posts" id="home-feed-posts" style="display:none;"></div>
-    <div class="feed-section" id="feed-section-suggested" style="display:none;">
-      <h2 class="section-heading">${I18N.t("feed.suggestedHeading")}</h2>
-      <div class="moments-bar" id="home-moments-bar-suggested" style="display:none;"></div>
-    </div>
+    <div class="home-swipe-feed" id="home-swipe-feed"><p style="color:var(--text-secondary);text-align:center;padding:40px 0;">${I18N.t("common.loading")}</p></div>
   `;
-  // Draw the "your moment" circle (yellow ring if you already posted one today,
-  // plain "+" to add one otherwise) immediately, from data already in memory -
-  // don't wait on the /api/moments/feed round trip for it, and don't let a
-  // failed/slow fetch hide it later (see loadHomeFeed()'s catch below). This
-  // was previously only drawn after the feed loaded, so on a slow connection
-  // or a feed error it silently never appeared at all.
-  renderMomentGroupsBar(document.getElementById("home-moments-bar-friends"), [], {
-    showAddForUserId: state.user.id,
+  // Draw the "your Loop" circle (colored ring if you have an unviewed-by-
+  // someone-else Loop live, plain "+" to add one otherwise) immediately,
+  // from data already in memory - don't wait on the /api/loops/feed round
+  // trip for it, and don't let a failed/slow fetch hide it later (see
+  // loadHomeStoriesStrip()'s catch below). Mirrors how the old permanent-
+  // Moments version of this strip drew its own-circle placeholder eagerly.
+  renderLoopGroupsBar(document.getElementById("home-loops-bar"), [], {
+    ownUserId: state.user.id,
     ownPhoto: state.user.photo,
     ownName: state.user.name,
-    layout: "rect",
   });
-  loadAdCarousel();
-  loadHomeFeed();
+  wireHomeSwipeFeedResize();
+  sizeHomeSwipeFeed();
+  loadHomeStoriesStrip();
+  loadHomeSwipeFeed();
 }
+
+// Thin "stories" strip at the top of Home - the caller's own Loop (if any)
+// plus friends'/followed-pages' Loops from GET /api/loops/feed, grouped by
+// author, rect layout (sized down via .home-stories-strip in style.css).
+// Distinct from the permanent Moments feed below it - see the comment above
+// renderHome().
+async function loadHomeStoriesStrip() {
+  const el = document.getElementById("home-loops-bar");
+  if (!el) return;
+  try {
+    const data = await api("/api/loops/feed", { auth: true });
+    el.style.display = "flex";
+    renderLoopGroupsBar(el, data.groups || [], {
+      ownUserId: state.user.id,
+      ownPhoto: state.user.photo,
+      ownName: state.user.name,
+    });
+  } catch (e) {
+    // Best-effort: leave the "your Loop" circle drawn by renderHome() as-is
+    // rather than wiping the strip - a failed fetch shouldn't make the
+    // add-a-Loop entry point disappear too.
+  }
+}
+
+// The unified ranked Home feed - video AND photo moments from every author,
+// friend/follow-boosted but not friend-filtered (see the comment on
+// /api/moments/videos/feed in server.js), rendered via the same
+// drawSwipeItem()/wireSwipeGestures() engine the full-screen Clips player
+// uses, just mounted inline in normal document flow (see .home-swipe-feed
+// in style.css and sizeHomeSwipeFeed() below) instead of a fixed overlay,
+// so the topbar and bottom nav stay visible around it.
+async function loadHomeSwipeFeed() {
+  const container = document.getElementById("home-swipe-feed");
+  if (!container) return;
+  let items = [];
+  try {
+    items = await api("/api/moments/videos/feed", { auth: true });
+  } catch (e) {}
+  if (!items.length) {
+    // Only happens on a genuinely empty platform (or every moment expired) -
+    // this endpoint isn't friend-filtered, so a normal account with zero
+    // friends still gets content. Same friendly empty state the old
+    // home-feed-posts list used instead of leaving a blank scroller.
+    container.innerHTML = `
+      <div class="empty-state home-feed-empty">
+        <p>${I18N.t("home.feedEmpty")}</p>
+        <div class="home-feed-empty-actions">
+          <a href="#/friends" class="btn btn-secondary">${I18N.t("home.feedEmptyFindPeople")}</a>
+          <a href="#/marketplace" class="btn btn-secondary">${I18N.t("home.feedEmptyBrowse")}</a>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  homeSwipeState = { videos: items, index: 0, rootEl: container, closable: false };
+  drawSwipeItem(homeSwipeState);
+  wireSwipeGestures(container, homeSwipeState);
+}
+
+// The Home swipe feed sits in normal document flow (not a full-screen fixed
+// overlay like Clips) so the topbar and bottom icon-nav stay visible around
+// it - which means its height can't be a fixed vh value, it's "whatever
+// vertical space is actually left" after that chrome, and that differs by
+// screen size (icon-nav moves to a fixed bottom bar under 640px - see the
+// media query in style.css - and the topbar's own height varies with the
+// tagline text wrapping). Measuring it live is simpler and more correct
+// than trying to hardcode every combination in CSS.
+function sizeHomeSwipeFeed() {
+  const container = document.getElementById("home-swipe-feed");
+  if (!container) return;
+  const top = container.getBoundingClientRect().top;
+  const mobileBottomNav = window.innerWidth <= 640;
+  const iconNavEl = document.getElementById("icon-nav");
+  const bottomReserved = mobileBottomNav && iconNavEl ? iconNavEl.offsetHeight : 0;
+  const h = Math.max(320, window.innerHeight - top - bottomReserved);
+  container.style.height = h + "px";
+}
+
+// Wired once ever (idempotent), not per Home visit: renderHome() replaces
+// #home-swipe-feed's own DOM on every visit, but a window-level resize
+// listener added inside renderHome() would otherwise pile up a new one on
+// every navigation back to Home. The handler itself re-queries the DOM
+// fresh each time, so it's a no-op whenever Home isn't the current route.
+let homeSwipeFeedResizeWired = false;
+function wireHomeSwipeFeedResize() {
+  if (homeSwipeFeedResizeWired) return;
+  homeSwipeFeedResizeWired = true;
+  window.addEventListener("resize", sizeHomeSwipeFeed);
+  window.addEventListener("orientationchange", sizeHomeSwipeFeed);
+}
+
+// ---------------- Full-screen overlay back-button support ----------------
+// Camera-style overlays (Moments capture, guided product photo capture,
+// the barcode scanner) are plain DOM overlays stacked on top of the current
+// route, not routes themselves - so the phone/browser Back button used to
+// do nothing about them: it silently changed the underlying page while the
+// camera stayed stuck on screen, leaving the on-screen X as the only way
+// out. We push one throwaway history entry when an overlay opens and
+// consume it on popstate, so Back and X close the overlay the same way.
+let overlayBackGuard = null; // { closeFn } for whichever overlay is open
+
+function guardOverlayForBack(closeFn) {
+  overlayBackGuard = { closeFn };
+  history.pushState({ hiOverlay: true }, "", location.href);
+}
+
+function closeOverlayViaBack(closeFn) {
+  // Used by an overlay's own X/cancel control. If we're still holding the
+  // history entry pushed for it, consume it so a later Back press doesn't
+  // land on a dead state; either way, run the real close logic now.
+  if (overlayBackGuard && overlayBackGuard.closeFn === closeFn) {
+    overlayBackGuard = null;
+    history.back();
+  }
+  closeFn();
+}
+
+window.addEventListener("popstate", () => {
+  if (overlayBackGuard) {
+    const fn = overlayBackGuard.closeFn;
+    overlayBackGuard = null;
+    fn();
+  }
+});
 
 // ---------------- Barcode / ISBN scanner (Marketplace search + listing form) ----------------
 // Shared full-screen scanner reused from two places: the Marketplace search
@@ -717,11 +924,12 @@ function openBarcodeScanner(onDetected) {
     </div>
   `;
   document.body.appendChild(overlay);
+  guardOverlayForBack(closeBarcodeScanner);
 
-  document.getElementById("barcode-scanner-close").addEventListener("click", closeBarcodeScanner);
+  document.getElementById("barcode-scanner-close").addEventListener("click", () => closeOverlayViaBack(closeBarcodeScanner));
   document.getElementById("barcode-scanner-manual").addEventListener("click", (e) => {
     e.preventDefault();
-    closeBarcodeScanner();
+    closeOverlayViaBack(closeBarcodeScanner);
     const manual = prompt(I18N.t("market.enterIsbnPrompt"));
     if (manual && manual.trim()) onDetected(manual.trim());
   });
@@ -769,7 +977,7 @@ function openBarcodeScanner(onDetected) {
           try {
             controls.stop();
           } catch (e2) {}
-          closeBarcodeScanner();
+          closeOverlayViaBack(closeBarcodeScanner);
           onDetected(text);
         }
       }
@@ -858,7 +1066,14 @@ function buildHomeFeedItems(groups) {
   const items = [];
   for (const g of groups) {
     for (const m of g.moments) {
-      items.push({ ...m, userId: g.userId, userName: g.userName, userPhoto: g.userPhoto, isPage: g.isPage });
+      // Mutate the SAME object reference from group.moments (do NOT spread-copy).
+      // The full-screen viewer (openMomentsViewer/drawMomentViewer) reads
+      // group.moments via homeFeedGroupsById, while this list feeds the inline
+      // feed cards. If they were distinct objects, a like/save tap on one
+      // surface wouldn't be reflected on the other. Keeping them as the same
+      // reference means either surface's mutation is instantly visible on both.
+      Object.assign(m, { userId: g.userId, userName: g.userName, userPhoto: g.userPhoto, isPage: g.isPage });
+      items.push(m);
     }
   }
   items.sort((a, b) => b.createdAt - a.createdAt);
@@ -908,8 +1123,19 @@ function renderHomeFeedPosts(groups) {
   const items = buildHomeFeedItems(groups);
   homeFeedMomentsList = items;
   if (!items.length) {
-    el.innerHTML = "";
-    el.style.display = "none";
+    // A brand-new account with zero friends used to just make this whole
+    // section vanish, leaving Home looking blank/broken on first login.
+    // Show a friendly prompt with somewhere useful to go instead.
+    el.style.display = "flex";
+    el.innerHTML = `
+      <div class="empty-state home-feed-empty">
+        <p>${I18N.t("home.feedEmpty")}</p>
+        <div class="home-feed-empty-actions">
+          <a href="#/friends" class="btn btn-secondary">${I18N.t("home.feedEmptyFindPeople")}</a>
+          <a href="#/marketplace" class="btn btn-secondary">${I18N.t("home.feedEmptyBrowse")}</a>
+        </div>
+      </div>
+    `;
     return;
   }
   el.style.display = "flex";
@@ -919,7 +1145,7 @@ function renderHomeFeedPosts(groups) {
 
 // Single delegated listener (wired once, survives re-renders since the
 // container itself is never replaced) so we don't need per-card unique ids
-// the way the single-instance Stories/Shorts overlays do.
+// the way the single-instance Stories/Clips overlays do.
 function wireHomeFeedPostsDelegation() {
   const el = document.getElementById("home-feed-posts");
   if (!el || el.dataset.wired === "1") return;
@@ -1294,6 +1520,7 @@ function renderProductActions(p) {
       ${p.allowOffers ? `<button class="btn btn-outline" id="btn-offer">${I18N.t("product.makeOffer")}</button>` : ""}
       <button class="btn btn-gold" id="btn-buy">${I18N.t("product.buyNow")}</button>
     </div>
+    <p class="buy-safety-note">${I18N.t("product.buySafetyNote")}</p>
   `;
 }
 
@@ -1456,7 +1683,8 @@ function renderRegister() {
       </div>
       <div class="form-group">
         <label>${I18N.t("auth.password")}</label>
-        <input type="password" id="reg-password" />
+        <input type="password" id="reg-password" minlength="6" />
+        <p class="form-field-hint">${I18N.t("auth.passwordHint")}</p>
       </div>
       <div class="form-group">
         <label>${I18N.t("auth.phone")}</label>
@@ -1618,7 +1846,10 @@ async function renderPostAd(editId) {
 
   viewEl.innerHTML = `
     <div class="form-panel wide">
-      <h2 class="section-heading">${I18N.t("postAd.title")}</h2>
+      <div class="post-ad-header-row">
+        <h2 class="section-heading">${I18N.t("postAd.title")}</h2>
+        <a href="#/marketplace" class="post-ad-cancel-link" id="post-ad-cancel">${I18N.t("common.cancel")}</a>
+      </div>
       <button type="button" class="ai-listing-banner" id="ai-listing-banner">
         <span class="ai-listing-banner-icon">&#10024;</span>
         <span class="ai-listing-banner-text">
@@ -1678,6 +1909,7 @@ async function renderPostAd(editId) {
         <label>${I18N.t("postAd.photosField")}</label>
         <div class="photo-upload-grid" id="photo-grid"></div>
         <input type="file" id="p-photos" accept="image/*" multiple style="font-size:12px;" />
+        <button type="button" class="btn btn-secondary" id="p-guided-capture" style="margin-top:8px;">&#128247; ${I18N.t("postAd.guidedCaptureBtn")}</button>
         <button type="button" class="btn btn-ai-suggest" id="p-ai-suggest" style="margin-top:8px;">&#10024; ${I18N.t("postAd.aiSuggest")}</button>
         <p class="post-isbn-lookup-hint" id="p-ai-hint"></p>
       </div>
@@ -1717,9 +1949,14 @@ async function renderPostAd(editId) {
     openBarcodeScanner((code) => {
       document.getElementById("p-isbn").value = code;
       isbnLookupAndFill(code);
+      // Keep the seller moving in one continuous flow: scan -> photograph.
+      // If they haven't added photos yet, jump straight into guided capture
+      // instead of leaving them to hunt for the button themselves.
+      if (photoBuffer.length === 0) openGuidedPhotoCapture();
     });
   });
   document.getElementById("p-isbn").addEventListener("blur", (e) => isbnLookupAndFill(e.target.value.trim()));
+  document.getElementById("p-guided-capture").addEventListener("click", openGuidedPhotoCapture);
 
   const aiHintEl = document.getElementById("p-ai-hint");
   const aiSuggestBtn = document.getElementById("p-ai-suggest");
@@ -1837,7 +2074,7 @@ function renderPhotoGrid() {
   let html = "";
   for (let i = 0; i < MAX_PHOTOS; i++) {
     if (photoBuffer[i]) {
-      html += `<div class="photo-slot"><img src="${photoBuffer[i]}" /><button class="remove-photo" data-i="${i}">&times;</button></div>`;
+      html += `<div class="photo-slot"><img src="${photoBuffer[i]}" /><button class="remove-photo" data-i="${i}" aria-label="${I18N.t("postAd.removePhoto")}">&times;</button></div>`;
     } else {
       html += `<div class="photo-slot">+</div>`;
     }
@@ -1849,6 +2086,164 @@ function renderPhotoGrid() {
       renderPhotoGrid();
     });
   });
+}
+
+// ---------------- Guided photo capture (product mode) ----------------
+// Walks a seller through a fixed shot sequence (front cover, back cover,
+// spine, optional damage close-up) instead of one loose photo at a time -
+// this is the highest-leverage camera improvement for book listings per the
+// C2C-books strategy: it directly improves listing quality/speed, which is
+// the "logistics" half of "easy to use + great logistics."
+const GUIDED_SHOT_SEQUENCE = [
+  { key: "front", required: true },
+  { key: "back", required: true },
+  { key: "spine", required: false },
+  { key: "damage", required: false },
+];
+
+let guidedCapture = null;
+
+function openGuidedPhotoCapture() {
+  if (photoBuffer.length >= MAX_PHOTOS) {
+    alert(I18N.t("postAd.guidedMaxReached"));
+    return;
+  }
+  guidedCapture = {
+    index: 0,
+    stream: null,
+    shots: GUIDED_SHOT_SEQUENCE.map((s) => ({ ...s, dataUrl: null })),
+  };
+  const overlay = document.createElement("div");
+  overlay.id = "guided-capture-overlay";
+  overlay.className = "guided-capture-overlay";
+  document.body.appendChild(overlay);
+  guardOverlayForBack(closeGuidedCapture);
+  drawGuidedCapture();
+  startGuidedStream();
+}
+
+function startGuidedStream() {
+  if (!guidedCapture || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) return;
+  navigator.mediaDevices
+    .getUserMedia({ video: { facingMode: "environment" } })
+    .then((stream) => {
+      if (!guidedCapture) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      guidedCapture.stream = stream;
+      const video = document.getElementById("guided-video");
+      if (video) video.srcObject = stream;
+    })
+    .catch(() => {
+      const hint = document.getElementById("guided-capture-hint");
+      if (hint) hint.textContent = I18N.t("create.cameraUnavailable");
+    });
+}
+
+function closeGuidedCapture() {
+  if (guidedCapture && guidedCapture.stream) guidedCapture.stream.getTracks().forEach((t) => t.stop());
+  const overlay = document.getElementById("guided-capture-overlay");
+  if (overlay) overlay.remove();
+  guidedCapture = null;
+}
+
+function guidedCaptureShot() {
+  const video = document.getElementById("guided-video");
+  if (!video || !video.srcObject) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth || 900;
+  canvas.height = video.videoHeight || 900;
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  guidedCapture.shots[guidedCapture.index].dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  drawGuidedCapture();
+}
+
+function guidedRetake() {
+  guidedCapture.shots[guidedCapture.index].dataUrl = null;
+  drawGuidedCapture();
+}
+
+function guidedAdvance() {
+  if (guidedCapture.index < guidedCapture.shots.length - 1) {
+    guidedCapture.index += 1;
+    drawGuidedCapture();
+  } else {
+    finishGuidedCapture();
+  }
+}
+
+async function finishGuidedCapture() {
+  const captured = guidedCapture.shots.filter((s) => s.dataUrl);
+  for (const s of captured) {
+    if (photoBuffer.length >= MAX_PHOTOS) break;
+    const cleaned = await autoEnhanceImage(s.dataUrl);
+    photoBuffer.push(cleaned);
+  }
+  renderPhotoGrid();
+  closeOverlayViaBack(closeGuidedCapture);
+}
+
+function drawGuidedCapture() {
+  const overlay = document.getElementById("guided-capture-overlay");
+  if (!overlay || !guidedCapture) return;
+  const shot = guidedCapture.shots[guidedCapture.index];
+  const n = guidedCapture.shots.length;
+  const stepLabel = I18N.t("postAd.guidedStepOf")
+    .replace("{i}", String(guidedCapture.index + 1))
+    .replace("{n}", String(n));
+  const shotLabel = I18N.t("postAd.guidedShot_" + shot.key);
+  const thumbsHtml = guidedCapture.shots
+    .map(
+      (s, i) =>
+        `<span class="guided-thumb ${i === guidedCapture.index ? "current" : ""} ${s.dataUrl ? "done" : ""}">${
+          s.dataUrl ? `<img src="${s.dataUrl}" />` : ""
+        }</span>`
+    )
+    .join("");
+
+  overlay.innerHTML = `
+    <div class="guided-capture-topbar">
+      <button class="wizard-fs-icon-btn" id="guided-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+      <span class="guided-capture-step">${stepLabel}: ${shotLabel}${shot.required ? "" : " (" + I18N.t("postAd.guidedOptional") + ")"}</span>
+    </div>
+    <div class="guided-capture-video-wrap">
+      ${
+        shot.dataUrl
+          ? `<img class="guided-capture-preview" src="${shot.dataUrl}" />`
+          : `<video id="guided-video" autoplay playsinline muted></video><p class="wizard-fs-hint" id="guided-capture-hint"></p>`
+      }
+    </div>
+    <div class="guided-capture-thumbs">${thumbsHtml}</div>
+    <div class="guided-capture-controls">
+      ${
+        shot.dataUrl
+          ? `<button class="btn btn-secondary" id="guided-retake">${I18N.t("postAd.guidedRetake")}</button>
+             <button class="btn btn-primary" id="guided-next">${guidedCapture.index === n - 1 ? I18N.t("postAd.guidedFinish") : I18N.t("postAd.guidedNext")}</button>`
+          : `<div class="wizard-fs-capture-wrap"><button class="wizard-fs-capture-btn" id="guided-shutter" aria-label="${I18N.t("create.capturePhoto")}"></button></div>`
+      }
+    </div>
+    ${!shot.dataUrl && !shot.required ? `<p class="guided-capture-skip"><a href="#" id="guided-skip">${I18N.t("postAd.guidedSkip")}</a></p>` : ""}
+  `;
+
+  const video = document.getElementById("guided-video");
+  if (video && guidedCapture.stream) video.srcObject = guidedCapture.stream;
+
+  document.getElementById("guided-close").addEventListener("click", () => closeOverlayViaBack(closeGuidedCapture));
+  if (shot.dataUrl) {
+    document.getElementById("guided-retake").addEventListener("click", guidedRetake);
+    document.getElementById("guided-next").addEventListener("click", guidedAdvance);
+  } else {
+    const shutter = document.getElementById("guided-shutter");
+    if (shutter) shutter.addEventListener("click", guidedCaptureShot);
+    const skip = document.getElementById("guided-skip");
+    if (skip) {
+      skip.addEventListener("click", (e) => {
+        e.preventDefault();
+        guidedAdvance();
+      });
+    }
+  }
 }
 
 // ---------------- Friends ----------------
@@ -2594,7 +2989,7 @@ function renderPhotosGalleryTab(photos, isMe) {
       (p) => `
     <div class="photo-gallery-item" data-id="${p.id}">
       <img src="${p.url}" />
-      ${isMe ? `<button class="photo-remove-btn" data-id="${p.id}">&times;</button>` : ""}
+      ${isMe ? `<button class="photo-remove-btn" data-id="${p.id}" aria-label="${I18N.t("postAd.removePhoto")}">&times;</button>` : ""}
     </div>`
     )
     .join("");
@@ -2731,6 +3126,81 @@ function renderMomentGroupsBar(containerEl, groups, opts) {
   });
 }
 
+// Renders the Loops "stories" strip on Home (see the .home-stories-strip
+// comment on renderHome()). Deliberately a separate function from
+// renderMomentGroupsBar() above rather than a third opts-flag on it: the
+// data shape differs (groups carry `loops` + a per-loop `viewed` flag
+// instead of `moments`), the ring needs a seen/unseen state Moments never
+// had once they went permanent, and the "own" affordance opens the create
+// wizard directly instead of the Moments-specific upload modal - trying to
+// thread all of that through one shared function would leave more
+// conditionals than shared code. Own dedicated CSS classes too
+// (.loop-rect-*, mirroring .moment-rect-*) for the same reason.
+function renderLoopGroupsBar(containerEl, groups, opts) {
+  const mine = opts && opts.ownUserId ? groups.find((g) => g.userId === opts.ownUserId) : null;
+  const hasOwn = !!(mine && mine.loops.length);
+  let html = "";
+  if (opts && opts.ownUserId) {
+    const thumb = hasOwn && mine.loops[0].mediaType === "photo" ? mine.loops[0].mediaUrl : opts.ownPhoto;
+    html += `
+      <div class="loop-rect-wrap loop-rect-add" id="loop-add-circle" style="${thumb ? `background-image:url('${thumb}')` : ""}">
+        ${!thumb ? `<div class="loop-rect-placeholder">${initials(opts.ownName || "")}</div>` : ""}
+        <span class="loop-rect-shade"></span>
+        <span class="loop-rect-add-badge" id="loop-add-badge" title="${I18N.t("loops.add")}">+</span>
+        <span class="loop-rect-name">${I18N.t("loops.yourLoop")}</span>
+      </div>`;
+  }
+  const others = opts && opts.ownUserId ? groups.filter((g) => g.userId !== opts.ownUserId) : groups;
+  others.forEach((g) => {
+    // Ring reads "unviewed" (colored/gold, same treatment the always-gold
+    // .moment-rect-avatar border used to signal "new") as long as ANY of
+    // this author's Loops hasn't been seen by the current viewer yet, and
+    // flips to a plain/gray ring only once every one of them has - same
+    // all-or-nothing rule Instagram/FB Stories use for a person's ring.
+    const allViewed = g.loops.every((l) => l.viewed);
+    const thumb = g.loops[0] && g.loops[0].mediaType === "photo" ? g.loops[0].mediaUrl : g.userPhoto;
+    html += `
+      <div class="loop-rect-wrap" data-uid="${g.userId}" style="${thumb ? `background-image:url('${thumb}')` : ""}">
+        ${!thumb ? `<div class="loop-rect-placeholder">${initials(g.userName)}</div>` : ""}
+        <span class="loop-rect-shade"></span>
+        <div class="loop-rect-avatar ${allViewed ? "loop-rect-avatar-viewed" : "loop-rect-avatar-unviewed"}">
+          ${g.userPhoto ? `<img src="${g.userPhoto}" />` : `<div class="loop-rect-avatar-placeholder">${initials(g.userName)}</div>`}
+        </div>
+        <span class="loop-rect-name">${escapeHtml(g.userName)}</span>
+      </div>`;
+  });
+  containerEl.innerHTML = html;
+
+  if (opts && opts.ownUserId) {
+    const addCircle = document.getElementById("loop-add-circle");
+    if (addCircle) {
+      addCircle.addEventListener("click", () => {
+        if (mine && mine.loops.length) {
+          openLoopsViewer(mine.loops, 0, mine);
+        } else {
+          openCreateWizard("loop");
+        }
+      });
+    }
+    // The small "+" badge always opens the capture flow to add another Loop,
+    // even if the user already has active ones - tapping the rest of the
+    // circle views your current Loop(s), same split as the Moments bar's
+    // add badge vs. circle.
+    const addBadge = document.getElementById("loop-add-badge");
+    if (addBadge) {
+      addBadge.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openCreateWizard("loop");
+      });
+    }
+  }
+  containerEl.querySelectorAll(".loop-rect-wrap[data-uid]").forEach((wrap) => {
+    wrap.addEventListener("click", () => {
+      const g = groups.find((x) => x.userId === wrap.dataset.uid);
+      if (g) openLoopsViewer(g.loops, 0, g);
+    });
+  });
+}
 
 function renderProfileMomentsBar(userId, userName, userPhoto, moments, isMe) {
   const el = document.getElementById("profile-moments-bar");
@@ -2753,7 +3223,7 @@ let momentViewerTimer = null;
 let homeFeedMomentsList = [];
 let homeFeedGroupsById = {};
 
-// Reels/Shorts-style action rail icons for the Moments story viewer: white
+// Vertical-video-style action rail icons for the Moments story viewer: white
 // outline by default, filled via the ".active" CSS class (persistent for
 // like/save, momentary for message/share/repost as a press-feedback flash).
 const MOMENT_ICON_HEART =
@@ -2903,7 +3373,7 @@ function resumeMomentViewerPlayback() {
 async function openMomentComments(m, overlayId, context) {
   overlayId = overlayId || "moment-viewer-overlay";
   context = context || "story";
-  if (context === "shorts") pauseShortsPlayback();
+  if (context === "clips") pauseClipsPlayback();
   else pauseMomentViewerPlayback();
   momentCommentsState = { momentId: m.id, comments: [], replyTo: null, loading: true, context };
   const overlay = document.getElementById(overlayId);
@@ -2932,17 +3402,17 @@ function closeMomentComments() {
   if (panel) panel.remove();
   const context = momentCommentsState ? momentCommentsState.context : "story";
   momentCommentsState = null;
-  if (context === "shorts") resumeShortsPlayback();
+  if (context === "clips") resumeClipsPlayback();
   else resumeMomentViewerPlayback();
 }
 
-function pauseShortsPlayback() {
-  const videoEl = document.getElementById("shorts-video");
+function pauseClipsPlayback() {
+  const videoEl = document.getElementById("clips-video");
   if (videoEl) videoEl.pause();
 }
 
-function resumeShortsPlayback() {
-  const videoEl = document.getElementById("shorts-video");
+function resumeClipsPlayback() {
+  const videoEl = document.getElementById("clips-video");
   if (videoEl) videoEl.play().catch(() => {});
 }
 
@@ -2974,7 +3444,7 @@ function drawMomentComments() {
     <div class="moment-comments-sheet">
       <div class="moment-comments-head">
         <span>${I18N.t("moments.commentsTitle") || "Comments"}</span>
-        <button class="moment-comments-close" id="moment-comments-close">&times;</button>
+        <button class="moment-comments-close" id="moment-comments-close" aria-label="${I18N.t("common.close")}">&times;</button>
       </div>
       <div class="moment-comments-list">${listHtml}</div>
       ${
@@ -3101,7 +3571,7 @@ function drawMomentViewer() {
               }</button>`
             : ""
         }
-        <button class="moment-viewer-close" id="moment-viewer-close">&times;</button>
+        <button class="moment-viewer-close" id="moment-viewer-close" aria-label="${I18N.t("common.close")}">&times;</button>
       </div>
       ${
         m.mediaType === "video"
@@ -3216,187 +3686,290 @@ function stepMomentViewer(dir) {
   drawMomentViewer();
 }
 
-// ---------------- "Moments" full-screen video feed ("#/shorts") ----------------
-// A single vertical stream of every active video Moment on the platform,
-// ranked by /api/moments/videos/feed (friends > followed Pages > Pages >
-// recency). Distinct from the story-style moments-bar above: this is a
-// continuous scroll/swipe feed like Reels/Shorts, browsing all video content.
+// ---------------- Loops full-screen viewer ----------------
+// Its own function rather than a second mode bolted onto
+// openMomentsViewer()/drawMomentViewer() above: the interaction model is
+// genuinely different (tap-to-advance + auto-advance timing vs. that
+// viewer's like/message/share/repost/save action rail and follow button),
+// and Loops has no equivalent of any of those social actions in v1 (see the
+// scope note in the PR/report - out of scope for now, tap-through +
+// seen/unseen + owner view count + delete is the full v1 feature set).
+// Reuses the same overlay-back-button pattern (guardOverlayForBack /
+// closeOverlayViaBack) as every other full-screen overlay in the app.
+let loopViewerState = null; // { loops, index, group, viewedIds: Set<loopId> }
+let loopViewerTimer = null; // photo auto-advance timer - always cleared before being reassigned or on close, so it can never leak or double-fire
+const LOOP_PHOTO_DURATION_MS = 5000; // same fixed "how long a photo stays up" as the Moments viewer uses
 
-let shortsState = null;
+function openLoopsViewer(loops, startIndex, group) {
+  if (!loops || !loops.length) return;
+  loopViewerState = { loops: loops.slice(), index: startIndex || 0, group, viewedIds: new Set() };
+  const overlay = document.createElement("div");
+  overlay.className = "loop-viewer-overlay";
+  overlay.id = "loop-viewer-overlay";
+  document.body.appendChild(overlay);
+  guardOverlayForBack(closeLoopsViewer);
+  drawLoopViewer();
+}
 
-async function renderShorts() {
+function closeLoopsViewer() {
+  if (loopViewerTimer) {
+    clearTimeout(loopViewerTimer);
+    loopViewerTimer = null;
+  }
+  const overlay = document.getElementById("loop-viewer-overlay");
+  if (overlay) overlay.remove();
+  loopViewerState = null;
+}
+
+function drawLoopViewer() {
+  const overlay = document.getElementById("loop-viewer-overlay");
+  if (!overlay || !loopViewerState) return;
+  // Always clear any still-pending photo-advance timer before redrawing -
+  // drawLoopViewer() is called both on navigation and after an in-place
+  // mutation (delete), so without this a stale timer from the previous
+  // loop could fire after the DOM (and its progress bar) has moved on.
+  if (loopViewerTimer) {
+    clearTimeout(loopViewerTimer);
+    loopViewerTimer = null;
+  }
+  const { loops, index, group } = loopViewerState;
+  const m = loops[index];
+  const isOwn = state.user && m.userId === state.user.id;
+
+  // Record the view once per loop per viewer-session (the endpoint is
+  // idempotent server-side too, but no need to re-fire it every time the
+  // user steps back and forth over the same loop in one sitting).
+  if (!loopViewerState.viewedIds.has(m.id)) {
+    loopViewerState.viewedIds.add(m.id);
+    api("/api/loops/" + m.id + "/view", { method: "POST", auth: true }).catch(() => {});
+  }
+
+  const bars = loops
+    .map((_, i) => `<div class="loop-viewer-progress-bar ${i < index ? "done" : ""}"><div class="loop-viewer-progress-fill" id="loop-progress-fill-${i}"></div></div>`)
+    .join("");
+
+  overlay.innerHTML = `
+    <div class="loop-viewer-media-wrap">
+      <div class="loop-viewer-progress">${bars}</div>
+      <div class="loop-viewer-head">
+        <button class="loop-viewer-head-link" id="loop-viewer-head-link" ${group && group.userId ? "" : "disabled"}>
+          ${group && group.userPhoto ? `<img src="${group.userPhoto}" />` : ""}
+          <span class="loop-viewer-head-name">${escapeHtml((group && group.userName) || "")}${group && group.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        </button>
+        ${isOwn ? `<span class="loop-viewer-view-count" title="${I18N.t("loops.views")}">&#128065; ${m.viewCount || 0}</span>` : ""}
+        <button class="loop-viewer-close" id="loop-viewer-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      ${
+        m.mediaType === "video"
+          ? `<video class="loop-viewer-media" id="loop-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>`
+          : `<img class="loop-viewer-media" id="loop-viewer-media" src="${m.mediaUrl}" />`
+      }
+      ${m.caption ? `<div class="loop-viewer-caption">${linkifyHashtags(escapeHtml(m.caption))}</div>` : ""}
+      ${isOwn ? `<button class="loop-viewer-delete" id="loop-viewer-delete">${I18N.t("loops.delete")}</button>` : ""}
+      <button class="loop-viewer-nav prev" id="loop-viewer-prev"></button>
+      <button class="loop-viewer-nav next" id="loop-viewer-next"></button>
+    </div>
+  `;
+
+  document.getElementById("loop-viewer-close").addEventListener("click", () => closeOverlayViaBack(closeLoopsViewer));
+  document.getElementById("loop-viewer-prev").addEventListener("click", () => stepLoopViewer(-1));
+  document.getElementById("loop-viewer-next").addEventListener("click", () => stepLoopViewer(1));
+  const headLink = document.getElementById("loop-viewer-head-link");
+  if (headLink && !headLink.disabled) {
+    headLink.addEventListener("click", () => {
+      const uid = group && group.userId;
+      if (!uid) return;
+      closeOverlayViaBack(closeLoopsViewer);
+      location.hash = "#/profile/" + uid;
+    });
+  }
+  const delBtn = document.getElementById("loop-viewer-delete");
+  if (delBtn) {
+    delBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("loops.confirmDelete"))) return;
+      try {
+        await api("/api/loops/" + m.id, { method: "DELETE", auth: true });
+        loopViewerState.loops.splice(index, 1);
+        if (!loopViewerState.loops.length) {
+          closeOverlayViaBack(closeLoopsViewer);
+          router();
+          return;
+        }
+        loopViewerState.index = Math.min(index, loopViewerState.loops.length - 1);
+        drawLoopViewer();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+
+  const fill = document.getElementById("loop-progress-fill-" + index);
+  if (m.mediaType === "video") {
+    const videoEl = document.getElementById("loop-viewer-media");
+    if (videoEl) {
+      videoEl.muted = false;
+      videoEl.volume = 1;
+      videoEl.addEventListener("loadedmetadata", () => {
+        if (fill && videoEl.duration && isFinite(videoEl.duration)) {
+          requestAnimationFrame(() => {
+            fill.style.transition = "width " + videoEl.duration * 1000 + "ms linear";
+            fill.style.width = "100%";
+          });
+        }
+      });
+      videoEl.addEventListener("ended", () => stepLoopViewer(1));
+    }
+  } else {
+    if (fill) {
+      requestAnimationFrame(() => {
+        fill.style.transition = "width " + LOOP_PHOTO_DURATION_MS + "ms linear";
+        fill.style.width = "100%";
+      });
+    }
+    loopViewerTimer = setTimeout(() => stepLoopViewer(1), LOOP_PHOTO_DURATION_MS);
+  }
+}
+
+function stepLoopViewer(dir) {
+  if (!loopViewerState) return;
+  const next = loopViewerState.index + dir;
+  if (next < 0) return;
+  if (next >= loopViewerState.loops.length) {
+    closeLoopsViewer();
+    return;
+  }
+  loopViewerState.index = next;
+  drawLoopViewer();
+}
+
+// ---------------- Shared vertical swipe-feed engine ----------------
+// Both the full-screen "Clips" player ("#/clips": a TikTok-style takeover
+// with the topbar/bottom nav hidden) and the inline Home feed (mixed
+// photo+video moments, scrolling in normal document flow with the topbar
+// and bottom nav still visible - see renderHome()/loadHomeSwipeFeed() far
+// below) show the same ranked list from /api/moments/videos/feed and need
+// identical per-item rendering, swipe/wheel gestures, and watch-time
+// reporting. Every function here takes an explicit swipe-feed state object
+// (called `sw` below - NOT the unrelated global session `state`, which is
+// why the param isn't named `state`) shaped like
+// { videos, index, rootEl, closable, watchStart, currentDurationMs } so the
+// two surfaces run as fully independent instances instead of fighting over
+// one global. `clipsState` (the full-screen player) and `homeSwipeState`
+// (the inline Home feed) are the two live instances of that shape.
+
+// A photo has no natural "duration" to wait out the way a video does, so a
+// swipe-away after roughly this long counts as "watched it", short of that
+// counts as a "skip" - the same complete/skip signal the ranking in
+// /api/moments/videos/feed already consumes for videos, just fed a fixed
+// nominal duration instead of a real one (see reportSwipeWatch()).
+const SWIPE_PHOTO_DWELL_MS = 4000;
+
+let clipsState = null;
+let homeSwipeState = null;
+
+async function renderClips() {
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
   let videos = [];
   try {
     videos = await api("/api/moments/videos/feed", { auth: true });
   } catch (e) {}
   if (!videos.length) {
-    viewEl.innerHTML = `<div class="empty-state">${I18N.t("shorts.empty")}</div>`;
+    viewEl.innerHTML = `<div class="empty-state">${I18N.t("clips.empty")}</div>`;
     return;
   }
   viewEl.innerHTML = "";
-  openShortsPlayer(videos, 0);
+  openClipsPlayer(videos, 0);
 }
 
-function openShortsPlayer(videos, startIndex) {
-  shortsState = { videos, index: startIndex || 0 };
+function openClipsPlayer(videos, startIndex) {
   const overlay = document.createElement("div");
-  overlay.className = "shorts-overlay";
-  overlay.id = "shorts-overlay";
+  overlay.className = "clips-overlay";
+  overlay.id = "clips-overlay";
   document.body.appendChild(overlay);
-  drawShorts();
-
-  overlay.addEventListener(
-    "wheel",
-    (e) => {
-      if (overlay.dataset.wheelLock === "1") return;
-      overlay.dataset.wheelLock = "1";
-      setTimeout(() => (overlay.dataset.wheelLock = "0"), 500);
-      if (e.deltaY > 30) stepShorts(1);
-      else if (e.deltaY < -30) stepShorts(-1);
-    },
-    { passive: true }
-  );
-
-  // ---- Vertical swipe navigation (TikTok/Reels style) ----
-  // The current video visibly follows the finger as you drag, then either
-  // completes the transition to the next/previous video on release or
-  // snaps back if the swipe was too short. Replaces the old up/down arrow
-  // buttons entirely - this is the only way to move between moments now.
-  let touchStartY = null;
-  let touchStartX = null;
-  let dragging = false;
-  let lockedAxis = null; // "y" | "x" | null - decided a few px into the gesture
-
-  overlay.addEventListener(
-    "touchstart",
-    (e) => {
-      if (e.touches.length !== 1) return;
-      touchStartY = e.touches[0].clientY;
-      touchStartX = e.touches[0].clientX;
-      dragging = true;
-      lockedAxis = null;
-      const item = overlay.querySelector(".shorts-item");
-      if (item) item.style.transition = "none";
-    },
-    { passive: true }
-  );
-
-  overlay.addEventListener(
-    "touchmove",
-    (e) => {
-      if (!dragging || touchStartY === null) return;
-      const dy = e.touches[0].clientY - touchStartY;
-      const dx = e.touches[0].clientX - touchStartX;
-      if (!lockedAxis) {
-        if (Math.abs(dy) < 6 && Math.abs(dx) < 6) return;
-        lockedAxis = Math.abs(dy) > Math.abs(dx) ? "y" : "x";
-      }
-      if (lockedAxis !== "y") return;
-      e.preventDefault();
-      const atFirst = shortsState.index === 0 && dy > 0;
-      const atLast = shortsState.index === shortsState.videos.length - 1 && dy < 0;
-      const damped = atFirst || atLast ? dy * 0.35 : dy;
-      const item = overlay.querySelector(".shorts-item");
-      if (item) item.style.transform = `translateY(${damped}px)`;
-    },
-    { passive: false }
-  );
-
-  overlay.addEventListener(
-    "touchend",
-    (e) => {
-      if (!dragging || touchStartY === null) {
-        dragging = false;
-        return;
-      }
-      dragging = false;
-      const dy = e.changedTouches[0].clientY - touchStartY;
-      touchStartY = null;
-      touchStartX = null;
-      if (lockedAxis !== "y") return;
-      const item = overlay.querySelector(".shorts-item");
-      const THRESHOLD = 60;
-      if (dy < -THRESHOLD) {
-        stepShorts(1);
-      } else if (dy > THRESHOLD) {
-        stepShorts(-1);
-      } else if (item) {
-        item.style.transition = "transform 0.2s ease";
-        item.style.transform = "translateY(0)";
-      }
-    },
-    { passive: true }
-  );
+  clipsState = { videos, index: startIndex || 0, rootEl: overlay, closable: true };
+  drawSwipeItem(clipsState);
+  wireSwipeGestures(overlay, clipsState);
 }
 
-function closeShortsPlayer() {
-  reportShortsWatch();
-  const overlay = document.getElementById("shorts-overlay");
-  if (overlay) overlay.remove();
-  shortsState = null;
-  if (location.hash.startsWith("#/shorts")) location.hash = "#/";
+// Shared close path for any closable swipe-feed instance (today only the
+// full-screen Clips overlay sets closable:true - the inline Home feed has
+// no "X", it just scrolls away). Reports the outgoing item's watch time,
+// tears down the overlay DOM, and - only for the Clips instance
+// specifically - resets the "#/clips" hash back to Home.
+function closeSwipeFeed(sw) {
+  reportSwipeWatch(sw);
+  if (sw && sw.closable && sw.rootEl) sw.rootEl.remove();
+  if (sw === clipsState) {
+    clipsState = null;
+    if (location.hash.startsWith("#/clips")) location.hash = "#/";
+  }
 }
 
-// Reports how the viewer engaged with the video currently on screen -
-// "complete" if they stuck around for most of it (it loops, so a near-full
-// watch counts even without a real "ended" event), "skip" otherwise. Called
-// right before we move away from a video, feeding the affinity/popularity
-// signals the v2 ranking in /api/moments/videos/feed uses.
-function reportShortsWatch() {
-  if (!shortsState) return;
-  const v = shortsState.videos[shortsState.index];
-  if (!v || !shortsState.watchStart) return;
-  const watchMs = Date.now() - shortsState.watchStart;
-  const durationMs = shortsState.currentDurationMs || 0;
+function closeClipsPlayer() {
+  closeSwipeFeed(clipsState);
+}
+
+// Reports how the viewer engaged with the item currently on screen -
+// "complete" if they stuck around for most of it (video loops, so a
+// near-full watch counts even without a real "ended" event; photos use the
+// fixed SWIPE_PHOTO_DWELL_MS above), "skip" otherwise. Called right before
+// we move away from an item, feeding the affinity/popularity signals the
+// v2 ranking in /api/moments/videos/feed uses.
+function reportSwipeWatch(sw) {
+  if (!sw) return;
+  const v = sw.videos[sw.index];
+  if (!v || !sw.watchStart) return;
+  const watchMs = Date.now() - sw.watchStart;
+  const durationMs = sw.currentDurationMs || 0;
   const type = durationMs && watchMs >= durationMs * 0.85 ? "complete" : "skip";
   api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type, watchMs, durationMs } }).catch(() => {});
-  shortsState.watchStart = null;
+  sw.watchStart = null;
 }
 
-function toggleShortsLike() {
-  if (!shortsState) return;
+function toggleSwipeLike(sw) {
+  if (!sw) return;
   if (!state.token) {
     location.hash = "#/login";
     return;
   }
-  const v = shortsState.videos[shortsState.index];
+  const v = sw.videos[sw.index];
   const wasLiked = v.liked;
   v.liked = !wasLiked;
   v.likeCount = Math.max(0, (v.likeCount || 0) + (v.liked ? 1 : -1));
-  updateShortsLikeUI();
+  updateSwipeLikeUI(sw);
   api("/api/moments/" + v.id + "/like", { method: v.liked ? "POST" : "DELETE", auth: true, body: {} }).catch(() => {
     v.liked = wasLiked;
     v.likeCount = Math.max(0, (v.likeCount || 0) + (wasLiked ? 1 : -1));
-    updateShortsLikeUI();
+    updateSwipeLikeUI(sw);
   });
   if (v.liked) {
     api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type: "like" } }).catch(() => {});
   }
 }
 
-function updateShortsLikeUI() {
-  if (!shortsState) return;
-  const v = shortsState.videos[shortsState.index];
-  const btn = document.getElementById("shorts-like");
-  const countEl = document.getElementById("shorts-like-count");
+function updateSwipeLikeUI(sw) {
+  if (!sw) return;
+  const v = sw.videos[sw.index];
+  const btn = document.getElementById("clips-like");
+  const countEl = document.getElementById("clips-like-count");
   if (btn) btn.classList.toggle("active", !!v.liked);
   if (countEl) countEl.textContent = v.likeCount || 0;
 }
 
-// Comment/share/repost/save for the Shorts player - mirrors
-// wireMomentViewerActions() so both surfaces behave identically (optimistic
-// toggle, revert on failure, same icon set and "active" styling).
-function wireShortsActions(v) {
-  const msgBtn = document.getElementById("shorts-message");
+// Comment/share/repost/save for a swipe-feed item - mirrors
+// wireMomentViewerActions() so all three surfaces (story viewer, Clips,
+// Home) behave identically (optimistic toggle, revert on failure, same
+// icon set and "active" styling).
+function wireSwipeActions(sw, v) {
+  const msgBtn = document.getElementById("clips-message");
   if (msgBtn) {
     msgBtn.addEventListener("click", () => {
       flashMomentAction(msgBtn);
-      openMomentComments(v, "shorts-overlay", "shorts");
+      openMomentComments(v, sw.rootEl.id, "clips");
     });
   }
 
-  const shareBtn = document.getElementById("shorts-share");
+  const shareBtn = document.getElementById("clips-share");
   if (shareBtn) {
     shareBtn.addEventListener("click", async () => {
       flashMomentAction(shareBtn);
@@ -3412,7 +3985,7 @@ function wireShortsActions(v) {
     });
   }
 
-  const repostBtn = document.getElementById("shorts-repost");
+  const repostBtn = document.getElementById("clips-repost");
   if (repostBtn) {
     repostBtn.addEventListener("click", async () => {
       if (!state.token) {
@@ -3430,7 +4003,7 @@ function wireShortsActions(v) {
     });
   }
 
-  const saveBtn = document.getElementById("shorts-save");
+  const saveBtn = document.getElementById("clips-save");
   if (saveBtn) {
     saveBtn.addEventListener("click", async () => {
       if (!state.token) {
@@ -3450,84 +4023,97 @@ function wireShortsActions(v) {
   }
 }
 
-function burstShortsHeart() {
-  const item = document.querySelector(".shorts-item");
+function burstSwipeHeart(sw) {
+  const item = sw.rootEl.querySelector(".clips-item");
   if (!item) return;
   const heart = document.createElement("div");
-  heart.className = "shorts-heart-burst";
+  heart.className = "clips-heart-burst";
   heart.textContent = "❤️";
   item.appendChild(heart);
   setTimeout(() => heart.remove(), 900);
 }
 
-function drawShorts() {
-  const overlay = document.getElementById("shorts-overlay");
-  if (!overlay || !shortsState) return;
-  const { videos, index } = shortsState;
+// Renders the currently-indexed item of `sw` into sw.rootEl - a photo
+// <img> or a video <video>, plus the shared author/caption/action-rail
+// chrome. `sw.closable` controls whether the full-screen-only "X" close
+// button is included (see closeSwipeFeed() above).
+function drawSwipeItem(sw) {
+  const root = sw.rootEl;
+  if (!root) return;
+  const { videos, index } = sw;
   const v = videos[index];
   const isOwn = state.user && v.userId === state.user.id;
   const showFollow = v.isPage && state.token && !isOwn;
+  const isPhoto = v.mediaType !== "video";
 
-  overlay.innerHTML = `
-    <div class="shorts-item">
-      <video class="shorts-video" id="shorts-video" src="${v.mediaUrl}" autoplay loop playsinline></video>
-      <button class="shorts-close" id="shorts-close">&times;</button>
-      <div class="shorts-info">
-        <a class="shorts-author-link" href="#/profile/${v.userId}">
-          ${v.userPhoto ? `<img class="shorts-avatar" src="${v.userPhoto}" />` : `<div class="shorts-avatar-placeholder">${initials(v.userName)}</div>`}
-          <span class="shorts-author">${escapeHtml(v.userName)}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+  root.innerHTML = `
+    <div class="clips-item">
+      ${
+        isPhoto
+          ? `<img class="clips-video clips-photo" id="clips-video" src="${v.mediaUrl}" />`
+          : `<video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>`
+      }
+      ${sw.closable ? `<button class="clips-close" id="clips-close" aria-label="${I18N.t("common.close")}">&times;</button>` : ""}
+      <div class="clips-info">
+        <a class="clips-author-link" href="#/profile/${v.userId}">
+          ${v.userPhoto ? `<img class="clips-avatar" src="${v.userPhoto}" />` : `<div class="clips-avatar-placeholder">${initials(v.userName)}</div>`}
+          <span class="clips-author">${escapeHtml(v.userName)}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
         </a>
-        ${v.caption ? `<p class="shorts-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
-        ${showFollow ? `<button class="btn-follow-inline shorts-follow" id="shorts-follow">${I18N.t("subs.subscribe")}</button>` : ""}
+        ${v.caption ? `<p class="clips-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
+        ${showFollow ? `<button class="btn-follow-inline clips-follow" id="clips-follow">${I18N.t("subs.subscribe")}</button>` : ""}
       </div>
-      <div class="shorts-actions-col">
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn like-btn ${v.liked ? "active" : ""}" id="shorts-like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
-          <span class="shorts-action-count" id="shorts-like-count">${v.likeCount || 0}</span>
+      <div class="clips-actions-col">
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn like-btn ${v.liked ? "active" : ""}" id="clips-like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
+          <span class="clips-action-count" id="clips-like-count">${v.likeCount || 0}</span>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn" id="shorts-message" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn" id="clips-message" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn" id="shorts-share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn" id="clips-share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn repost-btn" id="shorts-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn repost-btn" id="clips-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn save-btn ${v.saved ? "active" : ""}" id="shorts-save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn save-btn ${v.saved ? "active" : ""}" id="clips-save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
         </div>
       </div>
     </div>
   `;
 
-  document.getElementById("shorts-close").addEventListener("click", closeShortsPlayer);
-  document.getElementById("shorts-like").addEventListener("click", toggleShortsLike);
-  wireShortsActions(v);
+  const closeBtn = document.getElementById("clips-close");
+  if (closeBtn) closeBtn.addEventListener("click", () => closeSwipeFeed(sw));
+  const likeBtn = document.getElementById("clips-like");
+  if (likeBtn) likeBtn.addEventListener("click", () => toggleSwipeLike(sw));
+  wireSwipeActions(sw, v);
 
-  shortsState.watchStart = Date.now();
-  shortsState.currentDurationMs = 0;
+  sw.watchStart = Date.now();
+  sw.currentDurationMs = isPhoto ? SWIPE_PHOTO_DWELL_MS : 0;
 
-  const videoEl = document.getElementById("shorts-video");
-  if (videoEl) {
-    videoEl.muted = false;
-    videoEl.volume = 1;
-    videoEl.addEventListener("loadedmetadata", () => {
-      if (shortsState) shortsState.currentDurationMs = (videoEl.duration || 0) * 1000;
+  const mediaEl = document.getElementById("clips-video");
+  if (mediaEl && !isPhoto) {
+    mediaEl.muted = false;
+    mediaEl.volume = 1;
+    mediaEl.addEventListener("loadedmetadata", () => {
+      if (sw.videos[sw.index] === v) sw.currentDurationMs = (mediaEl.duration || 0) * 1000;
     });
+  }
+  if (mediaEl) {
     let lastTap = 0;
-    videoEl.addEventListener("click", () => {
+    mediaEl.addEventListener("click", () => {
       const now = Date.now();
       if (now - lastTap < 300) {
-        const cur = shortsState.videos[shortsState.index];
-        if (!cur.liked) toggleShortsLike();
-        burstShortsHeart();
+        const cur = sw.videos[sw.index];
+        if (!cur.liked) toggleSwipeLike(sw);
+        burstSwipeHeart(sw);
       }
       lastTap = now;
     });
   }
 
-  const followBtn = document.getElementById("shorts-follow");
+  const followBtn = document.getElementById("clips-follow");
   if (followBtn) {
     const applyStatus = (status) => {
       followBtn.dataset.status = status;
@@ -3556,17 +4142,107 @@ function drawShorts() {
   }
 }
 
-function stepShorts(dir) {
-  if (!shortsState) return;
-  const next = shortsState.index + dir;
-  if (next < 0 || next >= shortsState.videos.length) return;
-  reportShortsWatch();
-  shortsState.index = next;
-  drawShorts();
+function stepSwipeFeed(sw, dir) {
+  if (!sw) return;
+  const next = sw.index + dir;
+  if (next < 0 || next >= sw.videos.length) return;
+  reportSwipeWatch(sw);
+  sw.index = next;
+  drawSwipeItem(sw);
+}
+
+// ---- Vertical swipe navigation (TikTok/Reels style), shared by the
+// full-screen Clips overlay and the inline Home feed ----
+// The current item visibly follows the finger as you drag, then either
+// completes the transition to the next/previous item on release or snaps
+// back if the swipe was too short. This (plus the wheel handler) is the
+// only way to move between items - there are no up/down arrow buttons.
+function wireSwipeGestures(rootEl, sw) {
+  rootEl.addEventListener(
+    "wheel",
+    (e) => {
+      if (rootEl.dataset.wheelLock === "1") return;
+      rootEl.dataset.wheelLock = "1";
+      setTimeout(() => (rootEl.dataset.wheelLock = "0"), 500);
+      if (e.deltaY > 30) stepSwipeFeed(sw, 1);
+      else if (e.deltaY < -30) stepSwipeFeed(sw, -1);
+    },
+    { passive: true }
+  );
+
+  let touchStartY = null;
+  let touchStartX = null;
+  let dragging = false;
+  let lockedAxis = null; // "y" | "x" | null - decided a few px into the gesture
+
+  rootEl.addEventListener(
+    "touchstart",
+    (e) => {
+      if (e.touches.length !== 1) return;
+      touchStartY = e.touches[0].clientY;
+      touchStartX = e.touches[0].clientX;
+      dragging = true;
+      lockedAxis = null;
+      const item = rootEl.querySelector(".clips-item");
+      if (item) item.style.transition = "none";
+    },
+    { passive: true }
+  );
+
+  rootEl.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!dragging || touchStartY === null) return;
+      const dy = e.touches[0].clientY - touchStartY;
+      const dx = e.touches[0].clientX - touchStartX;
+      if (!lockedAxis) {
+        if (Math.abs(dy) < 6 && Math.abs(dx) < 6) return;
+        lockedAxis = Math.abs(dy) > Math.abs(dx) ? "y" : "x";
+      }
+      if (lockedAxis !== "y") return;
+      e.preventDefault();
+      const atFirst = sw.index === 0 && dy > 0;
+      const atLast = sw.index === sw.videos.length - 1 && dy < 0;
+      const damped = atFirst || atLast ? dy * 0.35 : dy;
+      const item = rootEl.querySelector(".clips-item");
+      if (item) item.style.transform = `translateY(${damped}px)`;
+    },
+    { passive: false }
+  );
+
+  rootEl.addEventListener(
+    "touchend",
+    (e) => {
+      if (!dragging || touchStartY === null) {
+        dragging = false;
+        return;
+      }
+      dragging = false;
+      const dy = e.changedTouches[0].clientY - touchStartY;
+      touchStartY = null;
+      touchStartX = null;
+      if (lockedAxis !== "y") return;
+      const item = rootEl.querySelector(".clips-item");
+      const THRESHOLD = 60;
+      if (dy < -THRESHOLD) {
+        stepSwipeFeed(sw, 1);
+      } else if (dy > THRESHOLD) {
+        stepSwipeFeed(sw, -1);
+      } else if (item) {
+        item.style.transition = "transform 0.2s ease";
+        item.style.transform = "translateY(0)";
+      }
+    },
+    { passive: true }
+  );
 }
 
 const MAX_ACTIVE_MOMENTS = 3;
 const MAX_MOMENT_VIDEO_SECONDS = 180;
+// Client-side mirrors of server.js's MAX_ACTIVE_MOMENTS (reused as-is for
+// Loops' active-count cap - see server.js) and MAX_LOOP_VIDEO_SECONDS, kept
+// in sync by hand the same way MAX_MOMENT_VIDEO_SECONDS above already is.
+const MAX_LOOP_VIDEO_SECONDS = 60;
 
 function openMomentUploadModal() {
   if (!state.token) {
@@ -3605,17 +4281,11 @@ function openMomentUploadModal() {
   const videoInput = document.getElementById("moment-video-input");
   const msgEl = document.getElementById("moment-upload-msg");
 
-  // Block uploads up front if the user already has 3 active moments.
-  api("/api/moments/user/" + state.user.id)
-    .then((moments) => {
-      if (moments.length >= MAX_ACTIVE_MOMENTS) {
-        msgEl.textContent = I18N.t("moments.limitReached");
-        msgEl.className = "form-msg error";
-        photoInput.disabled = true;
-        videoInput.disabled = true;
-      }
-    })
-    .catch(() => {});
+  // No more upfront "already have 3 active moments" block - Moments are
+  // permanent now and the server no longer caps how many a user can post
+  // (see server.js POST /api/moments). MAX_ACTIVE_MOMENTS is kept defined
+  // below only because the upcoming "Loops" (24h stories) feature will
+  // likely want an equivalent small-active-items cap.
 
   function readAsDataUrl(file, type) {
     const reader = new FileReader();
@@ -3713,8 +4383,19 @@ const CREATE_WIZARD_FILTERS = [
 
 const CREATE_WIZARD_STICKERS = ["\u{1F600}", "\u{1F602}", "\u{1F60D}", "\u{1F525}", "\u{1F389}", "\u{1F4DA}", "❤️", "\u{1F44D}", "\u{1F60E}", "✨", "\u{1F973}", "\u{1F4D6}"];
 
-const WIZARD_HOLD_THRESHOLD_MS = 280;
-const WIZARD_RING_TARGET_MS = MAX_MOMENT_VIDEO_SECONDS * 1000;
+const WIZARD_HOLD_THRESHOLD_MS = 380;
+// Below this much accumulated hold time, a press is treated as an oversized
+// tap rather than an intentional video, and the shutter falls back to
+// taking a photo (see pauseHoldRecording()).
+const WIZARD_MIN_INTENTIONAL_HOLD_MS = 500;
+
+// Max hold-record duration for the current wizard session's target - a
+// function rather than a fixed constant (the old WIZARD_RING_TARGET_MS)
+// specifically so a Loop capture stops recording at MAX_LOOP_VIDEO_SECONDS
+// instead of letting the user hold for the full 3-minute Moment length.
+function wizardRingTargetMs() {
+  return (createWizard && createWizard.target === "loop" ? MAX_LOOP_VIDEO_SECONDS : MAX_MOMENT_VIDEO_SECONDS) * 1000;
+}
 
 function createWizardFilterCss(id) {
   const f = CREATE_WIZARD_FILTERS.find((x) => x.id === id);
@@ -3743,7 +4424,13 @@ function closeCreateWizard() {
   createWizard = null;
 }
 
-function openCreateWizard() {
+// `target` distinguishes what the wizard's final publish step posts to:
+// "moment" (default - POST /api/moments) or "loop" (POST /api/loops, see the
+// "Loop" option in the create dropdown). Every other step of the wizard
+// (capture, filters, caption) behaves identically for both - only the
+// publish call and a couple of labels branch on it - see the
+// wizard-publish click handler in drawCreateWizard()'s step-3 branch.
+function openCreateWizard(target) {
   if (!state.token) {
     location.hash = "#/login";
     return;
@@ -3753,11 +4440,12 @@ function openCreateWizard() {
     stream: null, recorder: null, chunks: [], durationSeconds: null,
     facingMode: "user", flashOn: false, timerMode: 0,
     recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
-    overlays: [],
+    overlays: [], gridOn: false, target: target === "loop" ? "loop" : "moment",
   };
   const overlay = document.createElement("div");
   overlay.id = "create-wizard-overlay";
   document.body.appendChild(overlay);
+  guardOverlayForBack(closeCreateWizard);
   drawCreateWizard();
 }
 
@@ -3796,7 +4484,7 @@ function startWizardRing() {
   const tick = () => {
     if (!createWizard || !createWizard.recording) return;
     const elapsed = createWizard.recordAccumMs + (Date.now() - createWizard.segmentStartTs);
-    const frac = Math.min(1, elapsed / WIZARD_RING_TARGET_MS);
+    const frac = Math.min(1, elapsed / wizardRingTargetMs());
     if (circle) circle.style.strokeDashoffset = String(C * (1 - frac));
     if (timeLabel) timeLabel.textContent = wizardFormatTime(elapsed);
     if (frac >= 1) {
@@ -3833,6 +4521,14 @@ function updateWizardFlashSupport() {
   const caps = track && track.getCapabilities ? track.getCapabilities() : {};
   btn.style.display = caps && caps.torch ? "flex" : "none";
   if (!(caps && caps.torch)) createWizard.flashOn = false;
+}
+
+function wizardToggleGrid() {
+  createWizard.gridOn = !createWizard.gridOn;
+  const gridEl = document.getElementById("wizard-fs-grid");
+  if (gridEl) gridEl.classList.toggle("show", createWizard.gridOn);
+  const btn = document.getElementById("wizard-rail-grid");
+  if (btn) btn.classList.toggle("active", createWizard.gridOn);
 }
 
 function wizardToggleFlash() {
@@ -3877,6 +4573,7 @@ function wizardToggleFilterStrip() {
 // Tier 1 items show by default; tier 2 items reveal via the "more" toggle,
 // matching the collapsed/expanded pattern of similar camera UIs.
 const CREATE_WIZARD_RAIL_ITEMS = [
+  { action: "grid", tier: 1, icon: "#" },
   { action: "flip", tier: 1, icon: "&#8635;" },
   { action: "timer", tier: 1, icon: "&#9201;" },
   { action: "duration", tier: 1, icon: "&#9203;" },
@@ -3908,8 +4605,18 @@ function wizardRailItemsHtml() {
 function wireWizardRail() {
   document.querySelectorAll(".wizard-fs-rail-item[data-action]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      // Show this item's label briefly on tap, then hide it again -
+      // labels stay off by default so the rail reads as clean icons only.
+      document.querySelectorAll(".wizard-fs-rail-item.show-label").forEach((other) => {
+        if (other !== btn) other.classList.remove("show-label");
+      });
+      btn.classList.add("show-label");
+      clearTimeout(btn._railLabelTimer);
+      btn._railLabelTimer = setTimeout(() => btn.classList.remove("show-label"), 1600);
+
       const action = btn.dataset.action;
-      if (action === "flip") wizardFlipCamera();
+      if (action === "grid") wizardToggleGrid();
+      else if (action === "flip") wizardFlipCamera();
       else if (action === "timer") wizardCycleTimer();
       else if (action === "flash") wizardToggleFlash();
       else if (action === "effects" || action === "filters") wizardToggleFilterStrip();
@@ -4046,10 +4753,30 @@ function wireWizardCaptureGesture() {
     btn.classList.remove("recording");
     showWizardRecBadge(false);
     stopWizardRing();
+    // A real-world tap-and-release routinely takes a bit longer than the
+    // hold threshold below, which was silently starting (and then pausing)
+    // a throwaway fraction-of-a-second video instead of taking the photo
+    // the person actually meant to take - and left recordAccumMs > 0, which
+    // made every following tap on the shutter do nothing at all (this was
+    // the "press the red button and no photo is taken" bug). If the hold
+    // never grew into an intentional clip, discard it and shoot a photo.
+    if (createWizard.recordAccumMs < WIZARD_MIN_INTENTIONAL_HOLD_MS) {
+      if (createWizard.recorder && createWizard.recorder.state !== "inactive") {
+        createWizard.recorder.onstop = null;
+        createWizard.recorder.stop();
+      }
+      createWizard.recorder = null;
+      createWizard.chunks = [];
+      createWizard.recordAccumMs = 0;
+      const doneBtnReset = document.getElementById("wizard-fs-done-btn");
+      if (doneBtnReset) doneBtnReset.setAttribute("disabled", "disabled");
+      takePhoto();
+      return;
+    }
     const doneBtn = document.getElementById("wizard-fs-done-btn");
     if (doneBtn) doneBtn.removeAttribute("disabled");
     updateWizardHint(I18N.t("create.addMoreOrDone"));
-    if (createWizard.recordAccumMs >= WIZARD_RING_TARGET_MS) {
+    if (createWizard.recordAccumMs >= wizardRingTargetMs()) {
       finalizeWizardRecording();
     }
   };
@@ -4227,6 +4954,7 @@ function drawCreateWizard() {
         <div class="wizard-fs-fallback" id="wizard-fs-fallback" style="display:none;">
           <p>${I18N.t("create.cameraUnavailable")}</p>
         </div>
+        <div class="wizard-fs-grid ${createWizard.gridOn ? "show" : ""}" id="wizard-fs-grid" aria-hidden="true"></div>
         <div class="wizard-fs-topbar">
           <button class="wizard-fs-icon-btn" id="wizard-fs-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
           <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${I18N.t("create.addSound")}</button>
@@ -4268,7 +4996,7 @@ function drawCreateWizard() {
       });
     });
 
-    document.getElementById("wizard-fs-close").addEventListener("click", closeCreateWizard);
+    document.getElementById("wizard-fs-close").addEventListener("click", () => closeOverlayViaBack(closeCreateWizard));
     document.getElementById("wizard-fs-sound-pill").addEventListener("click", () => wizardShowToast(I18N.t("create.comingSoon")));
     document.getElementById("wizard-fs-effects-btn").addEventListener("click", wizardToggleFilterStrip);
     document.getElementById("wizard-fs-gallery-btn").addEventListener("click", () => document.getElementById("wizard-file-media").click());
@@ -4285,7 +5013,7 @@ function drawCreateWizard() {
     overlay.className = "modal-overlay create-wizard-overlay";
     overlay.innerHTML = `
       <div class="modal-box wizard-box">
-        <h2 class="section-heading">${I18N.t("create.step2Title")}</h2>
+        <h2 class="section-heading">${I18N.t(createWizard.target === "loop" ? "create.step2TitleLoop" : "create.step2Title")}</h2>
         <div class="wizard-edit-toolbar">
           <button class="wizard-edit-tool-btn" id="wizard-add-text-btn" title="${I18N.t("create.addText")}">Aa</button>
           <button class="wizard-edit-tool-btn" id="wizard-add-sticker-btn" title="${I18N.t("create.addSticker")}">&#128512;</button>
@@ -4309,7 +5037,7 @@ function drawCreateWizard() {
     renderWizardOverlays(true);
     document.getElementById("wizard-cancel2").addEventListener("click", (e) => {
       e.preventDefault();
-      closeCreateWizard();
+      closeOverlayViaBack(closeCreateWizard);
     });
     wireCreateWizardFilterRow(() => {
       const img = document.getElementById("wizard-preview-img");
@@ -4356,6 +5084,13 @@ function drawCreateWizard() {
         <label>${I18N.t("create.captionLabel")}</label>
         <textarea id="wizard-caption" rows="2" maxlength="130" placeholder="${I18N.t("create.captionPlaceholder")}"></textarea>
         <p class="field-hint"><span id="wizard-caption-count">0</span>/130</p>
+        ${
+          createWizard.mediaType === "image"
+            ? `<button type="button" class="btn btn-ai-suggest btn-ai-suggest-sm" id="wizard-ai-suggest">&#10024; ${I18N.t("create.aiSuggestCaption")}</button>
+               <p class="field-hint" id="wizard-ai-hint"></p>
+               <div class="ai-caption-preview" id="wizard-ai-preview" style="display:none;"></div>`
+            : ""
+        }
       </div>
       <div class="form-group">
         <label>${I18N.t("create.hashtagsLabel")}</label>
@@ -4371,7 +5106,7 @@ function drawCreateWizard() {
   `;
   document.getElementById("wizard-cancel3").addEventListener("click", (e) => {
     e.preventDefault();
-    closeCreateWizard();
+    closeOverlayViaBack(closeCreateWizard);
   });
 
   const captionEl = document.getElementById("wizard-caption");
@@ -4379,6 +5114,73 @@ function drawCreateWizard() {
   captionEl.addEventListener("input", () => {
     countEl.textContent = String(captionEl.value.length);
   });
+
+  // AI-suggest is only offered for photo captures: the wizard never
+  // generates a poster/thumbnail frame for video, and sending video data to
+  // an image-analysis endpoint would just fail - so the button itself is
+  // omitted from the markup above when mediaType isn't "image" rather than
+  // shown disabled.
+  const wizardAiBtn = document.getElementById("wizard-ai-suggest");
+  if (wizardAiBtn) {
+    const aiHintEl = document.getElementById("wizard-ai-hint");
+    const aiPreviewEl = document.getElementById("wizard-ai-preview");
+    const aiBtnLabel = wizardAiBtn.innerHTML;
+    wizardAiBtn.addEventListener("click", async () => {
+      if (!createWizard.rawDataUrl) return;
+      wizardAiBtn.disabled = true;
+      wizardAiBtn.textContent = I18N.t("create.aiThinking");
+      aiHintEl.textContent = "";
+      aiHintEl.className = "field-hint";
+      aiPreviewEl.style.display = "none";
+      try {
+        const data = await api("/api/ai/suggest-caption", {
+          method: "POST",
+          auth: true,
+          body: {
+            image: createWizard.rawDataUrl,
+            locale: I18N.lang,
+            context: createWizard.target === "loop" ? "Loop capture" : "Moment capture",
+          },
+        });
+        const hashtagsStr = Array.isArray(data.hashtags) ? data.hashtags.map((h) => "#" + h).join(" ") : "";
+        const hashtagsInput = document.getElementById("wizard-hashtags");
+        if (!captionEl.value.trim()) {
+          // Field is empty - safe to fill directly, nothing to overwrite.
+          captionEl.value = data.caption || "";
+          countEl.textContent = String(captionEl.value.length);
+          if (hashtagsStr && hashtagsInput && !hashtagsInput.value.trim()) hashtagsInput.value = hashtagsStr;
+        } else {
+          // User already typed something - never clobber it. Show the
+          // suggestion as a dismissible preview they can tap to apply.
+          aiPreviewEl.style.display = "block";
+          aiPreviewEl.innerHTML = `
+            <p class="ai-caption-preview-text">${escapeHtml(data.caption || "")}${hashtagsStr ? " " + escapeHtml(hashtagsStr) : ""}</p>
+            <div class="ai-caption-preview-actions">
+              <a href="#" id="wizard-ai-apply">${I18N.t("create.aiApplySuggestion")}</a>
+              <a href="#" id="wizard-ai-dismiss">${I18N.t("create.aiDismissSuggestion")}</a>
+            </div>
+          `;
+          document.getElementById("wizard-ai-apply").addEventListener("click", (e) => {
+            e.preventDefault();
+            captionEl.value = data.caption || "";
+            countEl.textContent = String(captionEl.value.length);
+            if (hashtagsStr && hashtagsInput) hashtagsInput.value = hashtagsStr;
+            aiPreviewEl.style.display = "none";
+          });
+          document.getElementById("wizard-ai-dismiss").addEventListener("click", (e) => {
+            e.preventDefault();
+            aiPreviewEl.style.display = "none";
+          });
+        }
+      } catch (err) {
+        aiHintEl.textContent = err.message || I18N.t("create.aiError");
+        aiHintEl.className = "field-hint error";
+      } finally {
+        wizardAiBtn.disabled = false;
+        wizardAiBtn.innerHTML = aiBtnLabel;
+      }
+    });
+  }
 
   document.getElementById("wizard-back2").addEventListener("click", () => {
     createWizard.step = 2;
@@ -4388,8 +5190,9 @@ function drawCreateWizard() {
   document.getElementById("wizard-publish").addEventListener("click", async () => {
     const publishBtn = document.getElementById("wizard-publish");
     const msgEl = document.getElementById("wizard-publish-msg");
+    const isLoop = createWizard.target === "loop";
     publishBtn.disabled = true;
-    msgEl.textContent = I18N.t("moments.uploading");
+    msgEl.textContent = I18N.t(isLoop ? "loops.uploading" : "moments.uploading");
     msgEl.className = "form-msg";
     try {
       let finalMedia = createWizard.rawDataUrl;
@@ -4410,20 +5213,36 @@ function drawCreateWizard() {
       const captionText = captionEl.value.trim();
       const fullCaption = hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText;
 
-      await api("/api/moments", {
-        method: "POST",
-        auth: true,
-        body: {
-          mediaType: createWizard.mediaType,
-          media: finalMedia,
-          caption: fullCaption,
-          durationSeconds: createWizard.durationSeconds,
-        },
-      });
-      msgEl.textContent = I18N.t("moments.posted");
+      if (isLoop) {
+        // server.js's mkt_loops schema uses "photo"/"video" for media_type
+        // (not "image"/"video" like Moments) - see POST /api/loops - so the
+        // wizard's internal "image" value needs translating at the door.
+        await api("/api/loops", {
+          method: "POST",
+          auth: true,
+          body: {
+            mediaType: createWizard.mediaType === "video" ? "video" : "photo",
+            media: finalMedia,
+            caption: fullCaption,
+            durationSeconds: createWizard.durationSeconds,
+          },
+        });
+      } else {
+        await api("/api/moments", {
+          method: "POST",
+          auth: true,
+          body: {
+            mediaType: createWizard.mediaType,
+            media: finalMedia,
+            caption: fullCaption,
+            durationSeconds: createWizard.durationSeconds,
+          },
+        });
+      }
+      msgEl.textContent = I18N.t(isLoop ? "loops.posted" : "moments.posted");
       msgEl.className = "form-msg ok";
       setTimeout(() => {
-        closeCreateWizard();
+        closeOverlayViaBack(closeCreateWizard);
         router();
       }, 700);
     } catch (e) {
@@ -4636,6 +5455,7 @@ async function renderProfile(userId) {
         ${isMe ? `<button class="tab-btn" data-tab="saved">${I18N.t("profile.savedTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="blocked">${I18N.t("profile.blockedTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="offers">${I18N.t("profile.myOffers")}</button>` : ""}
+        ${isMe ? `<button class="tab-btn" data-tab="analytics">${I18N.t("profile.analyticsTab")}</button>` : ""}
         ${isMe && state.token ? `<button class="tab-btn" data-tab="notifications">${I18N.t("notif.tabTitle")}</button>` : ""}
         ${isMe && state.user && state.user.isOwner ? `<button class="tab-btn" data-tab="ads">${I18N.t("ads.manageAds")}</button>` : ""}
       </div>
@@ -4703,6 +5523,7 @@ async function renderProfile(userId) {
       ${isMe ? `<div id="tab-saved" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-blocked" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-offers" style="display:none;"></div>` : ""}
+      ${isMe ? `<div id="tab-analytics" style="display:none;"></div>` : ""}
       ${isMe && state.token ? `<div id="tab-notifications" style="display:none;"></div>` : ""}
       ${isMe && state.user && state.user.isOwner ? `<div id="tab-ads" style="display:none;"></div>` : ""}
     </div>
@@ -4715,7 +5536,7 @@ async function renderProfile(userId) {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "photos", "reviews", "friends", "requests", "saved", "blocked", "offers", "notifications", "ads"].forEach((t) => {
+      ["listings", "photos", "reviews", "friends", "requests", "saved", "blocked", "offers", "analytics", "notifications", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
@@ -4724,6 +5545,7 @@ async function renderProfile(userId) {
       if (btn.dataset.tab === "saved" && isMe) await renderSavedTab();
       if (btn.dataset.tab === "blocked" && isMe) await renderBlockedTab();
       if (btn.dataset.tab === "offers" && isMe) await renderMyOffers();
+      if (btn.dataset.tab === "analytics" && isMe) await renderCreatorAnalyticsTab();
       if (btn.dataset.tab === "notifications" && isMe && state.token) await renderNotificationSettings();
       if (btn.dataset.tab === "ads" && isMe && state.user && state.user.isOwner) await renderAdsManager();
     });
@@ -5028,6 +5850,104 @@ async function renderMyOffers() {
         )
         .join("")
     : `<div class="empty-state">${I18N.t("profile.noOffers")}</div>`;
+}
+
+// Creator Analytics tab: lazy-loaded on first click, same pattern as
+// renderSavedTab/renderMyOffers above. Combines lifetime like/save/comment
+// counters (see server.js incrementUserStat) with a real
+// 7-day-vs-previous-7-day views trend and per-Moment stats for the user's
+// most recent Moments (Moments are permanent now, so this is no longer
+// filtered to "active"/non-expired ones - see server.js /api/creator/stats).
+// The percent-change math for the views trend is computed client-side from
+// the raw views7d/views7dPrev counts the backend returns, guarding the
+// views7dPrev === 0 case (nothing to compare against).
+async function renderCreatorAnalyticsTab() {
+  const el = document.getElementById("tab-analytics");
+  if (!el) return;
+  el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  let data;
+  try {
+    data = await api("/api/creator/stats", { auth: true });
+  } catch (e) {
+    el.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const lifetime = data.lifetime || { likesReceived: 0, savesReceived: 0, commentsReceived: 0 };
+
+  let trendHtml;
+  if (!data.views7dPrev) {
+    trendHtml = I18N.t("analytics.viewsTrendNoPrev").replace("{views}", data.views7d);
+  } else {
+    const pctChange = ((data.views7d - data.views7dPrev) / data.views7dPrev) * 100;
+    const sign = pctChange >= 0 ? "▲" : "▼";
+    trendHtml = I18N.t("analytics.viewsTrend")
+      .replace("{views}", data.views7d)
+      .replace("{sign}", sign)
+      .replace("{pct}", Math.abs(Math.round(pctChange)));
+  }
+
+  const completionHtml =
+    data.completionRate7d === null || data.completionRate7d === undefined
+      ? I18N.t("analytics.completionRateUnavailable")
+      : Math.round(data.completionRate7d * 100) + "%";
+
+  const recentMoments = data.recentMoments || [];
+
+  el.innerHTML = `
+    <div class="form-panel" style="max-width:none;">
+      <h3 class="section-subheading">${I18N.t("analytics.sectionTitle")}</h3>
+      <p class="analytics-disclaimer">${I18N.t("analytics.disclaimer")}</p>
+
+      <div class="analytics-stat-grid">
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${data.followerCount || 0}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.followers")}</span>
+        </div>
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${lifetime.likesReceived}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.likesReceived")}</span>
+        </div>
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${lifetime.savesReceived}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.savesReceived")}</span>
+        </div>
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${lifetime.commentsReceived}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.commentsReceived")}</span>
+        </div>
+      </div>
+
+      <p class="analytics-trend-line">${trendHtml}</p>
+      <p class="analytics-trend-line">${I18N.t("analytics.completionRate")}: <strong>${completionHtml}</strong></p>
+
+      <h4 class="section-subheading">${I18N.t("analytics.recentMomentsTitle")}</h4>
+      ${
+        recentMoments.length
+          ? `<div class="analytics-moment-list">
+              ${recentMoments
+                .map(
+                  (m) => `
+                <div class="analytics-moment-row">
+                  <div class="analytics-moment-meta">
+                    <span class="analytics-moment-caption">${escapeHtml(m.caption || (m.mediaType === "video" ? "\u{1F3A5}" : "\u{1F5BC}️"))}</span>
+                    <span class="analytics-moment-expires">${I18N.t("analytics.postedOn")}: ${fmtDate(m.createdAt)}</span>
+                  </div>
+                  <div class="analytics-moment-stats">
+                    <span>${I18N.t("analytics.momentViews")}: ${m.viewCount}</span>
+                    <span>${I18N.t("analytics.momentLikes")}: ${m.likeCount}</span>
+                    <span>${I18N.t("analytics.momentSaves")}: ${m.saveCount}</span>
+                    <span>${I18N.t("analytics.momentComments")}: ${m.commentCount}</span>
+                  </div>
+                </div>`
+                )
+                .join("")}
+            </div>`
+          : `<div class="empty-state">${I18N.t("analytics.recentMomentsEmpty")}</div>`
+      }
+    </div>
+  `;
 }
 
 // Pinterest-style "Guardado" tab: the user's saved products, grouped into
@@ -5365,7 +6285,10 @@ async function loadConvoList(activeId) {
       </a>`
         )
         .join("")
-    : `<p style="padding:16px;color:#888;font-size:13px;">${I18N.t("messages.noConversations")}</p>`;
+    : `<div class="empty-state messages-empty">
+        <p>${I18N.t("messages.noConversations")}</p>
+        <a href="#/marketplace" class="btn btn-secondary">${I18N.t("messages.emptyBrowseCta")}</a>
+      </div>`;
 }
 
 async function loadChat(otherUserId, silent) {
@@ -5425,6 +6348,16 @@ function intlRoleLabel(roleType) {
   return roleType === "producer" ? I18N.t("intl.roleProducer") : I18N.t("intl.roleDistributor");
 }
 
+// Structured book-focused services a directory company can offer - keeps
+// this list in sync with server.js's INTL_BOOK_SERVICES.
+const INTL_BOOK_SERVICES = ["sourcing", "foreign_language", "academic", "logistics", "wholesale"];
+function intlBookServiceTagsHtml(bookServices) {
+  if (!bookServices || !bookServices.length) return "";
+  return `<div class="intl-book-service-tags">${bookServices
+    .map((s) => `<span class="intl-book-service-tag">${I18N.t("intl.bookService_" + s)}</span>`)
+    .join("")}</div>`;
+}
+
 function renderIntlHome() {
   viewEl.innerHTML = `
     <div class="intl-hero">
@@ -5432,6 +6365,11 @@ function renderIntlHome() {
       <p>${I18N.t("intl.heroSubtitle")}</p>
     </div>
     <p class="intl-intro">${I18N.t("intl.heroIntro")}</p>
+    <div class="intl-services-grid">
+      ${INTL_BOOK_SERVICES.map(
+        (s) => `<div class="intl-service-card"><strong>${I18N.t("intl.bookService_" + s)}</strong><p>${I18N.t("intl.bookServiceDesc_" + s)}</p></div>`
+      ).join("")}
+    </div>
 
     <div class="intl-cta-row">
       <a class="btn btn-gold" href="#/intl/register">${I18N.t("intl.ctaRegister")}</a>
@@ -5457,6 +6395,7 @@ async function renderIntlDirectory(query) {
   if (query.country) params.set("country", query.country);
   if (query.industry) params.set("industry", query.industry);
   if (query.roleType) params.set("roleType", query.roleType);
+  if (query.bookService) params.set("bookService", query.bookService);
 
   const companies = await api("/api/intl/companies?" + params.toString());
 
@@ -5471,6 +6410,7 @@ async function renderIntlDirectory(query) {
         </div>
         <p class="intl-card-name">${escapeHtml(c.companyName)}</p>
         <p class="intl-card-meta">\u{1F30D} ${escapeHtml(c.country)}${c.industry ? " &middot; " + escapeHtml(c.industry) : ""}</p>
+        ${intlBookServiceTagsHtml(c.bookServices)}
         <p class="intl-card-desc">${escapeHtml((c.description || "").slice(0, 140))}${c.description && c.description.length > 140 ? "…" : ""}</p>
       </a>`
         )
@@ -5488,6 +6428,12 @@ async function renderIntlDirectory(query) {
         <option value="producer" ${query.roleType === "producer" ? "selected" : ""}>${I18N.t("intl.roleProducer")}</option>
         <option value="distributor" ${query.roleType === "distributor" ? "selected" : ""}>${I18N.t("intl.roleDistributor")}</option>
       </select>
+      <select id="if-book-service">
+        <option value="" ${!query.bookService ? "selected" : ""}>${I18N.t("intl.bookServiceAll")}</option>
+        ${INTL_BOOK_SERVICES.map(
+          (s) => `<option value="${s}" ${query.bookService === s ? "selected" : ""}>${I18N.t("intl.bookService_" + s)}</option>`
+        ).join("")}
+      </select>
       <button id="if-apply">${I18N.t("intl.applyFilters")}</button>
     </div>
     <div class="intl-grid">${cards}</div>
@@ -5498,9 +6444,11 @@ async function renderIntlDirectory(query) {
     const country = document.getElementById("if-country").value.trim();
     const industry = document.getElementById("if-industry").value.trim();
     const roleType = document.getElementById("if-role").value;
+    const bookService = document.getElementById("if-book-service").value;
     if (country) p.set("country", country);
     if (industry) p.set("industry", industry);
     if (roleType) p.set("roleType", roleType);
+    if (bookService) p.set("bookService", bookService);
     location.hash = "#/intl/directory" + (p.toString() ? "?" + p.toString() : "");
   });
 }
@@ -5526,6 +6474,7 @@ async function renderIntlCompanyDetail(id) {
       </div>
       <h1 class="detail-title">${escapeHtml(c.companyName)}</h1>
       <div class="detail-meta">\u{1F30D} ${escapeHtml(c.country)}${c.industry ? " &middot; " + escapeHtml(c.industry) : ""}</div>
+      ${intlBookServiceTagsHtml(c.bookServices)}
       <p style="white-space:pre-wrap;font-size:14px;margin-top:14px;">${escapeHtml(c.description || "")}</p>
       ${c.website ? `<p><a href="${escapeHtml(c.website)}" target="_blank" rel="noopener">${escapeHtml(c.website)}</a></p>` : ""}
 
@@ -5565,6 +6514,7 @@ async function renderIntlMyCompanies() {
         </div>
         <p class="intl-card-name">${escapeHtml(c.companyName)}</p>
         <p class="intl-card-meta">\u{1F30D} ${escapeHtml(c.country)}${c.industry ? " &middot; " + escapeHtml(c.industry) : ""}</p>
+        ${intlBookServiceTagsHtml(c.bookServices)}
       </a>`
         )
         .join("")
@@ -5620,6 +6570,19 @@ async function renderIntlForm(editId) {
         <input type="text" id="ic-industry" value="${escapeHtml(existing ? existing.industry : "")}" />
       </div>
       <div class="form-group">
+        <label>${I18N.t("intl.bookServicesLabel")}</label>
+        <p class="form-field-hint">${I18N.t("intl.bookServicesHint")}</p>
+        <div class="intl-book-services-check">
+          ${INTL_BOOK_SERVICES.map(
+            (s) => `
+            <label class="intl-book-service-option">
+              <input type="checkbox" name="ic-book-service" value="${s}" ${existing && existing.bookServices && existing.bookServices.includes(s) ? "checked" : ""} />
+              ${I18N.t("intl.bookService_" + s)}
+            </label>`
+          ).join("")}
+        </div>
+      </div>
+      <div class="form-group">
         <label>${I18N.t("intl.description")}</label>
         <textarea id="ic-description" rows="5">${escapeHtml(existing ? existing.description : "")}</textarea>
       </div>
@@ -5653,6 +6616,7 @@ async function renderIntlForm(editId) {
       contactEmail: document.getElementById("ic-email").value,
       contactPhone: document.getElementById("ic-phone").value,
       website: document.getElementById("ic-website").value,
+      bookServices: Array.from(document.querySelectorAll('input[name="ic-book-service"]:checked')).map((el) => el.value),
     };
     try {
       if (editId) {

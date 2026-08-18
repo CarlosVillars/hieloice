@@ -46,8 +46,17 @@ if (!ANTHROPIC_API_KEY) {
 }
 
 const MAX_PHOTOS = 12;
+// MAX_ACTIVE_MOMENTS used to cap how many of a user's ephemeral 24h Moments
+// could be live at once. Moments are now permanent (see the "Moments
+// permanence" note above the moment-cleanup interval near the bottom of this
+// file, and PROJECT.md) so a small fixed cap on total posts no longer makes
+// sense there - it is not enforced against the main /api/moments create/
+// repost flows anymore. The name/value is reused as-is (not renamed) by the
+// "Loops" feature below (see POST /api/loops), which is the genuinely
+// ephemeral Stories-style feature this cap always made sense for.
 const MAX_ACTIVE_MOMENTS = 3;
 const MAX_MOMENT_VIDEO_SECONDS = 180; // 3 minutes - enforced client-side (no server-side video parsing)
+const MAX_LOOP_VIDEO_SECONDS = 60; // Loops are short looping clips, not 3-minute Moments - enforced client-side same as MAX_MOMENT_VIDEO_SECONDS (no server-side video parsing)
 const MAX_PRODUCT_VIDEO_SECONDS = 20; // enforced client-side (no server-side video parsing)
 
 // Reused keep-alive HTTPS agent so every outbound call (Supabase REST,
@@ -216,6 +225,14 @@ const db = {
   },
   remove(table, params) {
     return sbRequest("DELETE", table + "?" + qs(params));
+  },
+  // Calls a Postgres function through PostgREST's /rpc/ endpoint. The plain
+  // CRUD helpers above can't express "column = column + 1" in a PATCH body
+  // (PostgREST PATCH only accepts literal values), so this is the one escape
+  // hatch to a real SQL function - used for the creator-stat counters below,
+  // where a JS read-then-write would lose updates under concurrent likes.
+  rpc(fnName, args) {
+    return sbRequest("POST", "rpc/" + fnName, args || {});
   },
 };
 
@@ -486,6 +503,31 @@ setInterval(() => {
     if (now - bucket.start > 60 * 60 * 1000) rateLimitBuckets.delete(key);
   }
 }, 15 * 60 * 1000).unref();
+
+// ---------- creator lifetime stat counters ----------
+// stat_likes_received / stat_saves_received / stat_comments_received live on
+// mkt_users (not on the moments themselves) specifically so Creator Analytics
+// numbers survive the hourly cleanup that hard-deletes expired moments -
+// mkt_moment_likes/saves/comments are keyed only by moment_id, so once the
+// moment row is gone there's no way to attribute an orphaned like/save/
+// comment back to its author. Views/completion rate don't need this: those
+// come from mkt_moment_events, which is denormalized with moment_author_id
+// and never deleted, so it's queried live instead (see GET /api/creator/stats).
+//
+// Requires a one-time Supabase migration adding the columns and the
+// mkt_increment_user_stat() SQL function (see PROJECT.md / deploy notes) -
+// PostgREST's PATCH endpoint only accepts literal values, so an atomic
+// increment has to go through a real SQL function via db.rpc() rather than
+// a JS read-then-write, which would lose updates if two viewers liked the
+// same moment at the same instant.
+async function incrementUserStat(userId, column, delta) {
+  if (!userId) return;
+  try {
+    await db.rpc("mkt_increment_user_stat", { p_user_id: userId, p_column: column, p_delta: delta });
+  } catch (e) {
+    console.error("incrementUserStat failed:", column, e.message);
+  }
+}
 
 // ---------- moderation helpers (auto-flag after repeated reports) ----------
 
@@ -1302,6 +1344,75 @@ async function handleApi(req, res, pathname, query) {
     } catch (e) {
       console.error("AI photo analysis failed:", e && e.message);
       return sendJson(res, 502, { error: "AI could not analyze this photo right now. Please try again or fill it in manually." });
+    }
+  }
+
+  // ---- AI: suggest a short social caption + hashtags for a Moment/Loop photo ----
+  // Same shape as analyze-book-photo above (auth, 503-if-unconfigured, rate
+  // limit, base64 validation, "final message is pure JSON" contract) but
+  // cheaper: no web_search tool, smaller max_tokens, higher rate limit. v1 is
+  // image-only - the client is expected to only offer this for photo
+  // captures (or a video's poster frame, if one is ever generated
+  // client-side); there is no server-side video frame extraction here.
+  if (method === "POST" && pathname === "/api/ai/suggest-caption") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!ANTHROPIC_API_KEY) return sendJson(res, 503, { error: "AI features are not configured on this server yet." });
+    // Cheaper than the book-photo analysis (no web search tool), so a
+    // higher hourly ceiling than "ai-photo:" is fine.
+    if (!checkRateLimit("ai-caption:" + me.id, 20, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many AI requests. Please try again in a bit." });
+    }
+
+    const body = await readBody(req);
+    const image = typeof body.image === "string" ? body.image : "";
+    const m = image.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/);
+    if (!m) return sendJson(res, 400, { error: "Please provide a JPEG, PNG, or WEBP photo." });
+    const [, mediaType, base64Data] = m;
+    if (base64Data.length > 8 * 1024 * 1024) {
+      return sendJson(res, 400, { error: "Photo is too large." });
+    }
+    const locale = body.locale === "es" ? "es" : "en";
+    const context = typeof body.context === "string" ? body.context.slice(0, 120) : "";
+
+    try {
+      const data = await callClaude({
+        model: "claude-sonnet-5",
+        max_tokens: 500,
+        system:
+          "You are a social caption writer for HieloIce, a marketplace and social app. " +
+          "You will be shown a photo" + (context ? " (" + context + ")" : "") + ". Write a short, engaging " +
+          "social caption for it - 1-2 sentences, casual and authentic in tone, the way a real person captions " +
+          "a photo on Instagram or TikTok, NOT a formal product description. Write it " +
+          (locale === "es" ? "in Spanish. " : "in English. ") +
+          "Also suggest 3-5 relevant hashtag words (no # symbol, just the words - the app will add the # itself). " +
+          "Your FINAL message must be ONLY a single JSON object, no markdown fences, no text before or after it, " +
+          'in this exact shape: {"caption": "...", "hashtags": ["...", "..."]}.',
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
+              { type: "text", text: "Write a short social caption and hashtags for this photo, and return the JSON." },
+            ],
+          },
+        ],
+      });
+      const textBlocks = Array.isArray(data.content) ? data.content.filter((b) => b.type === "text") : [];
+      const raw = textBlocks.length ? textBlocks[textBlocks.length - 1].text : "";
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI did not return JSON");
+      const parsed = JSON.parse(jsonMatch[0]);
+      const hashtags = Array.isArray(parsed.hashtags)
+        ? parsed.hashtags.filter((h) => typeof h === "string" && h.trim()).slice(0, 5).map((h) => h.trim().replace(/^#/, "").slice(0, 30))
+        : [];
+      return sendJson(res, 200, {
+        caption: String(parsed.caption || "").slice(0, 200),
+        hashtags,
+      });
+    } catch (e) {
+      console.error("AI caption suggestion failed:", e && e.message);
+      return sendJson(res, 502, { error: "AI could not suggest a caption right now. Please try again or write your own." });
     }
   }
 
@@ -2404,7 +2515,16 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { ok: true });
   }
 
-  // ---- MOMENTS (photo/video stories, visible 24h) ----
+  // ---- MOMENTS (photo/video posts, permanent - see cleanup note below) ----
+  // Moments used to be ephemeral 24h stories. As of the "make Moments
+  // permanent" product decision they no longer expire or get deleted by age -
+  // they accumulate likes/saves/comments/views indefinitely, like a normal
+  // feed post. `expires_at` is still written at creation time (see POST
+  // /api/moments below) and still returned as `expiresAt` for now, but it is
+  // no longer read anywhere to filter/hide/delete moments. It's kept around
+  // unused rather than dropped because the separate, still-unbuilt "Loops"
+  // feature (24h stories, Instagram/FB-Stories-style) will want an equivalent
+  // column soon, and re-adding a dropped column is wasted churn.
 
   function momentOut(m) {
     const { user_id, media_url, media_type, created_at, expires_at, repost_of, ...rest } = m;
@@ -2452,16 +2572,10 @@ async function handleApi(req, res, pathname, query) {
     if (!checkRateLimit("moment:" + ip, 20, 60 * 60 * 1000)) {
       return sendJson(res, 429, { error: "Too many moments posted. Please try again later." });
     }
-    const activeMoments = await db.select("mkt_moments", {
-      user_id: "eq." + enc(me.id),
-      expires_at: "gt." + Date.now(),
-      select: "id",
-    });
-    if (activeMoments && activeMoments.length >= MAX_ACTIVE_MOMENTS) {
-      return sendJson(res, 400, {
-        error: "You already have " + MAX_ACTIVE_MOMENTS + " active moments. Delete one or wait for it to expire before posting a new one.",
-      });
-    }
+    // No cap on total moments per user anymore - Moments are permanent posts
+    // now (see the "Moments" section comment above), so bounding a user to a
+    // handful of "active" ones no longer makes sense. The per-IP rate limit
+    // above still guards against spam/abuse.
     const body = await readBody(req);
     const mediaType = body.mediaType === "video" ? "video" : "image";
     const prefix = mediaType === "video" ? "data:video/" : "data:image/";
@@ -2538,7 +2652,8 @@ async function handleApi(req, res, pathname, query) {
 
     const moments = await db.select("mkt_moments", {
       user_id: "in.(" + userIds.map(enc).join(",") + ")",
-      expires_at: "gt." + Date.now(),
+      // No expires_at filter - Moments are permanent now, so every
+      // non-deleted moment from these users is included.
       order: "created_at.asc",
       select: "*",
     });
@@ -2577,14 +2692,19 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { friends: friendsSection, suggested: suggestedSection });
   }
 
-  // "Clips" feed v2: every active video moment on the platform, ranked by a
-  // blend of TikTok-style behavior signals and the same social graph bonuses
-  // from v1. Works for guests too (falls back to recency + global popularity)
-  // so the section always has content; personalization kicks in once
-  // authenticated. Still JS-computed like v1 - the "real ranker" upgrade
-  // path is to move this into a proper feature store once volume justifies
-  // it, but the signal set (completion, skip, like, per-author affinity) is
-  // now the same shape a production ranker would use, just simpler math.
+  // Unified ranked feed v2: every active moment on the platform - video AND
+  // photo - ranked by a blend of TikTok-style behavior signals and the same
+  // social graph bonuses from v1. Originally video-only (the endpoint name
+  // is kept as-is so the existing "#/clips" route doesn't need to change),
+  // now also backs the merged photo+video swipe feed on Home. Works for
+  // guests too (falls back to recency + global popularity) so the section
+  // always has content; personalization kicks in once authenticated. Not
+  // filtered by the friend graph, only boosted by it, so it already covers
+  // the zero-friends cold-start case without a separate fallback path. Still
+  // JS-computed like v1 - the "real ranker" upgrade path is to move this
+  // into a proper feature store once volume justifies it, but the signal set
+  // (completion, skip, like, per-author affinity) is now the same shape a
+  // production ranker would use, just simpler math.
   if (method === "GET" && pathname === "/api/moments/videos/feed") {
     const me = await getAuthUser(req);
     let friendIds = [];
@@ -2603,8 +2723,9 @@ async function handleApi(req, res, pathname, query) {
     }
 
     const videos = await db.select("mkt_moments", {
-      media_type: "eq.video",
-      expires_at: "gt." + Date.now(),
+      // No expires_at filter - Moments are permanent now, so the pool of
+      // candidates is every moment on the platform (bounded by the limit
+      // below), not just ones posted in the last 24h.
       order: "created_at.desc",
       select: "*",
       limit: "200",
@@ -2751,13 +2872,29 @@ async function handleApi(req, res, pathname, query) {
         user_id: me.id,
         created_at: Date.now(),
       });
+      // Lifetime counter on the moment's author, not the actor - see
+      // incrementUserStat. Fire-and-forget so a stats hiccup never blocks
+      // the like itself, same as the notifyUser() calls elsewhere.
+      const ownerRows = await db.select("mkt_moments", { id: "eq." + enc(momentLikeMatch[1]), select: "user_id" });
+      const ownerId = ownerRows && ownerRows[0] && ownerRows[0].user_id;
+      if (ownerId) incrementUserStat(ownerId, "stat_likes_received", 1);
     }
     return sendJson(res, 200, { ok: true });
   }
   if (method === "DELETE" && momentLikeMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const existing = await db.select("mkt_moment_likes", {
+      moment_id: "eq." + enc(momentLikeMatch[1]),
+      user_id: "eq." + enc(me.id),
+      select: "id",
+    });
     await db.remove("mkt_moment_likes", { moment_id: "eq." + enc(momentLikeMatch[1]), user_id: "eq." + enc(me.id) });
+    if (existing && existing[0]) {
+      const ownerRows = await db.select("mkt_moments", { id: "eq." + enc(momentLikeMatch[1]), select: "user_id" });
+      const ownerId = ownerRows && ownerRows[0] && ownerRows[0].user_id;
+      if (ownerId) incrementUserStat(ownerId, "stat_likes_received", -1);
+    }
     return sendJson(res, 200, { ok: true });
   }
 
@@ -2779,20 +2916,34 @@ async function handleApi(req, res, pathname, query) {
         user_id: me.id,
         created_at: Date.now(),
       });
+      // Lifetime counter on the moment's author - see incrementUserStat.
+      const ownerRows = await db.select("mkt_moments", { id: "eq." + enc(momentSaveMatch[1]), select: "user_id" });
+      const ownerId = ownerRows && ownerRows[0] && ownerRows[0].user_id;
+      if (ownerId) incrementUserStat(ownerId, "stat_saves_received", 1);
     }
     return sendJson(res, 200, { ok: true });
   }
   if (method === "DELETE" && momentSaveMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const existing = await db.select("mkt_moment_saves", {
+      moment_id: "eq." + enc(momentSaveMatch[1]),
+      user_id: "eq." + enc(me.id),
+      select: "id",
+    });
     await db.remove("mkt_moment_saves", { moment_id: "eq." + enc(momentSaveMatch[1]), user_id: "eq." + enc(me.id) });
+    if (existing && existing[0]) {
+      const ownerRows = await db.select("mkt_moments", { id: "eq." + enc(momentSaveMatch[1]), select: "user_id" });
+      const ownerId = ownerRows && ownerRows[0] && ownerRows[0].user_id;
+      if (ownerId) incrementUserStat(ownerId, "stat_saves_received", -1);
+    }
     return sendJson(res, 200, { ok: true });
   }
 
-  // Repost: creates a brand-new moment in the reposter's own 24h story,
-  // copying the original media/caption and tagging repost_of so the client
-  // can show "Reposted from X" if desired. Subject to the same
-  // MAX_ACTIVE_MOMENTS cap as a normal post.
+  // Repost: creates a brand-new moment in the reposter's own feed, copying
+  // the original media/caption and tagging repost_of so the client can show
+  // "Reposted from X" if desired. No longer subject to a MAX_ACTIVE_MOMENTS
+  // cap - see the "No cap on total moments" comment in POST /api/moments.
   const momentRepostMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)\/repost$/);
   if (method === "POST" && momentRepostMatch) {
     const me = await getAuthUser(req);
@@ -2800,16 +2951,6 @@ async function handleApi(req, res, pathname, query) {
     const origRows = await db.select("mkt_moments", { id: "eq." + enc(momentRepostMatch[1]), select: "*" });
     const orig = origRows && origRows[0];
     if (!orig) return sendJson(res, 404, { error: "Moment not found" });
-    const activeMoments = await db.select("mkt_moments", {
-      user_id: "eq." + enc(me.id),
-      expires_at: "gt." + Date.now(),
-      select: "id",
-    });
-    if (activeMoments && activeMoments.length >= MAX_ACTIVE_MOMENTS) {
-      return sendJson(res, 400, {
-        error: "You already have " + MAX_ACTIVE_MOMENTS + " active moments. Delete one or wait for it to expire before reposting.",
-      });
-    }
     const now = Date.now();
     const moment = {
       id: crypto.randomBytes(8).toString("hex"),
@@ -2881,6 +3022,13 @@ async function handleApi(req, res, pathname, query) {
       created_at: Date.now(),
     };
     await db.insert("mkt_moment_comments", comment);
+    // Lifetime counter on the moment's author - see incrementUserStat.
+    // Comments aren't "un-commented" the way likes/saves toggle, so this
+    // only ever increments here; the matching decrement lives in the
+    // DELETE /comments/:id handler below.
+    const commentOwnerRows = await db.select("mkt_moments", { id: "eq." + enc(momentCommentsMatch[1]), select: "user_id" });
+    const commentOwnerId = commentOwnerRows && commentOwnerRows[0] && commentOwnerRows[0].user_id;
+    if (commentOwnerId) incrementUserStat(commentOwnerId, "stat_comments_received", 1);
     return sendJson(res, 201, {
       id: comment.id,
       momentId: comment.moment_id,
@@ -2897,11 +3045,14 @@ async function handleApi(req, res, pathname, query) {
   if (method === "DELETE" && momentCommentDeleteMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
-    const rows = await db.select("mkt_moment_comments", { id: "eq." + enc(momentCommentDeleteMatch[2]), select: "user_id" });
+    const rows = await db.select("mkt_moment_comments", { id: "eq." + enc(momentCommentDeleteMatch[2]), select: "user_id,moment_id" });
     const c = rows && rows[0];
     if (!c) return sendJson(res, 404, { error: "Comment not found" });
     if (c.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this comment" });
     await db.remove("mkt_moment_comments", { id: "eq." + enc(momentCommentDeleteMatch[2]) });
+    const commentOwnerRows = await db.select("mkt_moments", { id: "eq." + enc(c.moment_id), select: "user_id" });
+    const commentOwnerId = commentOwnerRows && commentOwnerRows[0] && commentOwnerRows[0].user_id;
+    if (commentOwnerId) incrementUserStat(commentOwnerId, "stat_comments_received", -1);
     return sendJson(res, 200, { ok: true });
   }
 
@@ -2910,7 +3061,7 @@ async function handleApi(req, res, pathname, query) {
     const me = await getAuthUser(req);
     const moments = await db.select("mkt_moments", {
       user_id: "eq." + enc(userMomentsMatch[1]),
-      expires_at: "gt." + Date.now(),
+      // No expires_at filter - Moments are permanent now.
       order: "created_at.asc",
       select: "*",
     });
@@ -2929,6 +3080,329 @@ async function handleApi(req, res, pathname, query) {
     if (m.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this moment" });
     await db.remove("mkt_moments", { id: "eq." + enc(m.id) });
     return sendJson(res, 200, { ok: true });
+  }
+
+  // ---- LOOPS (genuinely ephemeral 24h stories, Instagram/FB-Stories-style) ----
+  // Separate feature from Moments (see the "MOMENTS" section above) and its
+  // own table (mkt_loops) - Moments were made permanent on 2026-08-18 and
+  // no longer fit the "disappears after a day, tap-through viewer, seen/
+  // unseen ring" Stories mechanic, so Loops exists to carry that mechanic
+  // forward under its own name/branding instead of overloading Moments with
+  // two different lifecycle behaviors. Requires a one-time Supabase
+  // migration creating mkt_loops and mkt_loop_views (see PROJECT.md / deploy
+  // notes) - not run automatically by this server the same way the rest of
+  // the schema isn't either.
+
+  function loopOut(l) {
+    const { user_id, media_url, media_type, created_at, expires_at, ...rest } = l;
+    return {
+      ...rest,
+      userId: user_id,
+      mediaUrl: media_url,
+      mediaType: media_type,
+      createdAt: created_at,
+      expiresAt: expires_at,
+    };
+  }
+
+  // Decorates a list of already-loopOut()'d loops in place with `viewed`
+  // (has meId got a row in mkt_loop_views for this loop - drives the seen/
+  // unseen ring on the author's avatar) and `viewCount` (total distinct
+  // viewers - only actually shown to the loop's own author in the UI, but
+  // cheap enough to attach unconditionally rather than branching the query
+  // per-caller). One batched query for the whole list, same idiom as
+  // attachMomentEngagement above.
+  async function attachLoopViewState(loopList, meId) {
+    if (!loopList || !loopList.length) return loopList;
+    const idsIn = "in.(" + loopList.map((l) => enc(l.id)).join(",") + ")";
+    const viewRows = await db.select("mkt_loop_views", { loop_id: idsIn, select: "loop_id,viewer_id" });
+    const countByLoop = {};
+    const viewedSet = new Set();
+    for (const v of viewRows) {
+      countByLoop[v.loop_id] = (countByLoop[v.loop_id] || 0) + 1;
+      if (meId && v.viewer_id === meId) viewedSet.add(v.loop_id);
+    }
+    for (const l of loopList) {
+      l.viewCount = countByLoop[l.id] || 0;
+      l.viewed = viewedSet.has(l.id);
+    }
+    return loopList;
+  }
+
+  if (method === "POST" && pathname === "/api/loops") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const ip = getClientIp(req);
+    if (!checkRateLimit("loop:" + ip, 20, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many Loops posted. Please try again later." });
+    }
+    // Small active-count cap DOES make sense here, unlike the now-permanent
+    // Moments - Loops are the Stories-style feature that cap was originally
+    // written for (see the MAX_ACTIVE_MOMENTS comment near the top of this
+    // file). Counts only currently-live (not yet expired) Loops, so it
+    // naturally frees up as old ones expire without any extra bookkeeping.
+    const activeLoops = await db.select("mkt_loops", {
+      user_id: "eq." + enc(me.id),
+      expires_at: "gt." + Date.now(),
+      select: "id",
+    });
+    if (activeLoops.length >= MAX_ACTIVE_MOMENTS) {
+      return sendJson(res, 400, { error: "You already have " + MAX_ACTIVE_MOMENTS + " active Loops. Wait for one to expire or delete one first." });
+    }
+    const body = await readBody(req);
+    const mediaType = body.mediaType === "video" ? "video" : "photo";
+    const prefix = mediaType === "video" ? "data:video/" : "data:image/";
+    if (!body.media || typeof body.media !== "string" || !body.media.startsWith(prefix)) {
+      return sendJson(res, 400, { error: "Valid media is required" });
+    }
+    if (mediaType === "video" && body.durationSeconds !== undefined) {
+      const dur = Number(body.durationSeconds);
+      if (dur && dur > MAX_LOOP_VIDEO_SECONDS) {
+        return sendJson(res, 400, { error: "Loop videos can be at most " + MAX_LOOP_VIDEO_SECONDS + " seconds long." });
+      }
+    }
+    const ext = mediaType === "video" ? ".mp4" : ".jpg";
+    let mediaUrl;
+    try {
+      mediaUrl = await sbStorageUpload("media", "loops/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ext, body.media);
+    } catch (e) {
+      return sendJson(res, 500, { error: "Could not upload Loop" });
+    }
+    const now = Date.now();
+    const loop = {
+      id: crypto.randomBytes(8).toString("hex"),
+      user_id: me.id,
+      media_url: mediaUrl,
+      media_type: mediaType,
+      caption: String(body.caption || "").slice(0, 300),
+      created_at: now,
+      expires_at: now + 24 * 60 * 60 * 1000,
+    };
+    await db.insert("mkt_loops", loop);
+    return sendJson(res, 201, loopOut(loop));
+  }
+
+  // Own Loops (if any) + friends'/followed-pages' Loops, grouped by author -
+  // same relationship rules as GET /api/moments/feed above (friends via
+  // mkt_friendships, pages via mkt_follows) but WITHOUT that endpoint's
+  // "suggested pages you don't follow" fan-out: Loops is a Stories strip,
+  // not a discovery feed, so only people/pages you already have a
+  // relationship with belong here. Unlike Moments, this endpoint DOES filter
+  // by expires_at - Loops that have expired are gone from the strip even if
+  // the hourly cleanup cron hasn't swept them yet.
+  if (method === "GET" && pathname === "/api/loops/feed") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+
+    const [friendRows, followRows] = await Promise.all([
+      db.select("mkt_friendships", {
+        status: "eq.accepted",
+        or: "(requester_id.eq." + enc(me.id) + ",addressee_id.eq." + enc(me.id) + ")",
+        select: "requester_id,addressee_id",
+      }),
+      db.select("mkt_follows", { follower_id: "eq." + enc(me.id), status: "eq.accepted", select: "followed_id" }),
+    ]);
+    const friendIds = friendRows.map((f) => (f.requester_id === me.id ? f.addressee_id : f.requester_id));
+    const followedPageIds = followRows.map((f) => f.followed_id);
+
+    const userIds = [...new Set([me.id, ...friendIds, ...followedPageIds])];
+    const loops = await db.select("mkt_loops", {
+      user_id: "in.(" + userIds.map(enc).join(",") + ")",
+      expires_at: "gt." + Date.now(),
+      order: "created_at.asc",
+      select: "*",
+    });
+    const authors = await db.select("mkt_users", {
+      id: "in.(" + userIds.map(enc).join(",") + ")",
+      select: "id,name,photo,is_page,page_category",
+    });
+    const grouped = {};
+    for (const l of loops) {
+      if (!grouped[l.user_id]) {
+        const u = authors.find((x) => x.id === l.user_id);
+        grouped[l.user_id] = {
+          userId: l.user_id,
+          userName: u ? u.name : "Unknown",
+          userPhoto: u ? u.photo : null,
+          isPage: !!(u && u.is_page),
+          pageCategory: (u && u.page_category) || "",
+          loops: [],
+        };
+      }
+      grouped[l.user_id].loops.push(loopOut(l));
+    }
+    await attachLoopViewState(
+      Object.values(grouped).flatMap((g) => g.loops),
+      me.id
+    );
+
+    // Own group first (if present), then friends, then followed pages -
+    // mirrors the Moments feed's friends-first ordering. Flat array (not
+    // split into friends/suggested sections like Moments) since there's no
+    // suggested content here.
+    const groups = [];
+    if (grouped[me.id]) groups.push(grouped[me.id]);
+    for (const uid of friendIds) if (grouped[uid]) groups.push(grouped[uid]);
+    for (const uid of followedPageIds) if (grouped[uid]) groups.push(grouped[uid]);
+
+    return sendJson(res, 200, { groups });
+  }
+
+  const loopViewMatch = pathname.match(/^\/api\/loops\/([a-zA-Z0-9]+)\/view$/);
+  if (method === "POST" && loopViewMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const loopId = loopViewMatch[1];
+    const rows = await db.select("mkt_loops", { id: "eq." + enc(loopId), select: "id,user_id" });
+    const loop = rows && rows[0];
+    if (!loop) return sendJson(res, 404, { error: "Loop not found" });
+    // Skip recording the author viewing their own Loop - same "don't count
+    // yourself" behavior real Stories-style viewers have, so the view count
+    // shown back to the author reflects other people, not their own preview.
+    if (loop.user_id === me.id) return sendJson(res, 200, { ok: true });
+    // Idempotent: check-before-insert rather than relying on the DB unique
+    // constraint to reject a duplicate, since sbRequest() treats any 4xx as
+    // a thrown error and the caller shouldn't see an error for "I already
+    // saw this Loop" - repeat views are expected (re-opening a friend's
+    // Loops re-plays already-seen ones).
+    const existing = await db.select("mkt_loop_views", {
+      loop_id: "eq." + enc(loopId),
+      viewer_id: "eq." + enc(me.id),
+      select: "id",
+    });
+    if (!existing || !existing.length) {
+      await db.insert("mkt_loop_views", { loop_id: loopId, viewer_id: me.id, created_at: Date.now() });
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+
+  const loopMatch = pathname.match(/^\/api\/loops\/([a-zA-Z0-9]+)$/);
+  if (method === "DELETE" && loopMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_loops", { id: "eq." + enc(loopMatch[1]), select: "*" });
+    const l = rows && rows[0];
+    if (!l) return sendJson(res, 404, { error: "Loop not found" });
+    if (l.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this Loop" });
+    await db.remove("mkt_loops", { id: "eq." + enc(l.id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // ---- CREATOR ANALYTICS ----
+  // Always scoped to the authenticated caller (me.id) - never accepts a
+  // client-supplied user id, same idiom as PUT /api/users/me. Combines four
+  // kinds of data:
+  //  - lifetime: the stat_*_received counters on mkt_users (see
+  //    incrementUserStat) - cumulative totals, maintained incrementally.
+  //    Originally these existed because per-moment likes/saves/comments were
+  //    lost once a moment hard-deleted at 24h; now that Moments are
+  //    permanent (see the "Moments" section comment above) that data loss
+  //    can't happen anymore, but the lifetime counters are kept as-is since
+  //    they're still a cheap true total and per-moment counts are still
+  //    live-queried below anyway.
+  //  - followerCount: live count from mkt_follows, same query as
+  //    GET /api/follow/status - not duplicated/cached anywhere.
+  //  - views7d/views7dPrev/completionRate7d: real week-over-week trend data,
+  //    computed straight from mkt_moment_events. That table is denormalized
+  //    with moment_author_id and is never deleted.
+  //  - recentMoments (formerly "activeMoments"): per-moment breakdown for
+  //    this creator's most recent moments. Renamed because Moments no longer
+  //    expire, so the old "active" (= not-yet-expired) framing and its
+  //    expires_at filter no longer mean anything - every moment is "active"
+  //    now. Capped to the most recent MAX_CREATOR_STATS_MOMENTS so this
+  //    endpoint stays cheap for creators who have posted a lot over time.
+  if (method === "GET" && pathname === "/api/creator/stats") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+
+    const MAX_CREATOR_STATS_MOMENTS = 50;
+    const now = Date.now();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const sevenDaysAgo = now - 7 * DAY_MS;
+    const fourteenDaysAgo = now - 14 * DAY_MS;
+
+    const [userRows, followerRows, recentMomentRows, eventsLast7d, eventsPrev7d] = await Promise.all([
+      db.select("mkt_users", { id: "eq." + enc(me.id), select: "stat_likes_received,stat_saves_received,stat_comments_received" }),
+      db.select("mkt_follows", { followed_id: "eq." + enc(me.id), status: "eq.accepted", select: "id" }),
+      db.select("mkt_moments", {
+        user_id: "eq." + enc(me.id),
+        // No expires_at filter - every moment is included, most recent first.
+        order: "created_at.desc",
+        select: "*",
+        limit: String(MAX_CREATOR_STATS_MOMENTS),
+      }),
+      db.select("mkt_moment_events", { moment_author_id: "eq." + enc(me.id), created_at: "gte." + sevenDaysAgo, select: "type" }),
+      // PostgREST can't express two conditions on the same column as two
+      // plain query keys (an object can only have one "created_at" key), so
+      // the previous-7-days window goes through an and=(...) compound filter.
+      db.select("mkt_moment_events", {
+        moment_author_id: "eq." + enc(me.id),
+        and: "(created_at.gte." + fourteenDaysAgo + ",created_at.lt." + sevenDaysAgo + ")",
+        select: "id",
+      }),
+    ]);
+
+    const userRow = userRows && userRows[0];
+    const lifetime = {
+      likesReceived: (userRow && userRow.stat_likes_received) || 0,
+      savesReceived: (userRow && userRow.stat_saves_received) || 0,
+      commentsReceived: (userRow && userRow.stat_comments_received) || 0,
+    };
+
+    // "Views" = total logged interaction events (complete/skip/like) in the
+    // window - each represents one tracked watch of one of this creator's
+    // moments. Not a deduplicated unique-viewer count.
+    const views7d = eventsLast7d.length;
+    const views7dPrev = eventsPrev7d.length;
+    let completeCount = 0;
+    let skipCount = 0;
+    for (const e of eventsLast7d) {
+      if (e.type === "complete") completeCount++;
+      else if (e.type === "skip") skipCount++;
+    }
+    const completionDenom = completeCount + skipCount;
+    const completionRate7d = completionDenom > 0 ? completeCount / completionDenom : null;
+
+    // Per-moment breakdown for this creator's most recent moments - one
+    // batched query per engagement table across all of them rather than N+1.
+    let recentMoments = recentMomentRows.map(momentOut);
+    if (recentMoments.length) {
+      const idsIn = "in.(" + recentMoments.map((m) => enc(m.id)).join(",") + ")";
+      const [likeRows, saveRows, commentRows, eventRows] = await Promise.all([
+        db.select("mkt_moment_likes", { moment_id: idsIn, select: "moment_id" }),
+        db.select("mkt_moment_saves", { moment_id: idsIn, select: "moment_id" }),
+        db.select("mkt_moment_comments", { moment_id: idsIn, select: "moment_id" }),
+        db.select("mkt_moment_events", { moment_id: idsIn, select: "moment_id" }),
+      ]);
+      const tally = (rows) => {
+        const out = {};
+        for (const r of rows) out[r.moment_id] = (out[r.moment_id] || 0) + 1;
+        return out;
+      };
+      const likeCounts = tally(likeRows);
+      const saveCounts = tally(saveRows);
+      const commentCounts = tally(commentRows);
+      const viewCounts = tally(eventRows);
+      recentMoments = recentMoments.map((m) => ({
+        id: m.id,
+        mediaType: m.mediaType,
+        caption: m.caption,
+        createdAt: m.createdAt,
+        viewCount: viewCounts[m.id] || 0,
+        likeCount: likeCounts[m.id] || 0,
+        saveCount: saveCounts[m.id] || 0,
+        commentCount: commentCounts[m.id] || 0,
+      }));
+    }
+
+    return sendJson(res, 200, {
+      lifetime,
+      followerCount: (followerRows || []).length,
+      views7d,
+      views7dPrev,
+      completionRate7d,
+      recentMoments,
+    });
   }
 
   // ---- INTERNATIONAL COMPANIES (producer/distributor cross-border matching) ----
@@ -3444,13 +3918,32 @@ setInterval(async () => {
   }
 }, 6 * 60 * 60 * 1000).unref();
 
-// Moment cleanup: delete expired moments from the DB every hour (Storage
-// objects are left in place - cheap to keep, avoids extra Storage API calls).
+// Moment cleanup - PERMANENT MOMENTS (2026-08-18): this used to hard-delete
+// mkt_moments rows past their 24h expires_at every hour, the same way
+// Instagram/FB Stories or Snapchat expire content. Product decision: the
+// main Moments feed (the swipe feed on Home + the #/clips route) is now
+// permanent, YouTube-Shorts/Reels/TikTok-style, so content can accumulate
+// views/likes over time instead of disappearing after a day. The deletion
+// query below is intentionally a no-op for mkt_moments - do not re-enable it
+// for this table.
+//
+// The setInterval scaffold itself was left in place (rather than deleted)
+// for exactly this reason: "Loops" (24h stories, Instagram/FB-Stories-style,
+// tracked separately from Moments) is now built and reuses this same
+// interval, scoped to its own mkt_loops table, instead of the deletion
+// query above. mkt_loop_views rows for a deleted loop are cleaned up too via
+// the loop_id foreign key's ON DELETE CASCADE (see the mkt_loop_views
+// migration) rather than a second explicit delete here.
 setInterval(async () => {
   try {
-    await db.remove("mkt_moments", { expires_at: "lt." + Date.now() });
+    // Intentional no-op: Moments no longer expire. See comment above.
   } catch (e) {
     console.error("moment cleanup failed:", e.message);
+  }
+  try {
+    await db.remove("mkt_loops", { expires_at: "lt." + Date.now() });
+  } catch (e) {
+    console.error("loop cleanup failed:", e.message);
   }
 }, 60 * 60 * 1000).unref();
 
