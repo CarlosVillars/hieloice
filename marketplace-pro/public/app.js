@@ -371,7 +371,7 @@ function applyStaticI18n() {
   if (langEsBtnEl) langEsBtnEl.classList.toggle("active", I18N.lang === "es");
   setText("icon-nav-home-label", I18N.t("iconnav.home"));
   setText("icon-nav-friends-label", I18N.t("iconnav.friends"));
-  setText("icon-nav-shorts-label", I18N.t("iconnav.shorts"));
+  setText("icon-nav-clips-label", I18N.t("iconnav.clips"));
   setText("icon-nav-marketplace-label", I18N.t("iconnav.marketplace"));
   setText("icon-nav-notifications-label", I18N.t("iconnav.notifications"));
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
@@ -630,7 +630,7 @@ async function router() {
     if (parts.length === 0) return renderHome();
     if (parts[0] === "marketplace") return renderMarketplaceHome();
     if (parts[0] === "friends") return renderFriendsPage();
-    if (parts[0] === "shorts") return renderShorts();
+    if (parts[0] === "clips") return renderClips();
     if (parts[0] === "groups" && parts[1]) return renderGroupDetail(parts[1]);
     if (parts[0] === "groups") return renderGroupsHome();
     if (parts[0] === "notifications") return renderNotificationsPage();
@@ -963,7 +963,7 @@ function renderHomeFeedPosts(groups) {
 
 // Single delegated listener (wired once, survives re-renders since the
 // container itself is never replaced) so we don't need per-card unique ids
-// the way the single-instance Stories/Shorts overlays do.
+// the way the single-instance Stories/Clips overlays do.
 function wireHomeFeedPostsDelegation() {
   const el = document.getElementById("home-feed-posts");
   if (!el || el.dataset.wired === "1") return;
@@ -2960,7 +2960,7 @@ let momentViewerTimer = null;
 let homeFeedMomentsList = [];
 let homeFeedGroupsById = {};
 
-// Reels/Shorts-style action rail icons for the Moments story viewer: white
+// Vertical-video-style action rail icons for the Moments story viewer: white
 // outline by default, filled via the ".active" CSS class (persistent for
 // like/save, momentary for message/share/repost as a press-feedback flash).
 const MOMENT_ICON_HEART =
@@ -3110,7 +3110,7 @@ function resumeMomentViewerPlayback() {
 async function openMomentComments(m, overlayId, context) {
   overlayId = overlayId || "moment-viewer-overlay";
   context = context || "story";
-  if (context === "shorts") pauseShortsPlayback();
+  if (context === "clips") pauseClipsPlayback();
   else pauseMomentViewerPlayback();
   momentCommentsState = { momentId: m.id, comments: [], replyTo: null, loading: true, context };
   const overlay = document.getElementById(overlayId);
@@ -3139,17 +3139,17 @@ function closeMomentComments() {
   if (panel) panel.remove();
   const context = momentCommentsState ? momentCommentsState.context : "story";
   momentCommentsState = null;
-  if (context === "shorts") resumeShortsPlayback();
+  if (context === "clips") resumeClipsPlayback();
   else resumeMomentViewerPlayback();
 }
 
-function pauseShortsPlayback() {
-  const videoEl = document.getElementById("shorts-video");
+function pauseClipsPlayback() {
+  const videoEl = document.getElementById("clips-video");
   if (videoEl) videoEl.pause();
 }
 
-function resumeShortsPlayback() {
-  const videoEl = document.getElementById("shorts-video");
+function resumeClipsPlayback() {
+  const videoEl = document.getElementById("clips-video");
   if (videoEl) videoEl.play().catch(() => {});
 }
 
@@ -3423,35 +3423,35 @@ function stepMomentViewer(dir) {
   drawMomentViewer();
 }
 
-// ---------------- "Moments" full-screen video feed ("#/shorts") ----------------
+// ---------------- "Moments" full-screen video feed ("#/clips") ----------------
 // A single vertical stream of every active video Moment on the platform,
 // ranked by /api/moments/videos/feed (friends > followed Pages > Pages >
 // recency). Distinct from the story-style moments-bar above: this is a
-// continuous scroll/swipe feed like Reels/Shorts, browsing all video content.
+// continuous scroll/swipe feed, browsing all video content.
 
-let shortsState = null;
+let clipsState = null;
 
-async function renderShorts() {
+async function renderClips() {
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
   let videos = [];
   try {
     videos = await api("/api/moments/videos/feed", { auth: true });
   } catch (e) {}
   if (!videos.length) {
-    viewEl.innerHTML = `<div class="empty-state">${I18N.t("shorts.empty")}</div>`;
+    viewEl.innerHTML = `<div class="empty-state">${I18N.t("clips.empty")}</div>`;
     return;
   }
   viewEl.innerHTML = "";
-  openShortsPlayer(videos, 0);
+  openClipsPlayer(videos, 0);
 }
 
-function openShortsPlayer(videos, startIndex) {
-  shortsState = { videos, index: startIndex || 0 };
+function openClipsPlayer(videos, startIndex) {
+  clipsState = { videos, index: startIndex || 0 };
   const overlay = document.createElement("div");
-  overlay.className = "shorts-overlay";
-  overlay.id = "shorts-overlay";
+  overlay.className = "clips-overlay";
+  overlay.id = "clips-overlay";
   document.body.appendChild(overlay);
-  drawShorts();
+  drawClips();
 
   overlay.addEventListener(
     "wheel",
@@ -3459,8 +3459,8 @@ function openShortsPlayer(videos, startIndex) {
       if (overlay.dataset.wheelLock === "1") return;
       overlay.dataset.wheelLock = "1";
       setTimeout(() => (overlay.dataset.wheelLock = "0"), 500);
-      if (e.deltaY > 30) stepShorts(1);
-      else if (e.deltaY < -30) stepShorts(-1);
+      if (e.deltaY > 30) stepClips(1);
+      else if (e.deltaY < -30) stepClips(-1);
     },
     { passive: true }
   );
@@ -3483,7 +3483,7 @@ function openShortsPlayer(videos, startIndex) {
       touchStartX = e.touches[0].clientX;
       dragging = true;
       lockedAxis = null;
-      const item = overlay.querySelector(".shorts-item");
+      const item = overlay.querySelector(".clips-item");
       if (item) item.style.transition = "none";
     },
     { passive: true }
@@ -3501,10 +3501,10 @@ function openShortsPlayer(videos, startIndex) {
       }
       if (lockedAxis !== "y") return;
       e.preventDefault();
-      const atFirst = shortsState.index === 0 && dy > 0;
-      const atLast = shortsState.index === shortsState.videos.length - 1 && dy < 0;
+      const atFirst = clipsState.index === 0 && dy > 0;
+      const atLast = clipsState.index === clipsState.videos.length - 1 && dy < 0;
       const damped = atFirst || atLast ? dy * 0.35 : dy;
-      const item = overlay.querySelector(".shorts-item");
+      const item = overlay.querySelector(".clips-item");
       if (item) item.style.transform = `translateY(${damped}px)`;
     },
     { passive: false }
@@ -3522,12 +3522,12 @@ function openShortsPlayer(videos, startIndex) {
       touchStartY = null;
       touchStartX = null;
       if (lockedAxis !== "y") return;
-      const item = overlay.querySelector(".shorts-item");
+      const item = overlay.querySelector(".clips-item");
       const THRESHOLD = 60;
       if (dy < -THRESHOLD) {
-        stepShorts(1);
+        stepClips(1);
       } else if (dy > THRESHOLD) {
-        stepShorts(-1);
+        stepClips(-1);
       } else if (item) {
         item.style.transition = "transform 0.2s ease";
         item.style.transform = "translateY(0)";
@@ -3537,12 +3537,12 @@ function openShortsPlayer(videos, startIndex) {
   );
 }
 
-function closeShortsPlayer() {
-  reportShortsWatch();
-  const overlay = document.getElementById("shorts-overlay");
+function closeClipsPlayer() {
+  reportClipsWatch();
+  const overlay = document.getElementById("clips-overlay");
   if (overlay) overlay.remove();
-  shortsState = null;
-  if (location.hash.startsWith("#/shorts")) location.hash = "#/";
+  clipsState = null;
+  if (location.hash.startsWith("#/clips")) location.hash = "#/";
 }
 
 // Reports how the viewer engaged with the video currently on screen -
@@ -3550,60 +3550,60 @@ function closeShortsPlayer() {
 // watch counts even without a real "ended" event), "skip" otherwise. Called
 // right before we move away from a video, feeding the affinity/popularity
 // signals the v2 ranking in /api/moments/videos/feed uses.
-function reportShortsWatch() {
-  if (!shortsState) return;
-  const v = shortsState.videos[shortsState.index];
-  if (!v || !shortsState.watchStart) return;
-  const watchMs = Date.now() - shortsState.watchStart;
-  const durationMs = shortsState.currentDurationMs || 0;
+function reportClipsWatch() {
+  if (!clipsState) return;
+  const v = clipsState.videos[clipsState.index];
+  if (!v || !clipsState.watchStart) return;
+  const watchMs = Date.now() - clipsState.watchStart;
+  const durationMs = clipsState.currentDurationMs || 0;
   const type = durationMs && watchMs >= durationMs * 0.85 ? "complete" : "skip";
   api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type, watchMs, durationMs } }).catch(() => {});
-  shortsState.watchStart = null;
+  clipsState.watchStart = null;
 }
 
-function toggleShortsLike() {
-  if (!shortsState) return;
+function toggleClipsLike() {
+  if (!clipsState) return;
   if (!state.token) {
     location.hash = "#/login";
     return;
   }
-  const v = shortsState.videos[shortsState.index];
+  const v = clipsState.videos[clipsState.index];
   const wasLiked = v.liked;
   v.liked = !wasLiked;
   v.likeCount = Math.max(0, (v.likeCount || 0) + (v.liked ? 1 : -1));
-  updateShortsLikeUI();
+  updateClipsLikeUI();
   api("/api/moments/" + v.id + "/like", { method: v.liked ? "POST" : "DELETE", auth: true, body: {} }).catch(() => {
     v.liked = wasLiked;
     v.likeCount = Math.max(0, (v.likeCount || 0) + (wasLiked ? 1 : -1));
-    updateShortsLikeUI();
+    updateClipsLikeUI();
   });
   if (v.liked) {
     api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type: "like" } }).catch(() => {});
   }
 }
 
-function updateShortsLikeUI() {
-  if (!shortsState) return;
-  const v = shortsState.videos[shortsState.index];
-  const btn = document.getElementById("shorts-like");
-  const countEl = document.getElementById("shorts-like-count");
+function updateClipsLikeUI() {
+  if (!clipsState) return;
+  const v = clipsState.videos[clipsState.index];
+  const btn = document.getElementById("clips-like");
+  const countEl = document.getElementById("clips-like-count");
   if (btn) btn.classList.toggle("active", !!v.liked);
   if (countEl) countEl.textContent = v.likeCount || 0;
 }
 
-// Comment/share/repost/save for the Shorts player - mirrors
+// Comment/share/repost/save for the Clips player - mirrors
 // wireMomentViewerActions() so both surfaces behave identically (optimistic
 // toggle, revert on failure, same icon set and "active" styling).
-function wireShortsActions(v) {
-  const msgBtn = document.getElementById("shorts-message");
+function wireClipsActions(v) {
+  const msgBtn = document.getElementById("clips-message");
   if (msgBtn) {
     msgBtn.addEventListener("click", () => {
       flashMomentAction(msgBtn);
-      openMomentComments(v, "shorts-overlay", "shorts");
+      openMomentComments(v, "clips-overlay", "clips");
     });
   }
 
-  const shareBtn = document.getElementById("shorts-share");
+  const shareBtn = document.getElementById("clips-share");
   if (shareBtn) {
     shareBtn.addEventListener("click", async () => {
       flashMomentAction(shareBtn);
@@ -3619,7 +3619,7 @@ function wireShortsActions(v) {
     });
   }
 
-  const repostBtn = document.getElementById("shorts-repost");
+  const repostBtn = document.getElementById("clips-repost");
   if (repostBtn) {
     repostBtn.addEventListener("click", async () => {
       if (!state.token) {
@@ -3637,7 +3637,7 @@ function wireShortsActions(v) {
     });
   }
 
-  const saveBtn = document.getElementById("shorts-save");
+  const saveBtn = document.getElementById("clips-save");
   if (saveBtn) {
     saveBtn.addEventListener("click", async () => {
       if (!state.token) {
@@ -3657,84 +3657,84 @@ function wireShortsActions(v) {
   }
 }
 
-function burstShortsHeart() {
-  const item = document.querySelector(".shorts-item");
+function burstClipsHeart() {
+  const item = document.querySelector(".clips-item");
   if (!item) return;
   const heart = document.createElement("div");
-  heart.className = "shorts-heart-burst";
+  heart.className = "clips-heart-burst";
   heart.textContent = "❤️";
   item.appendChild(heart);
   setTimeout(() => heart.remove(), 900);
 }
 
-function drawShorts() {
-  const overlay = document.getElementById("shorts-overlay");
-  if (!overlay || !shortsState) return;
-  const { videos, index } = shortsState;
+function drawClips() {
+  const overlay = document.getElementById("clips-overlay");
+  if (!overlay || !clipsState) return;
+  const { videos, index } = clipsState;
   const v = videos[index];
   const isOwn = state.user && v.userId === state.user.id;
   const showFollow = v.isPage && state.token && !isOwn;
 
   overlay.innerHTML = `
-    <div class="shorts-item">
-      <video class="shorts-video" id="shorts-video" src="${v.mediaUrl}" autoplay loop playsinline></video>
-      <button class="shorts-close" id="shorts-close">&times;</button>
-      <div class="shorts-info">
-        <a class="shorts-author-link" href="#/profile/${v.userId}">
-          ${v.userPhoto ? `<img class="shorts-avatar" src="${v.userPhoto}" />` : `<div class="shorts-avatar-placeholder">${initials(v.userName)}</div>`}
-          <span class="shorts-author">${escapeHtml(v.userName)}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+    <div class="clips-item">
+      <video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>
+      <button class="clips-close" id="clips-close">&times;</button>
+      <div class="clips-info">
+        <a class="clips-author-link" href="#/profile/${v.userId}">
+          ${v.userPhoto ? `<img class="clips-avatar" src="${v.userPhoto}" />` : `<div class="clips-avatar-placeholder">${initials(v.userName)}</div>`}
+          <span class="clips-author">${escapeHtml(v.userName)}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
         </a>
-        ${v.caption ? `<p class="shorts-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
-        ${showFollow ? `<button class="btn-follow-inline shorts-follow" id="shorts-follow">${I18N.t("subs.subscribe")}</button>` : ""}
+        ${v.caption ? `<p class="clips-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
+        ${showFollow ? `<button class="btn-follow-inline clips-follow" id="clips-follow">${I18N.t("subs.subscribe")}</button>` : ""}
       </div>
-      <div class="shorts-actions-col">
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn like-btn ${v.liked ? "active" : ""}" id="shorts-like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
-          <span class="shorts-action-count" id="shorts-like-count">${v.likeCount || 0}</span>
+      <div class="clips-actions-col">
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn like-btn ${v.liked ? "active" : ""}" id="clips-like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
+          <span class="clips-action-count" id="clips-like-count">${v.likeCount || 0}</span>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn" id="shorts-message" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn" id="clips-message" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn" id="shorts-share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn" id="clips-share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn repost-btn" id="shorts-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn repost-btn" id="clips-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn save-btn ${v.saved ? "active" : ""}" id="shorts-save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn save-btn ${v.saved ? "active" : ""}" id="clips-save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
         </div>
       </div>
     </div>
   `;
 
-  document.getElementById("shorts-close").addEventListener("click", closeShortsPlayer);
-  document.getElementById("shorts-like").addEventListener("click", toggleShortsLike);
-  wireShortsActions(v);
+  document.getElementById("clips-close").addEventListener("click", closeClipsPlayer);
+  document.getElementById("clips-like").addEventListener("click", toggleClipsLike);
+  wireClipsActions(v);
 
-  shortsState.watchStart = Date.now();
-  shortsState.currentDurationMs = 0;
+  clipsState.watchStart = Date.now();
+  clipsState.currentDurationMs = 0;
 
-  const videoEl = document.getElementById("shorts-video");
+  const videoEl = document.getElementById("clips-video");
   if (videoEl) {
     videoEl.muted = false;
     videoEl.volume = 1;
     videoEl.addEventListener("loadedmetadata", () => {
-      if (shortsState) shortsState.currentDurationMs = (videoEl.duration || 0) * 1000;
+      if (clipsState) clipsState.currentDurationMs = (videoEl.duration || 0) * 1000;
     });
     let lastTap = 0;
     videoEl.addEventListener("click", () => {
       const now = Date.now();
       if (now - lastTap < 300) {
-        const cur = shortsState.videos[shortsState.index];
-        if (!cur.liked) toggleShortsLike();
-        burstShortsHeart();
+        const cur = clipsState.videos[clipsState.index];
+        if (!cur.liked) toggleClipsLike();
+        burstClipsHeart();
       }
       lastTap = now;
     });
   }
 
-  const followBtn = document.getElementById("shorts-follow");
+  const followBtn = document.getElementById("clips-follow");
   if (followBtn) {
     const applyStatus = (status) => {
       followBtn.dataset.status = status;
@@ -3763,13 +3763,13 @@ function drawShorts() {
   }
 }
 
-function stepShorts(dir) {
-  if (!shortsState) return;
-  const next = shortsState.index + dir;
-  if (next < 0 || next >= shortsState.videos.length) return;
-  reportShortsWatch();
-  shortsState.index = next;
-  drawShorts();
+function stepClips(dir) {
+  if (!clipsState) return;
+  const next = clipsState.index + dir;
+  if (next < 0 || next >= clipsState.videos.length) return;
+  reportClipsWatch();
+  clipsState.index = next;
+  drawClips();
 }
 
 const MAX_ACTIVE_MOMENTS = 3;

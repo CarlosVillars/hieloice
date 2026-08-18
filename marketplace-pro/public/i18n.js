@@ -377,7 +377,7 @@ const STRINGS = {
 
     "iconnav.home": "Home",
     "iconnav.friends": "Friends",
-    "iconnav.shorts": "Moments",
+    "iconnav.clips": "Moments",
     "iconnav.marketplace": "Marketplace",
     "iconnav.notifications": "Notifications",
     "iconnav.dropdownMarketplace": "Marketplace",
@@ -409,7 +409,7 @@ const STRINGS = {
     "feed.suggestedHeading": "Suggested for you",
     "feed.emptyFriends": "Post your first moment or add friends to see theirs here.",
 
-    "shorts.empty": "No videos yet. Be the first to post a Moment!",
+    "clips.empty": "No videos yet. Be the first to post a Moment!",
 
     "pages.isPageLabel": "This is a Public Page (creator/business)",
     "pages.isPageHint": "Public Pages can be followed by anyone, even without being friends, and show up as suggestions in other users' feeds.",
@@ -906,7 +906,7 @@ const STRINGS = {
 
     "iconnav.home": "Inicio",
     "iconnav.friends": "Amigos",
-    "iconnav.shorts": "Moments",
+    "iconnav.clips": "Moments",
     "iconnav.marketplace": "Marketplace",
     "iconnav.notifications": "Notificaciones",
     "iconnav.dropdownMarketplace": "Marketplace",
@@ -938,7 +938,7 @@ const STRINGS = {
     "feed.suggestedHeading": "Sugerido para ti",
     "feed.emptyFriends": "Publica tu primer moment o agrega amigos para ver los suyos aqui.",
 
-    "shorts.empty": "Todavia no hay videos. Se el primero en publicar un Moment!",
+    "clips.empty": "Todavia no hay videos. Se el primero en publicar un Moment!",
 
     "pages.isPageLabel": "Esta es una Pagina Publica (creador/negocio)",
     "pages.isPageHint": "Las Paginas Publicas pueden ser seguidas por cualquiera, sin necesidad de ser amigos, y aparecen como sugerencia en el feed de otros usuarios.",

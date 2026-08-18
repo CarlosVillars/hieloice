@@ -400,14 +400,14 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .wizard-fs-grid.show { opacity: 1; }
 
-/* Right-side labeled options rail, YouTube-Shorts-style layout with our own icon glyphs */
+/* Right-side labeled options rail, full-screen vertical-video-app layout with our own icon glyphs */
 .wizard-fs-rail {
   position: absolute; top: 70px; right: 6px; width: 62px; max-height: calc(100% - 230px);
   background: rgba(20,20,20,0.55);
   border-radius: 30px; display: flex; flex-direction: column;
   padding: 10px 0; overflow-y: auto; overflow-x: visible; z-index: 2;
   /* One flat, fully-rounded pill sized to the icons themselves and floating
-     a few px off the screen edge - matches the real YouTube Shorts rail
+     a few px off the screen edge - matches full-screen vertical video camera rails
      (reference screenshot) instead of a tall panel stretched down the
      screen with a fading gradient and per-icon circular backgrounds.
      overflow-x must stay "visible" (not the default/unset) - setting only
@@ -570,9 +570,28 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .wizard-sticker-picker { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; padding: 8px 0; }
 .wizard-sticker-picker button { font-size: 24px; background: none; border: none; cursor: pointer; padding: 4px; }
 @media (max-width: 640px) {
-  .icon-nav { justify-content: space-between; }
-  .icon-nav-btn { padding: 8px 6px 6px; flex: 1; }
+  /* Primary nav moves to the bottom of the screen on phones, same place
+     Instagram/TikTok/Facebook put it - reachable with a thumb without
+     stretching, instead of sitting at the top where it's furthest from
+     how people actually hold a phone. Desktop keeps it at the top since
+     that's the normal/expected place there and there's no thumb-reach
+     problem with a mouse. */
+  .icon-nav {
+    justify-content: space-between;
+    position: fixed; top: auto; bottom: 0; left: 0; right: 0;
+    border-bottom: none; border-top: 1px solid var(--border-color);
+    padding-bottom: calc(2px + env(safe-area-inset-bottom));
+  }
+  .icon-nav-btn { padding: 6px 6px 8px; flex: 1; border-bottom: none; border-top: 3px solid transparent; }
+  .icon-nav-btn:hover { border-top-color: var(--gold); border-bottom-color: transparent; }
   .icon-nav-label { font-size: 10px; }
+  /* Dropdowns open upward instead of downward - opening down from a
+     bottom-anchored bar would push the menu off the bottom of the screen. */
+  .icon-nav-dropdown { top: auto; bottom: 100%; margin-bottom: 6px; }
+  /* Clear space so page content and the footer aren't hidden underneath
+     the now-fixed bottom bar. */
+  .view { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+  .site-footer-inner { padding-bottom: calc(18px + 70px + env(safe-area-inset-bottom)); }
 }
 
 /* ---- Layout ---- */
@@ -1047,7 +1066,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .moment-viewer-nav.prev { left: 0; }
 .moment-viewer-nav.next { right: 0; }
 
-/* ---- Moments story-viewer action rail (Reels/Shorts-style: like, message,
+/* ---- Moments story-viewer action rail (vertical-video-style: like, message,
    share, repost, save) - white outline by default, fills on activation ---- */
 .moment-viewer-actions { position: absolute; right: 10px; bottom: 90px; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 16px; }
 .moment-viewer-action-btn { background: none; border: none; padding: 0; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; transition: transform 0.15s ease; }
@@ -1092,29 +1111,29 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .moment-upload-choices label { flex: 1; text-align: center; background: var(--bg-surface-alt); color: var(--accent-text); border: 1px dashed var(--accent-text); border-radius: 8px; padding: 14px 8px; font-size: 13px; font-weight: 700; cursor: pointer; }
 .moment-upload-choices input { display: none; }
 
-/* ---- Moments video feed ("#/shorts" - vertical Reels/Shorts-style player) ---- */
-.shorts-overlay { position: fixed; inset: 0; background: #000; z-index: 500; display: flex; align-items: center; justify-content: center; }
-.shorts-item { position: relative; width: 100%; max-width: 480px; height: 100%; max-height: 100vh; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: pan-x; }
-.shorts-video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-.shorts-close { position: absolute; top: 16px; right: 16px; background: rgba(0,0,0,0.4); border: none; color: #fff; font-size: 22px; width: 34px; height: 34px; border-radius: 50%; z-index: 2; }
-.shorts-info { position: absolute; left: 14px; right: 70px; bottom: 24px; z-index: 2; color: #fff; }
-.shorts-author-link { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.shorts-avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid #fff; }
-.shorts-avatar-placeholder { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--accent-text-on); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; border: 1px solid #fff; }
-.shorts-author { font-weight: 700; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
-.shorts-caption { font-size: 13px; margin: 0 0 10px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); white-space: pre-line; }
+/* ---- Moments video feed ("#/clips" - full-screen vertical video player) ---- */
+.clips-overlay { position: fixed; inset: 0; background: #000; z-index: 500; display: flex; align-items: center; justify-content: center; }
+.clips-item { position: relative; width: 100%; max-width: 480px; height: 100%; max-height: 100vh; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: pan-x; }
+.clips-video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.clips-close { position: absolute; top: 16px; right: 16px; background: rgba(0,0,0,0.4); border: none; color: #fff; font-size: 22px; width: 34px; height: 34px; border-radius: 50%; z-index: 2; }
+.clips-info { position: absolute; left: 14px; right: 70px; bottom: 24px; z-index: 2; color: #fff; }
+.clips-author-link { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.clips-avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid #fff; }
+.clips-avatar-placeholder { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--accent-text-on); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; border: 1px solid #fff; }
+.clips-author { font-weight: 700; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.clips-caption { font-size: 13px; margin: 0 0 10px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); white-space: pre-line; }
 .hashtag-token { color: var(--accent-strong); font-weight: 700; }
-.shorts-follow { display: block; }
+.clips-follow { display: block; }
 
-/* ---- Shorts side actions (like) - Instagram-style vertical action rail ---- */
-.shorts-actions-col { position: absolute; right: 14px; bottom: 90px; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 16px; }
-.shorts-action { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.shorts-action-btn { width: 46px; height: 46px; border-radius: 50%; background: rgba(255,255,255,0.12); backdrop-filter: blur(2px); border: none; color: #fff; font-size: 22px; display: flex; align-items: center; justify-content: center; transition: transform 0.15s ease; }
-.shorts-action-btn:active { transform: scale(0.88); }
-.shorts-action-btn.active { background: rgba(255,255,255,0.2); }
-.shorts-action-count { color: #fff; font-size: 12px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+/* ---- Clips side actions (like) - vertical action rail ---- */
+.clips-actions-col { position: absolute; right: 14px; bottom: 90px; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.clips-action { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.clips-action-btn { width: 46px; height: 46px; border-radius: 50%; background: rgba(255,255,255,0.12); backdrop-filter: blur(2px); border: none; color: #fff; font-size: 22px; display: flex; align-items: center; justify-content: center; transition: transform 0.15s ease; }
+.clips-action-btn:active { transform: scale(0.88); }
+.clips-action-btn.active { background: rgba(255,255,255,0.2); }
+.clips-action-count { color: #fff; font-size: 12px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
 
-.shorts-heart-burst {
+.clips-heart-burst {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -1123,10 +1142,10 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   opacity: 0;
   z-index: 3;
   pointer-events: none;
-  animation: shortsHeartBurst 0.75s ease-out forwards;
+  animation: clipsHeartBurst 0.75s ease-out forwards;
   filter: drop-shadow(0 2px 8px rgba(0,0,0,0.35));
 }
-@keyframes shortsHeartBurst {
+@keyframes clipsHeartBurst {
   0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
   25% { transform: translate(-50%, -50%) scale(1.15); opacity: 1; }
   45% { transform: translate(-50%, -50%) scale(0.95); opacity: 1; }
