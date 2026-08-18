@@ -547,6 +547,19 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .btn-ai-suggest:hover { background: var(--accent-gold, #c9a24b); color: var(--bg-surface); }
 .btn-ai-suggest:disabled { opacity: 0.5; cursor: default; }
+/* Smaller secondary variant used next to the create-wizard caption field -
+   same gold "AI assist" visual language as .btn-ai-suggest above (the Post
+   Ad book-photo button) but lower visual weight so it doesn't compete with
+   the primary Publish action. */
+.btn-ai-suggest-sm { padding: 5px 10px; font-size: 12px; margin-top: 6px; border-radius: 999px; }
+.ai-caption-preview {
+  margin-top: 8px; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--accent-gold, #c9a24b); background: var(--bg-surface-2, var(--bg-surface));
+}
+.ai-caption-preview-text { font-size: 13px; color: var(--text-primary); margin: 0 0 6px; }
+.ai-caption-preview-actions { display: flex; gap: 14px; }
+.ai-caption-preview-actions a { font-size: 12px; font-weight: 600; color: var(--accent-gold, #c9a24b); cursor: pointer; }
+.ai-caption-preview-actions a:hover { text-decoration: underline; }
 .ai-listing-banner {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
   background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong, var(--accent)) 100%);
@@ -1052,6 +1065,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .page-badge-inline { display: inline-block; background: var(--accent); color: var(--accent-text-on); font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 8px; vertical-align: middle; margin-left: 4px; }
 .btn-follow-inline { margin-left: auto; background: var(--gold); color: var(--gold-text-on); border: none; border-radius: 16px; padding: 6px 14px; font-size: 12px; font-weight: 800; }
 .field-hint { font-size: 12px; color: var(--text-muted); margin: 4px 0 0; }
+.field-hint.error { color: var(--danger); }
 .checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .checkbox-label input { width: auto; }
 
@@ -1541,3 +1555,49 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .notif-category-grid { display: flex; flex-wrap: wrap; gap: 8px; }
 .notif-category-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 20px; padding: 5px 12px; cursor: pointer; }
 .notif-category-chip input { width: 13px; height: 13px; }
+
+/* ---- Videos hub (task #231) - general-purpose long-form video section,
+   NOT the full-screen swipe player Moments/Clips use - a normal scrollable
+   grid + watch page, on purpose (see server.js's is_long_video split). ---- */
+.videos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; margin-top: 14px; }
+.video-card { display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; text-decoration: none; color: inherit; }
+.video-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
+.video-card-thumb-wrap { aspect-ratio: 16/9; background: #000; }
+.video-card-thumb { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.video-card-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.video-card-title { font-size: 14px; font-weight: 700; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.video-card-channel { font-size: 12px; color: var(--text-secondary); text-decoration: none; }
+.video-card-channel:hover { text-decoration: underline; }
+.video-card-meta { font-size: 12px; color: var(--text-muted); }
+
+.related-videos-section { margin: 20px 16px; }
+.related-videos-row { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
+.related-video-card { flex: 0 0 140px; text-decoration: none; color: inherit; }
+.related-video-thumb { width: 140px; height: 80px; object-fit: cover; border-radius: 8px; background: #000; display: block; pointer-events: none; }
+.related-video-title { display: block; font-size: 12px; font-weight: 600; margin-top: 6px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.video-watch-wrap { margin: 0 16px 24px; position: relative; }
+.video-watch-player { width: 100%; max-height: 65vh; background: #000; border-radius: 10px; display: block; }
+.video-watch-body { padding-top: 14px; }
+.video-watch-title { font-size: 19px; font-weight: 800; margin: 0 0 10px; }
+.video-watch-channel { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: inherit; margin-bottom: 12px; }
+.video-watch-channel:hover { text-decoration: underline; }
+.video-watch-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
+.video-watch-avatar-placeholder { width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: var(--accent-text-on); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.video-watch-actions { display: flex; gap: 10px; margin: 4px 0 14px; flex-wrap: wrap; }
+.video-watch-action-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 20px; padding: 8px 14px; font-weight: 600; font-size: 13px; color: var(--text-primary); }
+.video-watch-action-btn svg { width: 18px; height: 18px; fill: currentColor; stroke: currentColor; stroke-width: 1.4; }
+.video-watch-action-btn.active { color: var(--danger); border-color: var(--danger); }
+.video-watch-caption { white-space: pre-wrap; font-size: 14px; margin: 10px 0; color: var(--text-secondary); }
+.video-watch-product-card { display: flex; gap: 12px; align-items: center; border: 1px solid var(--border-color); border-radius: 10px; padding: 10px; margin: 14px 0; text-decoration: none; color: inherit; background: var(--bg-surface); }
+.video-watch-product-card img, .video-watch-product-card .product-thumb-empty { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; }
+.video-watch-product-title { font-weight: 700; font-size: 14px; margin: 2px 0; }
+
+/* ---- Create-wizard step 4: optional "link to a listing" screen (Videos hub, task #231) ---- */
+.wizard-link-product-row { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--border-color); cursor: pointer; }
+.wizard-link-product-row:last-child { border-bottom: none; }
+.wizard-link-product-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; }
+.wizard-link-product-thumb-empty { display: flex; align-items: center; justify-content: center; background: var(--bg-surface-alt); font-size: 18px; }
+.wizard-link-product-info { display: flex; flex-direction: column; gap: 2px; }
+.wizard-link-product-title { font-size: 13px; font-weight: 600; }
+.wizard-link-product-price { font-size: 12px; color: var(--text-muted); }

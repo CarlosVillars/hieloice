@@ -393,8 +393,10 @@ function applyStaticI18n() {
   setText("icon-nav-create-upload-moment-label", I18N.t("iconnav.createUploadMoment"));
   setText("icon-nav-create-upload-picture-label", I18N.t("iconnav.createUploadPicture"));
   setText("icon-nav-create-loop-label", I18N.t("iconnav.createLoop"));
+  setText("icon-nav-create-video-label", I18N.t("iconnav.createVideo"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
+  setText("icon-nav-dropdown-videos-label", I18N.t("iconnav.dropdownVideos"));
   setText("icon-nav-dropdown-soon-label", I18N.t("iconnav.comingSoon"));
   setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
   setText("icon-nav-books-recommend-label", I18N.t("iconnav.booksRecommend"));
@@ -608,6 +610,23 @@ function updateGlobalSearchPlaceholder() {
         openCreateWizard("loop");
       });
     }
+    // "Upload video" (task #231) opens the same wizard with target:"video" -
+    // the long-form Videos hub - and jumps straight to the gallery file
+    // picker pre-filtered to video files, same idiom as "Upload a Moment"
+    // above, since a 20-minute hold-to-record capture isn't a realistic UX.
+    const videoLink = document.getElementById("icon-nav-create-video");
+    if (videoLink) {
+      videoLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard("video");
+        const fileInput = document.getElementById("wizard-file-media");
+        if (fileInput) {
+          fileInput.accept = "video/*";
+          fileInput.click();
+        }
+      });
+    }
     const productLink = document.getElementById("icon-nav-create-product");
     if (productLink) {
       productLink.addEventListener("click", () => {
@@ -655,6 +674,8 @@ async function router() {
     if (parts[0] === "marketplace") return renderMarketplaceHome();
     if (parts[0] === "friends") return renderFriendsPage();
     if (parts[0] === "clips") return renderClips();
+    if (parts[0] === "videos" && parts[1]) return renderVideoWatch(parts[1]);
+    if (parts[0] === "videos") return renderVideosFeed();
     if (parts[0] === "groups" && parts[1]) return renderGroupDetail(parts[1]);
     if (parts[0] === "groups") return renderGroupsHome();
     if (parts[0] === "notifications") return renderNotificationsPage();
@@ -1499,7 +1520,19 @@ async function renderProductDetail(id) {
         }
       </div>
     </div>
+    <div id="product-related-videos"></div>
   `;
+
+  // "Related videos" (task #231) - fetched separately after the main
+  // product paint so a slow/failed videos lookup never blocks or breaks the
+  // product page itself; the container simply stays empty (no section
+  // rendered at all) if there are none, per the feature's own spec.
+  api("/api/videos/by-product/" + id)
+    .then((videos) => {
+      const el = document.getElementById("product-related-videos");
+      if (el && videos && videos.length) el.innerHTML = relatedVideosStripHtml(videos);
+    })
+    .catch(() => {});
 
   document.querySelectorAll(".gallery-thumbs img").forEach((img) => {
     img.addEventListener("click", () => {
@@ -3974,6 +4007,141 @@ function closeClipsPlayer() {
   closeSwipeFeed(clipsState);
 }
 
+// ---- Videos hub (task #231) - general-purpose long-form video section,
+// reached from the Marketplace nav dropdown (#/videos). Deliberately a
+// normal scrollable page (thumbnail grid + a plain watch page below), NOT
+// the full-screen swipe player Moments/Clips use - short-form passive
+// scroll and long-form active browsing are different mental modes and stay
+// visually separate on purpose (see server.js's is_long_video split). Every
+// video here really is an mkt_moments row under the hood, so likes/saves/
+// comments reuse the exact same /api/moments/:id/... endpoints as Moments -
+// the watch page below renders them with the same #moment-viewer-* element
+// ids wireMomentViewerActions()/openMomentComments() already know how to
+// wire, instead of duplicating that logic. ----
+
+async function renderVideosFeed() {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let videos = [];
+  try {
+    videos = await api("/api/videos/feed");
+  } catch (e) {}
+  viewEl.innerHTML = `
+    <div style="margin:16px;">
+      <h1 class="section-heading">${I18N.t("videos.feedTitle")}</h1>
+      ${
+        videos.length
+          ? `<div class="videos-grid">${videos.map(videoCardHtml).join("")}</div>`
+          : `<div class="empty-state">${I18N.t("videos.empty")}</div>`
+      }
+    </div>
+  `;
+}
+
+function videoCardHtml(v) {
+  return `
+    <a class="video-card" href="#/videos/${v.id}">
+      <div class="video-card-thumb-wrap">
+        <video class="video-card-thumb" src="${v.mediaUrl}#t=0.1" muted preload="metadata"></video>
+      </div>
+      <div class="video-card-body">
+        <p class="video-card-title">${escapeHtml(v.title || "")}</p>
+        <a class="video-card-channel" href="#/profile/${v.userId}" onclick="event.stopPropagation()">${escapeHtml(v.userName || "")}</a>
+        <p class="video-card-meta">\u{2764}\u{FE0F} ${v.likeCount || 0} &middot; ${fmtDate(v.createdAt)}</p>
+      </div>
+    </a>
+  `;
+}
+
+// Small horizontal strip used on a product detail page ("Related videos") -
+// hidden entirely (returns "") when there are none, per task #231's spec.
+function relatedVideosStripHtml(videos) {
+  if (!videos || !videos.length) return "";
+  return `
+    <div class="related-videos-section">
+      <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("videos.relatedTitle")}</h2>
+      <div class="related-videos-row">
+        ${videos
+          .map(
+            (v) => `
+          <a class="related-video-card" href="#/videos/${v.id}">
+            <video class="related-video-thumb" src="${v.mediaUrl}#t=0.1" muted preload="metadata"></video>
+            <span class="related-video-title">${escapeHtml(v.title || "")}</span>
+          </a>`
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+async function renderVideoWatch(id) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let v;
+  try {
+    v = await api("/api/moments/" + id);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${I18N.t("videos.notFound")}</p>`;
+    return;
+  }
+  if (!v || !v.isLongVideo) {
+    viewEl.innerHTML = `<p class="form-msg error">${I18N.t("videos.notFound")}</p>`;
+    return;
+  }
+  let linkedProduct = null;
+  if (v.linkedProductId) {
+    try {
+      linkedProduct = await api("/api/products/" + v.linkedProductId);
+    } catch (e) {}
+  }
+  const isOwn = state.user && state.user.id === v.userId;
+
+  viewEl.innerHTML = `
+    <div class="video-watch-wrap" id="moment-viewer-overlay">
+      <video class="video-watch-player" id="moment-viewer-media" src="${v.mediaUrl}" controls playsinline></video>
+      <div class="video-watch-body">
+        <h1 class="video-watch-title">${escapeHtml(v.title || "")}</h1>
+        <a class="video-watch-channel" href="#/profile/${v.userId}">
+          ${v.userPhoto ? `<img class="video-watch-avatar" src="${v.userPhoto}" />` : `<div class="video-watch-avatar-placeholder">${initials(v.userName)}</div>`}
+          <span>${escapeHtml(v.userName || "")}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        </a>
+        <div class="video-watch-actions">
+          <button class="video-watch-action-btn ${v.liked ? "active" : ""}" id="moment-viewer-like">${MOMENT_ICON_HEART} <span>${v.likeCount || 0}</span></button>
+          <button class="video-watch-action-btn" id="moment-viewer-message">${MOMENT_ICON_MESSAGE} <span>${I18N.t("videos.comments")}</span></button>
+          <button class="video-watch-action-btn ${v.saved ? "active" : ""}" id="moment-viewer-save">${MOMENT_ICON_SAVE} <span>${I18N.t("saved.save")}</span></button>
+          <button class="video-watch-action-btn" id="moment-viewer-share">${MOMENT_ICON_SHARE} <span>${I18N.t("videos.share")}</span></button>
+        </div>
+        ${v.caption ? `<p class="video-watch-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
+        ${
+          linkedProduct
+            ? `<a class="video-watch-product-card" href="#/product/${linkedProduct.id}">
+                 ${linkedProduct.photos && linkedProduct.photos[0] ? `<img src="${linkedProduct.photos[0]}" />` : `<div class="product-thumb-empty">\u{1F4E6}</div>`}
+                 <div>
+                   <p class="field-hint">${I18N.t("videos.linkedProductLabel")}</p>
+                   <p class="video-watch-product-title">${escapeHtml(linkedProduct.title)}</p>
+                   <p class="product-price">${fmtPrice(linkedProduct.price)}</p>
+                 </div>
+               </a>`
+            : ""
+        }
+        ${isOwn ? `<div class="action-row"><button class="btn btn-danger" id="video-watch-delete">${I18N.t("moments.delete")}</button></div>` : ""}
+      </div>
+    </div>
+  `;
+  wireMomentViewerActions(v);
+  const delBtn = document.getElementById("video-watch-delete");
+  if (delBtn) {
+    delBtn.addEventListener("click", async () => {
+      if (!confirm("Delete this video? / ¿Eliminar este video?")) return;
+      try {
+        await api("/api/moments/" + v.id, { method: "DELETE", auth: true });
+        location.hash = "#/profile";
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+}
+
 // Reports how the viewer engaged with the item currently on screen -
 // "complete" if they stuck around for most of it (video loops, so a
 // near-full watch counts even without a real "ended" event; photos use the
@@ -4306,11 +4474,23 @@ function wireSwipeGestures(rootEl, sw) {
 }
 
 const MAX_ACTIVE_MOMENTS = 3;
-const MAX_MOMENT_VIDEO_SECONDS = 180;
+const MAX_MOMENT_VIDEO_SECONDS = 90; // matches Instagram Reels cap
 // Client-side mirrors of server.js's MAX_ACTIVE_MOMENTS (reused as-is for
 // Loops' active-count cap - see server.js) and MAX_LOOP_VIDEO_SECONDS, kept
 // in sync by hand the same way MAX_MOMENT_VIDEO_SECONDS above already is.
-const MAX_LOOP_VIDEO_SECONDS = 60;
+const MAX_LOOP_VIDEO_SECONDS = 20; // matches Stories-style short clips
+// Long-form "Videos" hub (task #231) - client-side mirror of server.js's
+// MAX_LONG_VIDEO_SECONDS, kept in sync by hand same as the two above.
+const MAX_LONG_VIDEO_SECONDS = 1200;
+
+// Max video length for the current create-wizard target - used everywhere
+// the wizard needs to know its own cap (the hold-record ring, the
+// gallery-upload duration probe) instead of each call site re-deriving it.
+function wizardMaxVideoSeconds() {
+  if (createWizard && createWizard.target === "loop") return MAX_LOOP_VIDEO_SECONDS;
+  if (createWizard && createWizard.target === "video") return MAX_LONG_VIDEO_SECONDS;
+  return MAX_MOMENT_VIDEO_SECONDS;
+}
 
 function openMomentUploadModal() {
   if (!state.token) {
@@ -4460,9 +4640,10 @@ const WIZARD_MIN_INTENTIONAL_HOLD_MS = 500;
 // Max hold-record duration for the current wizard session's target - a
 // function rather than a fixed constant (the old WIZARD_RING_TARGET_MS)
 // specifically so a Loop capture stops recording at MAX_LOOP_VIDEO_SECONDS
-// instead of letting the user hold for the full 3-minute Moment length.
+// (and, since task #231, a "video" capture at MAX_LONG_VIDEO_SECONDS)
+// instead of letting the user hold for the full Moment length.
 function wizardRingTargetMs() {
-  return (createWizard && createWizard.target === "loop" ? MAX_LOOP_VIDEO_SECONDS : MAX_MOMENT_VIDEO_SECONDS) * 1000;
+  return wizardMaxVideoSeconds() * 1000;
 }
 
 function createWizardFilterCss(id) {
@@ -4493,26 +4674,39 @@ function closeCreateWizard() {
 }
 
 // `target` distinguishes what the wizard's final publish step posts to:
-// "moment" (default - POST /api/moments) or "loop" (POST /api/loops, see the
-// "Loop" option in the create dropdown). Every other step of the wizard
-// (capture, filters, caption) behaves identically for both - only the
-// publish call and a couple of labels branch on it - see the
-// wizard-publish click handler in drawCreateWizard()'s step-3 branch.
+// "moment" (default - POST /api/moments), "loop" (POST /api/loops, see the
+// "Loop" option in the create dropdown), or "video" (task #231 - the
+// long-form Videos hub, still POST /api/moments but with target:"video" in
+// the body - see server.js). Every other step of the wizard (capture,
+// filters, caption) behaves identically across all three - only the
+// publish call, the video-length cap, and a couple of extra fields/steps
+// (title, link-to-product) branch on it - see the wizard-publish click
+// handler and the step-4 branch in drawCreateWizard().
 function openCreateWizard(target) {
   if (!state.token) {
     location.hash = "#/login";
     return;
   }
+  const resolvedTarget = target === "loop" ? "loop" : target === "video" ? "video" : "moment";
   createWizard = {
     step: 1, filter: "none", mediaType: null, rawDataUrl: null, recording: false,
     stream: null, recorder: null, chunks: [], durationSeconds: null,
     facingMode: "user", flashOn: false, timerMode: 0,
     recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
-    overlays: [], gridOn: false, target: target === "loop" ? "loop" : "moment",
+    overlays: [], gridOn: false, target: resolvedTarget,
     // AI auto-clip (task #160): the trim window the creator confirmed, if
     // any - both null means "publish the full video". Set from a
     // POST /api/ai/suggest-clip suggestion in step 3; see wireWizardAiClip().
     clipStartSec: null, clipEndSec: null,
+    // Long-form Videos hub (task #231, target:"video" only) - title is
+    // required, linkedProductId is an optional pointer to one of the
+    // poster's own mkt_products rows chosen in the step-4 "link to a
+    // listing?" screen (see drawCreateWizardStep4()). myProducts caches
+    // that screen's GET /api/products?sellerId=<me> fetch across
+    // back/forward navigation within the wizard so it isn't re-fetched
+    // every time the user steps back and forward again.
+    titleDraft: "", captionDraft: "", hashtagsDraft: "",
+    linkedProductId: null, myProducts: null, finalMedia: null,
   };
   const overlay = document.createElement("div");
   overlay.id = "create-wizard-overlay";
@@ -4915,6 +5109,13 @@ function wizardHandleMediaFile(file) {
   if (!file) return;
   const isVideo = file.type.startsWith("video/");
   if (!isVideo) {
+    // The Videos hub (task #231) is video-only - a photo picked from the
+    // gallery button while target:"video" is active isn't a valid upload
+    // for it (server.js's POST /api/moments rejects it too).
+    if (createWizard.target === "video") {
+      alert(I18N.t("videos.mustBeVideo"));
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       createWizard.rawDataUrl = reader.result;
@@ -4931,8 +5132,8 @@ function wizardHandleMediaFile(file) {
   const objectUrl = URL.createObjectURL(file);
   probe.onloadedmetadata = () => {
     URL.revokeObjectURL(objectUrl);
-    if (probe.duration && probe.duration > MAX_MOMENT_VIDEO_SECONDS) {
-      alert(I18N.t("moments.videoTooLong"));
+    if (probe.duration && probe.duration > wizardMaxVideoSeconds()) {
+      alert(I18N.t(createWizard.target === "video" ? "videos.videoTooLong" : "moments.videoTooLong"));
       return;
     }
     createWizard.durationSeconds = probe.duration || null;
@@ -5085,7 +5286,7 @@ function drawCreateWizard() {
     overlay.className = "modal-overlay create-wizard-overlay";
     overlay.innerHTML = `
       <div class="modal-box wizard-box">
-        <h2 class="section-heading">${I18N.t(createWizard.target === "loop" ? "create.step2TitleLoop" : "create.step2Title")}</h2>
+        <h2 class="section-heading">${I18N.t(createWizard.target === "loop" ? "create.step2TitleLoop" : createWizard.target === "video" ? "create.step2TitleVideo" : "create.step2Title")}</h2>
         <div class="wizard-edit-toolbar">
           <button class="wizard-edit-tool-btn" id="wizard-add-text-btn" title="${I18N.t("create.addText")}">Aa</button>
           <button class="wizard-edit-tool-btn" id="wizard-add-sticker-btn" title="${I18N.t("create.addSticker")}">&#128512;</button>
@@ -5146,7 +5347,9 @@ function drawCreateWizard() {
     return;
   }
 
-  // step 3: caption + hashtags + publish
+  // step 3: title (video only) + caption + hashtags + next/publish
+  if (createWizard.step === 3) {
+  const isVideoStep3 = createWizard.target === "video";
   overlay.innerHTML = `
     <div class="modal-box wizard-box">
       <h2 class="section-heading">${I18N.t("create.step3Title")}</h2>
@@ -5170,10 +5373,18 @@ function drawCreateWizard() {
              </div>`
           : ""
       }
+      ${
+        isVideoStep3
+          ? `<div class="form-group">
+               <label>${I18N.t("create.videoTitleLabel")}</label>
+               <input type="text" id="wizard-video-title" maxlength="120" placeholder="${I18N.t("create.videoTitlePlaceholder")}" value="${escapeHtml(createWizard.titleDraft || "")}" />
+             </div>`
+          : ""
+      }
       <div class="form-group">
         <label>${I18N.t("create.captionLabel")}</label>
-        <textarea id="wizard-caption" rows="2" maxlength="130" placeholder="${I18N.t("create.captionPlaceholder")}"></textarea>
-        <p class="field-hint"><span id="wizard-caption-count">0</span>/130</p>
+        <textarea id="wizard-caption" rows="2" maxlength="130" placeholder="${I18N.t("create.captionPlaceholder")}">${escapeHtml(createWizard.captionDraft || "")}</textarea>
+        <p class="field-hint"><span id="wizard-caption-count">${(createWizard.captionDraft || "").length}</span>/130</p>
         ${
           createWizard.mediaType === "image"
             ? `<button type="button" class="btn btn-ai-suggest btn-ai-suggest-sm" id="wizard-ai-suggest">&#10024; ${I18N.t("create.aiSuggestCaption")}</button>
@@ -5184,11 +5395,11 @@ function drawCreateWizard() {
       </div>
       <div class="form-group">
         <label>${I18N.t("create.hashtagsLabel")}</label>
-        <input type="text" id="wizard-hashtags" placeholder="${I18N.t("create.hashtagsPlaceholder")}" />
+        <input type="text" id="wizard-hashtags" placeholder="${I18N.t("create.hashtagsPlaceholder")}" value="${escapeHtml(createWizard.hashtagsDraft || "")}" />
       </div>
       <div class="action-row">
         <button class="btn btn-secondary" id="wizard-back2">${I18N.t("create.back")}</button>
-        <button class="btn btn-primary" id="wizard-publish">${I18N.t("create.publish")}</button>
+        <button class="btn btn-primary" id="wizard-publish">${I18N.t(isVideoStep3 ? "create.next" : "create.publish")}</button>
       </div>
       <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel3">${I18N.t("common.cancel")}</a></p>
       <p class="form-msg" id="wizard-publish-msg"></p>
@@ -5286,8 +5497,19 @@ function drawCreateWizard() {
     const publishBtn = document.getElementById("wizard-publish");
     const msgEl = document.getElementById("wizard-publish-msg");
     const isLoop = createWizard.target === "loop";
+    const isVideoTarget = createWizard.target === "video";
+    let videoTitleVal = "";
+    if (isVideoTarget) {
+      const titleInput = document.getElementById("wizard-video-title");
+      videoTitleVal = titleInput ? titleInput.value.trim() : "";
+      if (!videoTitleVal) {
+        msgEl.textContent = I18N.t("videos.titleRequired");
+        msgEl.className = "form-msg error";
+        return;
+      }
+    }
     publishBtn.disabled = true;
-    msgEl.textContent = I18N.t(isLoop ? "loops.uploading" : "moments.uploading");
+    msgEl.textContent = isVideoTarget ? "" : I18N.t(isLoop ? "loops.uploading" : "moments.uploading");
     msgEl.className = "form-msg";
     try {
       let finalMedia = createWizard.rawDataUrl;
@@ -5307,6 +5529,22 @@ function drawCreateWizard() {
         .join(" ");
       const captionText = captionEl.value.trim();
       const fullCaption = hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText;
+      createWizard.captionDraft = captionText;
+      createWizard.hashtagsDraft = hashtagsRaw;
+
+      // Videos hub (task #231) - title + caption/hashtags are ready, but
+      // publishing waits for one more optional step: "link to one of your
+      // listings?" (see the createWizard.step === 4 branch below, after
+      // this function). The actual POST /api/moments call happens there.
+      if (isVideoTarget) {
+        createWizard.titleDraft = videoTitleVal;
+        createWizard.finalMedia = finalMedia;
+        createWizard.captionText = fullCaption;
+        createWizard.step = 4;
+        publishBtn.disabled = false;
+        drawCreateWizard();
+        return;
+      }
 
       if (isLoop) {
         // server.js's mkt_loops schema uses "photo"/"video" for media_type
@@ -5350,6 +5588,121 @@ function drawCreateWizard() {
       publishBtn.disabled = false;
     }
   });
+  return;
+  }
+
+  // step 4 (Videos hub only, task #231): optional "link to one of your
+  // listings?" screen shown after caption/title, before the actual publish
+  // call. General-purpose across any product category, not book-specific -
+  // reuses the same "my listings" endpoint the profile page's own-listings
+  // tab already calls (GET /api/products?sellerId=<me>). Linking is never
+  // required - "Skip" is the default selection and stays selected unless
+  // the creator explicitly taps a listing.
+  if (createWizard.step === 4) {
+    overlay.className = "modal-overlay create-wizard-overlay";
+    overlay.innerHTML = `
+      <div class="modal-box wizard-box">
+        <h2 class="section-heading">${I18N.t("create.videoLinkProductTitle")}</h2>
+        <p class="field-hint">${I18N.t("create.videoLinkProductHint")}</p>
+        <div id="wizard-link-product-list"><p>${I18N.t("common.loading")}</p></div>
+        <div class="action-row">
+          <button class="btn btn-secondary" id="wizard-back3">${I18N.t("create.back")}</button>
+          <button class="btn btn-primary" id="wizard-publish-video">${I18N.t("create.publish")}</button>
+        </div>
+        <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel4">${I18N.t("common.cancel")}</a></p>
+        <p class="form-msg" id="wizard-publish-msg"></p>
+      </div>
+    `;
+    document.getElementById("wizard-cancel4").addEventListener("click", (e) => {
+      e.preventDefault();
+      closeOverlayViaBack(closeCreateWizard);
+    });
+    document.getElementById("wizard-back3").addEventListener("click", () => {
+      createWizard.step = 3;
+      drawCreateWizard();
+    });
+
+    const listEl = document.getElementById("wizard-link-product-list");
+    function renderLinkProductChoices() {
+      const products = createWizard.myProducts || [];
+      const skipRow = `
+        <label class="wizard-link-product-row">
+          <input type="radio" name="wizard-link-product" value="" ${createWizard.linkedProductId ? "" : "checked"} />
+          <span>${I18N.t("create.videoSkipLink")}</span>
+        </label>`;
+      const productRows = products
+        .map(
+          (p) => `
+        <label class="wizard-link-product-row">
+          <input type="radio" name="wizard-link-product" value="${p.id}" ${createWizard.linkedProductId === p.id ? "checked" : ""} />
+          ${p.photos && p.photos[0] ? `<img class="wizard-link-product-thumb" src="${p.photos[0]}" />` : `<span class="wizard-link-product-thumb wizard-link-product-thumb-empty">\u{1F4E6}</span>`}
+          <span class="wizard-link-product-info"><span class="wizard-link-product-title">${escapeHtml(p.title)}</span><span class="wizard-link-product-price">${fmtPrice(p.price)}</span></span>
+        </label>`
+        )
+        .join("");
+      listEl.innerHTML = skipRow + (productRows || `<p class="field-hint">${I18N.t("create.videoNoListings")}</p>`);
+      listEl.querySelectorAll('input[name="wizard-link-product"]').forEach((input) => {
+        input.addEventListener("change", () => {
+          createWizard.linkedProductId = input.value || null;
+        });
+      });
+    }
+
+    if (createWizard.myProducts) {
+      renderLinkProductChoices();
+    } else if (state.user) {
+      api("/api/products?sellerId=" + encodeURIComponent(state.user.id))
+        .then((products) => {
+          createWizard.myProducts = (products || []).filter((p) => p.status !== "sold");
+          renderLinkProductChoices();
+        })
+        .catch(() => {
+          createWizard.myProducts = [];
+          renderLinkProductChoices();
+        });
+    } else {
+      createWizard.myProducts = [];
+      renderLinkProductChoices();
+    }
+
+    document.getElementById("wizard-publish-video").addEventListener("click", async () => {
+      const publishBtn = document.getElementById("wizard-publish-video");
+      const msgEl = document.getElementById("wizard-publish-msg");
+      publishBtn.disabled = true;
+      msgEl.textContent = I18N.t("moments.uploading");
+      msgEl.className = "form-msg";
+      try {
+        await api("/api/moments", {
+          method: "POST",
+          auth: true,
+          body: {
+            target: "video",
+            mediaType: "video",
+            media: createWizard.finalMedia,
+            title: createWizard.titleDraft,
+            caption: createWizard.captionText,
+            durationSeconds: createWizard.durationSeconds,
+            linkedProductId: createWizard.linkedProductId || undefined,
+            // AI auto-clip (task #160) - null/null (the default) means
+            // "publish the full video"; see POST /api/moments in server.js.
+            trimStartSec: createWizard.clipStartSec,
+            trimEndSec: createWizard.clipEndSec,
+          },
+        });
+        msgEl.textContent = I18N.t("videos.posted");
+        msgEl.className = "form-msg ok";
+        setTimeout(() => {
+          closeOverlayViaBack(closeCreateWizard);
+          router();
+        }, 700);
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+        publishBtn.disabled = false;
+      }
+    });
+    return;
+  }
 }
 
 // ---- AI auto-clip (task #160): wizard step-3 wiring ------------------------
@@ -5624,7 +5977,25 @@ async function renderProfile(userId) {
   const reviews = reviewsRes.status === "fulfilled" ? reviewsRes.value : [];
   const products = productsRes.status === "fulfilled" ? productsRes.value : [];
   const photos = photosRes.status === "fulfilled" ? photosRes.value : [];
-  const moments = momentsRes.status === "fulfilled" ? momentsRes.value : [];
+  const allMoments = momentsRes.status === "fulfilled" ? momentsRes.value : [];
+  // Videos hub (task #231) - GET /api/moments/user/:id intentionally
+  // returns both short-form Moments and long-form Videos (they're the same
+  // table), so the split happens here, client-side: the "Moments" stories
+  // rail only ever gets the short-form ones, and the new "Videos" tab
+  // (this user's channel) only gets the long-form ones. This is the
+  // client-side half of the short-form/long-form separation server.js
+  // already enforces on the main scroll feeds.
+  const moments = allMoments.filter((m) => !m.isLongVideo);
+  const userVideos = allMoments.filter((m) => m.isLongVideo);
+  // GET /api/moments/user/:id doesn't attach author name/photo (it's always
+  // the one profile we're already rendering), but videoCardHtml() expects
+  // them - fill them in from the profile response we just fetched.
+  if (profile) {
+    userVideos.forEach((v) => {
+      v.userName = profile.name;
+      v.userPhoto = profile.photo;
+    });
+  }
 
   let friendStatus = null;
   let followStatus = null;
@@ -5723,6 +6094,7 @@ async function renderProfile(userId) {
         <button class="tab-btn active" data-tab="listings">${I18N.t("profile.myListings")}</button>
         <button class="tab-btn" data-tab="photos">${I18N.t("profile.photosTab")}</button>
         <button class="tab-btn" data-tab="reviews">${I18N.t("profile.reviews")}</button>
+        ${isMe || userVideos.length ? `<button class="tab-btn" data-tab="videos">${I18N.t("profile.videosTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="friends">${I18N.t("profile.friendsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="requests">${I18N.t("profile.requestsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="saved">${I18N.t("profile.savedTab")}</button>` : ""}
@@ -5791,6 +6163,19 @@ async function renderProfile(userId) {
         }
       </div>
 
+      ${
+        isMe || userVideos.length
+          ? `<div id="tab-videos" style="display:none;">
+               <div class="videos-grid">
+                 ${
+                   userVideos.length
+                     ? userVideos.map(videoCardHtml).join("")
+                     : `<div class="empty-state">${I18N.t("videos.emptyChannel")}</div>`
+                 }
+               </div>
+             </div>`
+          : ""
+      }
       ${isMe ? `<div id="tab-friends" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-requests" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-saved" style="display:none;"></div>` : ""}
@@ -5809,7 +6194,7 @@ async function renderProfile(userId) {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "photos", "reviews", "friends", "requests", "saved", "blocked", "offers", "analytics", "notifications", "ads"].forEach((t) => {
+      ["listings", "photos", "reviews", "videos", "friends", "requests", "saved", "blocked", "offers", "analytics", "notifications", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
