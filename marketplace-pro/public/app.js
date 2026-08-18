@@ -5681,6 +5681,16 @@ function intlRoleLabel(roleType) {
   return roleType === "producer" ? I18N.t("intl.roleProducer") : I18N.t("intl.roleDistributor");
 }
 
+// Structured book-focused services a directory company can offer - keeps
+// this list in sync with server.js's INTL_BOOK_SERVICES.
+const INTL_BOOK_SERVICES = ["sourcing", "foreign_language", "academic", "logistics", "wholesale"];
+function intlBookServiceTagsHtml(bookServices) {
+  if (!bookServices || !bookServices.length) return "";
+  return `<div class="intl-book-service-tags">${bookServices
+    .map((s) => `<span class="intl-book-service-tag">${I18N.t("intl.bookService_" + s)}</span>`)
+    .join("")}</div>`;
+}
+
 function renderIntlHome() {
   viewEl.innerHTML = `
     <div class="intl-hero">
@@ -5688,6 +5698,11 @@ function renderIntlHome() {
       <p>${I18N.t("intl.heroSubtitle")}</p>
     </div>
     <p class="intl-intro">${I18N.t("intl.heroIntro")}</p>
+    <div class="intl-services-grid">
+      ${INTL_BOOK_SERVICES.map(
+        (s) => `<div class="intl-service-card"><strong>${I18N.t("intl.bookService_" + s)}</strong><p>${I18N.t("intl.bookServiceDesc_" + s)}</p></div>`
+      ).join("")}
+    </div>
 
     <div class="intl-cta-row">
       <a class="btn btn-gold" href="#/intl/register">${I18N.t("intl.ctaRegister")}</a>
@@ -5713,6 +5728,7 @@ async function renderIntlDirectory(query) {
   if (query.country) params.set("country", query.country);
   if (query.industry) params.set("industry", query.industry);
   if (query.roleType) params.set("roleType", query.roleType);
+  if (query.bookService) params.set("bookService", query.bookService);
 
   const companies = await api("/api/intl/companies?" + params.toString());
 
@@ -5727,6 +5743,7 @@ async function renderIntlDirectory(query) {
         </div>
         <p class="intl-card-name">${escapeHtml(c.companyName)}</p>
         <p class="intl-card-meta">\u{1F30D} ${escapeHtml(c.country)}${c.industry ? " &middot; " + escapeHtml(c.industry) : ""}</p>
+        ${intlBookServiceTagsHtml(c.bookServices)}
         <p class="intl-card-desc">${escapeHtml((c.description || "").slice(0, 140))}${c.description && c.description.length > 140 ? "…" : ""}</p>
       </a>`
         )
@@ -5744,6 +5761,12 @@ async function renderIntlDirectory(query) {
         <option value="producer" ${query.roleType === "producer" ? "selected" : ""}>${I18N.t("intl.roleProducer")}</option>
         <option value="distributor" ${query.roleType === "distributor" ? "selected" : ""}>${I18N.t("intl.roleDistributor")}</option>
       </select>
+      <select id="if-book-service">
+        <option value="" ${!query.bookService ? "selected" : ""}>${I18N.t("intl.bookServiceAll")}</option>
+        ${INTL_BOOK_SERVICES.map(
+          (s) => `<option value="${s}" ${query.bookService === s ? "selected" : ""}>${I18N.t("intl.bookService_" + s)}</option>`
+        ).join("")}
+      </select>
       <button id="if-apply">${I18N.t("intl.applyFilters")}</button>
     </div>
     <div class="intl-grid">${cards}</div>
@@ -5754,9 +5777,11 @@ async function renderIntlDirectory(query) {
     const country = document.getElementById("if-country").value.trim();
     const industry = document.getElementById("if-industry").value.trim();
     const roleType = document.getElementById("if-role").value;
+    const bookService = document.getElementById("if-book-service").value;
     if (country) p.set("country", country);
     if (industry) p.set("industry", industry);
     if (roleType) p.set("roleType", roleType);
+    if (bookService) p.set("bookService", bookService);
     location.hash = "#/intl/directory" + (p.toString() ? "?" + p.toString() : "");
   });
 }
@@ -5782,6 +5807,7 @@ async function renderIntlCompanyDetail(id) {
       </div>
       <h1 class="detail-title">${escapeHtml(c.companyName)}</h1>
       <div class="detail-meta">\u{1F30D} ${escapeHtml(c.country)}${c.industry ? " &middot; " + escapeHtml(c.industry) : ""}</div>
+      ${intlBookServiceTagsHtml(c.bookServices)}
       <p style="white-space:pre-wrap;font-size:14px;margin-top:14px;">${escapeHtml(c.description || "")}</p>
       ${c.website ? `<p><a href="${escapeHtml(c.website)}" target="_blank" rel="noopener">${escapeHtml(c.website)}</a></p>` : ""}
 
@@ -5821,6 +5847,7 @@ async function renderIntlMyCompanies() {
         </div>
         <p class="intl-card-name">${escapeHtml(c.companyName)}</p>
         <p class="intl-card-meta">\u{1F30D} ${escapeHtml(c.country)}${c.industry ? " &middot; " + escapeHtml(c.industry) : ""}</p>
+        ${intlBookServiceTagsHtml(c.bookServices)}
       </a>`
         )
         .join("")
@@ -5876,6 +5903,19 @@ async function renderIntlForm(editId) {
         <input type="text" id="ic-industry" value="${escapeHtml(existing ? existing.industry : "")}" />
       </div>
       <div class="form-group">
+        <label>${I18N.t("intl.bookServicesLabel")}</label>
+        <p class="form-field-hint">${I18N.t("intl.bookServicesHint")}</p>
+        <div class="intl-book-services-check">
+          ${INTL_BOOK_SERVICES.map(
+            (s) => `
+            <label class="intl-book-service-option">
+              <input type="checkbox" name="ic-book-service" value="${s}" ${existing && existing.bookServices && existing.bookServices.includes(s) ? "checked" : ""} />
+              ${I18N.t("intl.bookService_" + s)}
+            </label>`
+          ).join("")}
+        </div>
+      </div>
+      <div class="form-group">
         <label>${I18N.t("intl.description")}</label>
         <textarea id="ic-description" rows="5">${escapeHtml(existing ? existing.description : "")}</textarea>
       </div>
@@ -5909,6 +5949,7 @@ async function renderIntlForm(editId) {
       contactEmail: document.getElementById("ic-email").value,
       contactPhone: document.getElementById("ic-phone").value,
       website: document.getElementById("ic-website").value,
+      bookServices: Array.from(document.querySelectorAll('input[name="ic-book-service"]:checked')).map((el) => el.value),
     };
     try {
       if (editId) {

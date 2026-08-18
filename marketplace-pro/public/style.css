@@ -1356,6 +1356,27 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .intl-card-meta { font-size: 12px; color: var(--text-muted); margin: 0 0 6px; }
 .intl-card-desc { font-size: 12px; color: var(--text-secondary); margin: 0; }
 
+/* Book-service tags shown on directory/detail cards, the matching filter
+   dropdown option list, and the landing-page service overview grid. */
+.intl-book-service-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 8px; }
+.intl-book-service-tag {
+  font-size: 10px; font-weight: 700; color: #12324a; background: #eaf1f6;
+  border-radius: 999px; padding: 3px 8px;
+}
+.intl-services-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px; margin: 0 0 28px;
+}
+.intl-service-card {
+  background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: 10px; padding: 14px 16px;
+}
+.intl-service-card strong { display: block; font-size: 13px; margin-bottom: 4px; color: #12324a; }
+.intl-service-card p { margin: 0; font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
+.intl-book-services-check { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.intl-book-service-option { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.intl-book-service-option input { width: auto; }
+
 .intl-badge { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 12px; }
 .intl-badge-verified { background: color-mix(in srgb, var(--success) 15%, var(--bg-surface)); color: var(--success); }
 .intl-badge-pending { background: #fdf3e0; color: #8a6100; }
