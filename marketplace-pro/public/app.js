@@ -1057,6 +1057,53 @@ async function loadHomeFeed() {
   }
 }
 
+// ---- AI auto-clip (task #160) trim-window playback helper ------------------
+// A Moment video may carry a trim_start_sec/trim_end_sec window (set by the
+// creator from an AI suggestion in the create wizard - see wireWizardAiClip()
+// below). This is metadata only, never a physically cut file (MVP - no
+// server-side re-encoding), so every place a Moment video plays has to
+// enforce it itself: start playback at the trim start, and loop back there
+// once playback reaches the trim end, instead of ever showing the raw full
+// clip. Shared by the Home feed cards, the full-screen Moments viewer, and
+// the Shorts/Clips swipe feed so the behavior is identical everywhere.
+function momentTrimWindow(m) {
+  if (!m || m.trimStartSec === undefined || m.trimStartSec === null || m.trimEndSec === undefined || m.trimEndSec === null) return null;
+  const start = Number(m.trimStartSec);
+  const end = Number(m.trimEndSec);
+  if (!isFinite(start) || !isFinite(end) || !(end > start)) return null;
+  return { start, end };
+}
+
+// Wires `videoEl` to respect m's trim window, if any. No-op (returns null)
+// for moments without one, so callers can wire this unconditionally without
+// branching. `onLoop` (optional) fires each time playback loops back to the
+// start - callers use it to keep other UI (e.g. a progress bar) in sync.
+function wireMomentTrimLoop(videoEl, m, onLoop) {
+  const trim = momentTrimWindow(m);
+  if (!videoEl || !trim) return null;
+  const seekToStart = () => {
+    try {
+      videoEl.currentTime = trim.start;
+    } catch (e) {}
+  };
+  if (videoEl.readyState >= 1) seekToStart();
+  else videoEl.addEventListener("loadedmetadata", seekToStart, { once: true });
+  videoEl.addEventListener("timeupdate", () => {
+    if (videoEl.currentTime >= trim.end) {
+      seekToStart();
+      if (onLoop) onLoop();
+    }
+  });
+  return trim;
+}
+
+function formatClipTime(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
 // ---- Friends' moments rendered as inline, playable feed cards on Home -----
 // (in addition to the circle bar above). Each card carries the full Reels-
 // style action rail (like/comment/share/repost/save); tapping the media
@@ -1140,6 +1187,12 @@ function renderHomeFeedPosts(groups) {
   }
   el.style.display = "flex";
   el.innerHTML = items.map(feedMomentCardHtml).join("");
+  items.forEach((m) => {
+    if (m.mediaType !== "video") return;
+    const card = el.querySelector('[data-moment-id="' + m.id + '"]');
+    const vid = card && card.querySelector(".feed-moment-media");
+    wireMomentTrimLoop(vid, m);
+  });
   wireHomeFeedPostsDelegation();
 }
 
@@ -3652,15 +3705,27 @@ function drawMomentViewer() {
     if (videoEl) {
       videoEl.muted = false;
       videoEl.volume = 1;
-      videoEl.addEventListener("loadedmetadata", () => {
-        if (fill && videoEl.duration && isFinite(videoEl.duration)) {
-          requestAnimationFrame(() => {
-            fill.style.transition = "width " + videoEl.duration * 1000 + "ms linear";
-            fill.style.width = "100%";
-          });
-        }
-      });
-      videoEl.addEventListener("ended", () => stepMomentViewer(1));
+      const startProgressAnim = (durationMs) => {
+        if (!fill) return;
+        fill.style.transition = "none";
+        fill.style.width = "0%";
+        requestAnimationFrame(() => {
+          fill.style.transition = "width " + durationMs + "ms linear";
+          fill.style.width = "100%";
+        });
+      };
+      // AI auto-clip (task #160): a trimmed Moment loops within its
+      // suggested window instead of auto-advancing to the next story on
+      // "ended" (it never reaches its real end - see wireMomentTrimLoop()).
+      const trim = wireMomentTrimLoop(videoEl, m, () => startProgressAnim((trim.end - trim.start) * 1000));
+      if (trim) {
+        videoEl.addEventListener("loadedmetadata", () => startProgressAnim((trim.end - trim.start) * 1000));
+      } else {
+        videoEl.addEventListener("loadedmetadata", () => {
+          if (videoEl.duration && isFinite(videoEl.duration)) startProgressAnim(videoEl.duration * 1000);
+        });
+        videoEl.addEventListener("ended", () => stepMomentViewer(1));
+      }
     }
   } else {
     const duration = 5000;
@@ -4099,6 +4164,9 @@ function drawSwipeItem(sw) {
     mediaEl.addEventListener("loadedmetadata", () => {
       if (sw.videos[sw.index] === v) sw.currentDurationMs = (mediaEl.duration || 0) * 1000;
     });
+    // AI auto-clip (task #160): loop within the trim window if this Moment
+    // has one, same as everywhere else its video plays.
+    wireMomentTrimLoop(mediaEl, v);
   }
   if (mediaEl) {
     let lastTap = 0;
@@ -4441,6 +4509,10 @@ function openCreateWizard(target) {
     facingMode: "user", flashOn: false, timerMode: 0,
     recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
     overlays: [], gridOn: false, target: target === "loop" ? "loop" : "moment",
+    // AI auto-clip (task #160): the trim window the creator confirmed, if
+    // any - both null means "publish the full video". Set from a
+    // POST /api/ai/suggest-clip suggestion in step 3; see wireWizardAiClip().
+    clipStartSec: null, clipEndSec: null,
   };
   const overlay = document.createElement("div");
   overlay.id = "create-wizard-overlay";
@@ -5060,6 +5132,11 @@ function drawCreateWizard() {
       createWizard.recordAccumMs = 0;
       createWizard.recorder = null;
       createWizard.chunks = [];
+      // The AI-suggested trim window (if any) belongs to the clip that's
+      // about to be discarded - clear it so a fresh capture never inherits
+      // a stale window.
+      createWizard.clipStartSec = null;
+      createWizard.clipEndSec = null;
       drawCreateWizard();
     });
     document.getElementById("wizard-next").addEventListener("click", () => {
@@ -5080,10 +5157,30 @@ function drawCreateWizard() {
             : `<img class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" />`
         }
       </div>
+      ${
+        createWizard.mediaType === "video" && createWizard.durationSeconds > 20
+          ? `<div class="form-group" id="wizard-clip-group">
+               <button type="button" class="btn btn-ai-suggest btn-ai-suggest-sm" id="wizard-ai-clip">&#9986;&#65039; ${I18N.t("create.aiSuggestClip")}</button>
+               <p class="field-hint" id="wizard-ai-clip-hint"></p>
+               <div id="wizard-clip-result" style="display:none;">
+                 <p class="field-hint">${I18N.t("create.aiClipSuggested")} <span id="wizard-clip-range"></span></p>
+                 <p class="field-hint" id="wizard-clip-reason"></p>
+                 <a href="#" id="wizard-clip-reset">${I18N.t("create.aiClipUseFullVideo")}</a>
+               </div>
+             </div>`
+          : ""
+      }
       <div class="form-group">
         <label>${I18N.t("create.captionLabel")}</label>
         <textarea id="wizard-caption" rows="2" maxlength="130" placeholder="${I18N.t("create.captionPlaceholder")}"></textarea>
         <p class="field-hint"><span id="wizard-caption-count">0</span>/130</p>
+        ${
+          createWizard.mediaType === "image"
+            ? `<button type="button" class="btn btn-ai-suggest btn-ai-suggest-sm" id="wizard-ai-suggest">&#10024; ${I18N.t("create.aiSuggestCaption")}</button>
+               <p class="field-hint" id="wizard-ai-hint"></p>
+               <div class="ai-caption-preview" id="wizard-ai-preview" style="display:none;"></div>`
+            : ""
+        }
       </div>
       <div class="form-group">
         <label>${I18N.t("create.hashtagsLabel")}</label>
@@ -5107,6 +5204,78 @@ function drawCreateWizard() {
   captionEl.addEventListener("input", () => {
     countEl.textContent = String(captionEl.value.length);
   });
+
+  // AI-suggest is only offered for photo captures: the wizard never
+  // generates a poster/thumbnail frame for video, and sending video data to
+  // an image-analysis endpoint would just fail - so the button itself is
+  // omitted from the markup above when mediaType isn't "image" rather than
+  // shown disabled.
+  const wizardAiBtn = document.getElementById("wizard-ai-suggest");
+  if (wizardAiBtn) {
+    const aiHintEl = document.getElementById("wizard-ai-hint");
+    const aiPreviewEl = document.getElementById("wizard-ai-preview");
+    const aiBtnLabel = wizardAiBtn.innerHTML;
+    wizardAiBtn.addEventListener("click", async () => {
+      if (!createWizard.rawDataUrl) return;
+      wizardAiBtn.disabled = true;
+      wizardAiBtn.textContent = I18N.t("create.aiThinking");
+      aiHintEl.textContent = "";
+      aiHintEl.className = "field-hint";
+      aiPreviewEl.style.display = "none";
+      try {
+        const data = await api("/api/ai/suggest-caption", {
+          method: "POST",
+          auth: true,
+          body: {
+            image: createWizard.rawDataUrl,
+            locale: I18N.lang,
+            context: createWizard.target === "loop" ? "Loop capture" : "Moment capture",
+          },
+        });
+        const hashtagsStr = Array.isArray(data.hashtags) ? data.hashtags.map((h) => "#" + h).join(" ") : "";
+        const hashtagsInput = document.getElementById("wizard-hashtags");
+        if (!captionEl.value.trim()) {
+          // Field is empty - safe to fill directly, nothing to overwrite.
+          captionEl.value = data.caption || "";
+          countEl.textContent = String(captionEl.value.length);
+          if (hashtagsStr && hashtagsInput && !hashtagsInput.value.trim()) hashtagsInput.value = hashtagsStr;
+        } else {
+          // User already typed something - never clobber it. Show the
+          // suggestion as a dismissible preview they can tap to apply.
+          aiPreviewEl.style.display = "block";
+          aiPreviewEl.innerHTML = `
+            <p class="ai-caption-preview-text">${escapeHtml(data.caption || "")}${hashtagsStr ? " " + escapeHtml(hashtagsStr) : ""}</p>
+            <div class="ai-caption-preview-actions">
+              <a href="#" id="wizard-ai-apply">${I18N.t("create.aiApplySuggestion")}</a>
+              <a href="#" id="wizard-ai-dismiss">${I18N.t("create.aiDismissSuggestion")}</a>
+            </div>
+          `;
+          document.getElementById("wizard-ai-apply").addEventListener("click", (e) => {
+            e.preventDefault();
+            captionEl.value = data.caption || "";
+            countEl.textContent = String(captionEl.value.length);
+            if (hashtagsStr && hashtagsInput) hashtagsInput.value = hashtagsStr;
+            aiPreviewEl.style.display = "none";
+          });
+          document.getElementById("wizard-ai-dismiss").addEventListener("click", (e) => {
+            e.preventDefault();
+            aiPreviewEl.style.display = "none";
+          });
+        }
+      } catch (err) {
+        aiHintEl.textContent = err.message || I18N.t("create.aiError");
+        aiHintEl.className = "field-hint error";
+      } finally {
+        wizardAiBtn.disabled = false;
+        wizardAiBtn.innerHTML = aiBtnLabel;
+      }
+    });
+  }
+
+  // AI auto-clip (task #160) - only offered for videos over ~20s (the
+  // button itself is omitted from the markup above otherwise). Mirrors the
+  // caption assistant's loading-state/error-handling pattern above.
+  wireWizardAiClip(overlay);
 
   document.getElementById("wizard-back2").addEventListener("click", () => {
     createWizard.step = 2;
@@ -5162,6 +5331,10 @@ function drawCreateWizard() {
             media: finalMedia,
             caption: fullCaption,
             durationSeconds: createWizard.durationSeconds,
+            // AI auto-clip (task #160) - null/null (the default) means
+            // "publish the full video"; see POST /api/moments in server.js.
+            trimStartSec: createWizard.clipStartSec,
+            trimEndSec: createWizard.clipEndSec,
           },
         });
       }
@@ -5176,6 +5349,180 @@ function drawCreateWizard() {
       msgEl.className = "form-msg error";
       publishBtn.disabled = false;
     }
+  });
+}
+
+// ---- AI auto-clip (task #160): wizard step-3 wiring ------------------------
+// Wires the "#wizard-ai-clip" button (present only for video captures over
+// ~20s - see the markup in drawCreateWizard() above). Mirrors the caption
+// assistant's loading-state/error pattern: sample a handful of small frames
+// from the raw video client-side, send them to POST /api/ai/suggest-clip,
+// then preview the suggested window by looping the step-3 preview video
+// between startSec/endSec. The chosen window (or none, if the user resets to
+// "use full video") is stored on createWizard.clipStartSec/clipEndSec and
+// sent along with the publish call.
+function wireWizardAiClip(overlay) {
+  const btn = document.getElementById("wizard-ai-clip");
+  if (!btn) return;
+  const hintEl = document.getElementById("wizard-ai-clip-hint");
+  const resultEl = document.getElementById("wizard-clip-result");
+  const rangeEl = document.getElementById("wizard-clip-range");
+  const reasonEl = document.getElementById("wizard-clip-reason");
+  const resetLink = document.getElementById("wizard-clip-reset");
+  const btnLabel = btn.innerHTML;
+  const previewVideoEl = overlay.querySelector(".wizard-preview-media");
+
+  function stopPreviewLoop() {
+    if (previewVideoEl) previewVideoEl.ontimeupdate = null;
+  }
+
+  function playPreviewLoop() {
+    if (!previewVideoEl || createWizard.clipStartSec == null || createWizard.clipEndSec == null) return;
+    const start = createWizard.clipStartSec;
+    const end = createWizard.clipEndSec;
+    try {
+      previewVideoEl.currentTime = start;
+    } catch (e) {}
+    previewVideoEl.play().catch(() => {});
+    previewVideoEl.ontimeupdate = () => {
+      if (previewVideoEl.currentTime >= end) {
+        try {
+          previewVideoEl.currentTime = start;
+        } catch (e) {}
+      }
+    };
+  }
+
+  function showResult() {
+    rangeEl.textContent = I18N.t("create.aiClipRange")
+      .replace("{start}", formatClipTime(createWizard.clipStartSec))
+      .replace("{end}", formatClipTime(createWizard.clipEndSec));
+    resultEl.style.display = "block";
+  }
+
+  if (resetLink) {
+    resetLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      createWizard.clipStartSec = null;
+      createWizard.clipEndSec = null;
+      stopPreviewLoop();
+      resultEl.style.display = "none";
+    });
+  }
+
+  // Re-show the suggestion (and resume the preview loop) if the user comes
+  // back to step 3 after already running auto-clip once.
+  if (createWizard.clipStartSec != null && createWizard.clipEndSec != null) {
+    showResult();
+    reasonEl.textContent = "";
+    playPreviewLoop();
+  }
+
+  btn.addEventListener("click", async () => {
+    if (!createWizard.rawDataUrl || !createWizard.durationSeconds) return;
+    btn.disabled = true;
+    btn.textContent = I18N.t("create.aiClipThinking");
+    hintEl.textContent = "";
+    hintEl.className = "field-hint";
+    resultEl.style.display = "none";
+    stopPreviewLoop();
+    try {
+      const frames = await sampleVideoFrames(createWizard.rawDataUrl, createWizard.durationSeconds);
+      const data = await api("/api/ai/suggest-clip", {
+        method: "POST",
+        auth: true,
+        body: { durationSec: createWizard.durationSeconds, frames },
+      });
+      createWizard.clipStartSec = data.startSec;
+      createWizard.clipEndSec = data.endSec;
+      showResult();
+      reasonEl.textContent = data.reason || "";
+      playPreviewLoop();
+    } catch (err) {
+      hintEl.textContent = (err && err.message) || I18N.t("create.aiClipError");
+      hintEl.className = "field-hint error";
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = btnLabel;
+    }
+  });
+}
+
+// Samples ~7 small frames evenly across a video (from its raw data URL) for
+// the AI auto-clip request above - an offscreen, unattached-from-layout
+// <video> is seeked to each timestamp (awaiting the "seeked" event, since
+// currentTime writes are asynchronous) and drawn to a small canvas, kept at
+// ~320px wide so the request stays light.
+function sampleVideoFrames(dataUrl, durationSec, count) {
+  count = count || 7;
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.style.position = "fixed";
+    video.style.left = "-9999px";
+    video.style.top = "0";
+    video.style.width = "1px";
+    video.style.height = "1px";
+    document.body.appendChild(video);
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+
+    function cleanup() {
+      try {
+        video.pause();
+      } catch (e) {}
+      video.removeAttribute("src");
+      video.load();
+      video.remove();
+    }
+
+    video.addEventListener("error", () => {
+      cleanup();
+      reject(new Error("Could not read video"));
+    });
+    video.addEventListener("loadedmetadata", async () => {
+      try {
+        const dur = durationSec && durationSec > 0 ? durationSec : video.duration || 0;
+        if (!dur) throw new Error("Could not read video duration");
+        const w = 320;
+        const ratio = video.videoWidth && video.videoHeight ? video.videoHeight / video.videoWidth : 16 / 9;
+        canvas.width = w;
+        canvas.height = Math.max(1, Math.round(w * ratio));
+        const frames = [];
+        for (let i = 0; i < count; i++) {
+          const t = Math.min(dur - 0.05, Math.max(0, (dur * (i + 0.5)) / count));
+          await seekVideoTo(video, t);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          frames.push({ t, image: canvas.toDataURL("image/jpeg", 0.6) });
+        }
+        cleanup();
+        resolve(frames);
+      } catch (e) {
+        cleanup();
+        reject(e);
+      }
+    });
+    video.src = dataUrl;
+  });
+}
+
+function seekVideoTo(video, t) {
+  return new Promise((resolve, reject) => {
+    const onSeeked = () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+      resolve();
+    };
+    const onError = () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+      reject(new Error("Could not seek video"));
+    };
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("error", onError);
+    video.currentTime = t;
   });
 }
 
