@@ -2646,7 +2646,7 @@ async function handleApi(req, res, pathname, query) {
   // column soon, and re-adding a dropped column is wasted churn.
 
   function momentOut(m) {
-    const { user_id, media_url, media_type, created_at, expires_at, repost_of, trim_start_sec, trim_end_sec, title, linked_product_id, is_long_video, ...rest } = m;
+    const { user_id, media_url, media_type, created_at, expires_at, repost_of, trim_start_sec, trim_end_sec, title, linked_product_id, is_long_video, overlay_json, ...rest } = m;
     return {
       ...rest,
       userId: user_id,
@@ -2669,7 +2669,43 @@ async function handleApi(req, res, pathname, query) {
       title: title || null,
       linkedProductId: linked_product_id || null,
       isLongVideo: !!is_long_video,
+      // Text/sticker overlay metadata (task #204) - only ever set for VIDEO
+      // captures (photo overlays are baked directly into the JPEG pixels
+      // client-side before upload, so they never need this). Rendered as an
+      // absolutely-positioned HTML layer on top of the <video> wherever one
+      // plays - see renderMediaOverlayLayer() in app.js.
+      overlays: Array.isArray(overlay_json) ? overlay_json : [],
     };
+  }
+
+  // Task #204 - server-side allowlist/clamp for overlay metadata coming from
+  // the create wizard, applied before it's ever written to mkt_moments.
+  // Caps the list length and each field's size/range so a malicious client
+  // can't stuff arbitrarily large or malformed data into overlay_json.
+  function sanitizeOverlayList(raw) {
+    if (!Array.isArray(raw) || !raw.length) return null;
+    const out = raw
+      .slice(0, 20)
+      .map((ov) => {
+        if (!ov || typeof ov !== "object") return null;
+        const value = String(ov.value || "").slice(0, 60);
+        if (!value) return null;
+        const type = ov.type === "sticker" ? "sticker" : "text";
+        const size = ov.size === "sm" || ov.size === "lg" ? ov.size : "md";
+        const xPct = Number(ov.xPct);
+        const yPct = Number(ov.yPct);
+        const entry = {
+          type,
+          value,
+          size,
+          xPct: Number.isFinite(xPct) ? Math.max(0, Math.min(100, xPct)) : 50,
+          yPct: Number.isFinite(yPct) ? Math.max(0, Math.min(100, yPct)) : 50,
+        };
+        if (type === "text") entry.color = typeof ov.color === "string" ? ov.color.slice(0, 20) : "#FFD84D";
+        return entry;
+      })
+      .filter(Boolean);
+    return out.length ? out : null;
   }
 
   // Decorates a list of already-momentOut()'d moments in place with
@@ -2780,6 +2816,11 @@ async function handleApi(req, res, pathname, query) {
         trimEndSec = te;
       }
     }
+    // Text/sticker overlay metadata (task #204, video only - photo overlays
+    // are baked into the JPEG client-side before upload and never sent
+    // here). sanitizeOverlayList() clamps/allowlists every field so this
+    // never trusts the client's shape/size directly.
+    const overlayJson = mediaType === "video" ? sanitizeOverlayList(body.overlays) : null;
     const now = Date.now();
     const moment = {
       id: crypto.randomBytes(8).toString("hex"),
@@ -2794,6 +2835,7 @@ async function handleApi(req, res, pathname, query) {
       title,
       linked_product_id: linkedProductId,
       is_long_video: isLongVideo,
+      overlay_json: overlayJson,
     };
     await db.insert("mkt_moments", moment);
     return sendJson(res, 201, momentOut(moment));
