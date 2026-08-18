@@ -288,6 +288,7 @@ function updateNavUI() {
   setDisplay("nav-logout", loggedIn ? "inline" : "none");
   setDisplay("nav-profile", loggedIn ? "inline" : "none");
   setDisplay("nav-messages", loggedIn ? "inline" : "none");
+  setDisplay("nav-notifications", loggedIn ? "inline" : "none");
   const navAdmin = document.getElementById("nav-admin");
   if (navAdmin) {
     const canAdmin = loggedIn && state.user && (state.user.role === "admin" || state.user.isOwner);
@@ -296,15 +297,15 @@ function updateNavUI() {
   // The bottom/top icon bar stays visible for guests too (not just logged-in
   // users) so a first-time visitor can still find Marketplace, International
   // and Communities - those live inside the Marketplace dropdown. Only the
-  // items that require an account (Friends, Moments/Clips, Create,
-  // Notifications) are hidden until the person logs in.
+  // items that require an account (Friends, Moments/Clips, Create) are
+  // hidden until the person logs in. Notifications moved into the top
+  // Profile/Messages row (task #237) and is hidden/shown there instead.
   const iconNav = document.getElementById("icon-nav");
   if (iconNav) iconNav.style.display = "flex";
   setDisplay("icon-nav-friends", loggedIn ? "flex" : "none");
   setDisplay("icon-nav-clips", loggedIn ? "flex" : "none");
   const createWrap = document.getElementById("icon-nav-create");
   if (createWrap) createWrap.style.display = loggedIn ? "flex" : "none";
-  setDisplay("icon-nav-notifications", loggedIn ? "flex" : "none");
   if (!loggedIn) {
     setUnreadBadge(0);
     setIconNavBadge(0);
@@ -377,6 +378,7 @@ function applyStaticI18n() {
   updateGlobalSearchPlaceholder();
   setText("nav-messages", I18N.t("nav.messages"));
   setText("nav-profile", I18N.t("nav.profile"));
+  setText("nav-notifications-label", I18N.t("iconnav.notifications"));
   setText("nav-post", I18N.t("nav.postAd"));
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
@@ -389,7 +391,6 @@ function applyStaticI18n() {
   setText("icon-nav-friends-label", I18N.t("iconnav.friends"));
   setText("icon-nav-clips-label", I18N.t("iconnav.clips"));
   setText("icon-nav-marketplace-label", I18N.t("iconnav.marketplace"));
-  setText("icon-nav-notifications-label", I18N.t("iconnav.notifications"));
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
@@ -644,7 +645,10 @@ function updateGlobalSearchPlaceholder() {
 })();
 
 function setIconNavBadge(count) {
-  const badge = document.getElementById("icon-nav-badge");
+  // Task #237 - the bell moved out of the bottom icon bar into the top
+  // Profile/Messages/Notifications row, so this now writes to
+  // nav-notifications-badge instead of the old icon-nav-badge element.
+  const badge = document.getElementById("nav-notifications-badge");
   if (!badge) return;
   if (count > 0) {
     badge.textContent = count > 9 ? "9+" : String(count);
