@@ -1,21 +1,29 @@
 :root {
-  --bg-page: #FFFFFF;
+  /* Elegant "Instagram/Europa" brand system, light key - unified
+     2026-08-18. Same black+gold brand as the dark key below (see
+     [data-theme="dark"]), just on a warm ivory background instead of
+     black. Kept as a real, distinct light option (not a copy of dark)
+     because UX research on theme choice shows offering a genuine light
+     alternative - not forcing dark everywhere - increases user trust
+     ("autonomy signal"), and some content (forms, legal pages, long
+     reading) is still easier on light backgrounds for most people. */
+  --bg-page: #F7F3EC;
   --bg-surface: #FFFFFF;
-  --bg-surface-alt: #F2F2F0;
-  --text-primary: #1a1a1a;
-  --text-secondary: #5a5a5a;
-  --text-muted: #8a8a8a;
-  --border-color: rgba(0,0,0,0.1);
-  --accent: #0F3D2E;
-  --accent-strong: #17573F;
-  --accent-text: #0F3D2E;
-  --accent-text-on: #FFFFFF;
-  --gold: #d99a12;
-  --gold-text-on: #2b1810;
+  --bg-surface-alt: #EFE9DD;
+  --text-primary: #1C1A16;
+  --text-secondary: #5C5548;
+  --text-muted: #8A8172;
+  --border-color: rgba(28,26,22,0.10);
+  --accent: #1C1A16;
+  --accent-strong: #2E2A22;
+  --accent-text: #8A6B2E;
+  --accent-text-on: #F7F3EC;
+  --gold: #C9A15A;
+  --gold-text-on: #1A1610;
   --danger: #C0392B;
   --danger-bg: rgba(192,57,43,0.08);
   --success: #1F8F5A;
-  --card-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  --card-shadow: 0 2px 10px rgba(28,26,22,0.10);
   --font-display: "Playfair Display", Georgia, "Times New Roman", serif;
 }
 
@@ -42,33 +50,32 @@
   --card-shadow: 0 1px 3px rgba(0,0,0,0.5);
 }
 
-/* Normal tier, optional dark mode: same burgundy + gold brand colors as
-   :root light, just a dark wine background. User-toggleable via
-   #theme-toggle-wrap (see applyNormalThemePref() in app.js). Deliberately
-   distinct from [data-theme="premium"] (pure black bg, no burgundy) so
-   premium still reads as exclusive. */
+/* Normal tier, dark key of the same elegant black+gold brand system as
+   :root light above. Unified 2026-08-18 (was previously a different
+   burgundy scheme) so both toggle positions read as one consistent brand,
+   not two different "dark" looks. User-toggleable via #theme-toggle-wrap. */
 [data-theme="dark"] {
-  --bg-page: #0A0A0A;
-  --bg-surface: #141414;
-  --bg-surface-alt: #000000;
-  --text-primary: #F3E9D8;
-  --text-secondary: #C9B79E;
-  --text-muted: #8f7d68;
-  --border-color: rgba(243,233,216,0.14);
-  --accent: #6E1423;
-  --accent-strong: #8A1C2D;
-  --accent-text: #F3E9D8;
-  --accent-text-on: #F3E9D8;
-  --gold: #D4AF37;
-  --gold-text-on: #2b1810;
+  --bg-page: #0B0A08;
+  --bg-surface: #17140F;
+  --bg-surface-alt: #211D16;
+  --text-primary: #F2ECE2;
+  --text-secondary: #B5AC9C;
+  --text-muted: #8A8172;
+  --border-color: rgba(242,236,226,0.09);
+  --accent: #1C1A16;
+  --accent-strong: #2A2620;
+  --accent-text: #C9A15A;
+  --accent-text-on: #F2ECE2;
+  --gold: #C9A15A;
+  --gold-text-on: #1A1610;
   --danger: #E5484D;
   --danger-bg: rgba(229,72,77,0.14);
   --success: #3FBF7F;
-  --card-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  --card-shadow: 0 4px 16px rgba(0,0,0,0.35);
 }
 
 * { box-sizing: border-box; }
-html { color-scheme: light; }
+html { color-scheme: dark; } /* was light - matches the black+gold default trial above */
 html, body { margin: 0; padding: 0; overflow-x: hidden; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
