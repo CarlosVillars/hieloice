@@ -9,6 +9,7 @@ const path = require("path");
 const crypto = require("crypto");
 const url = require("url");
 const webpush = require("web-push");
+const WebSocket = require("ws"); // real-time 1:1 chat delivery (task #233) - see the "realtime chat" section below
 
 const PORT = process.env.PORT || 3000;
 const ROOT_DIR = __dirname;
@@ -309,9 +310,12 @@ function verifyPassword(password, stored) {
 const authUserCache = new Map(); // token -> { promise, expires }
 const AUTH_CACHE_TTL_MS = 5000;
 
-async function getAuthUser(req) {
-  const auth = req.headers["authorization"] || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+// Shared by HTTP auth (getAuthUser below, reading the "Authorization: Bearer
+// <token>" header) AND WebSocket auth (see the "realtime chat" section
+// further down, reading ?token= or a first {"type":"auth"} frame) - both
+// paths use the exact same mkt_sessions token, so this is the one place
+// that resolves a token to a user.
+async function getUserByToken(token) {
   if (!token) return null;
 
   const cached = authUserCache.get(token);
@@ -325,12 +329,26 @@ async function getAuthUser(req) {
     // Suspended accounts are treated as logged-out for every authenticated
     // action app-wide (their public listings/profile stay visible to others).
     if (user && user.suspended) return null;
+    // Chat presence (GET /api/users/:id/presence, WS presence:update) is
+    // driven off mkt_users.last_seen_at. Bumping it here (throttled - see
+    // touchLastSeen in the realtime chat section) means EVERY authenticated
+    // HTTP request keeps a user's presence fresh, not just chat-specific
+    // ones or WS traffic - simplest option given getAuthUser/getUserByToken
+    // already run on nearly every request.
+    if (user) touchLastSeen(user.id);
     return user;
   })();
 
   authUserCache.set(token, { promise, expires: Date.now() + AUTH_CACHE_TTL_MS });
   promise.catch(() => authUserCache.delete(token)); // don't cache failures
   return promise;
+}
+
+async function getAuthUser(req) {
+  const auth = req.headers["authorization"] || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!token) return null;
+  return getUserByToken(token);
 }
 
 function publicUser(u) {
@@ -605,6 +623,320 @@ async function notifyAllOptedIn(category, payload, filterFn) {
     await sendPushToSubscriptions(subs, payload);
   }
 }
+
+// ---------- realtime chat (WebSocket) ----------
+//
+// Task #233. Everything below is the COMPLETE real-time contract for 1:1
+// messaging - written for whoever builds the frontend (task #234) with no
+// other context. The REST endpoints under "MESSAGES" further down keep
+// working unchanged for any client that isn't using the socket at all
+// (progressive enhancement, not a hard requirement): every socket action
+// below writes to mkt_messages first, so polling GET /api/conversations/:id
+// always reflects the full truth regardless of whether either side has a
+// live connection.
+//
+// CONNECTING
+//   Open a WebSocket to   wss://<host>/ws?token=<session token>
+//   `token` is the exact same opaque string normally sent as
+//   `Authorization: Bearer <token>` on every other API call (the one
+//   returned by /api/auth/login, /api/auth/register, etc). It has to travel
+//   as a query param because browsers can't set custom headers on a
+//   WebSocket handshake.
+//   If you'd rather not put the token in the URL (query strings can end up
+//   in logs), connect to wss://<host>/ws with no query param and send an
+//   auth frame as the very first message instead:
+//     -> {"type":"auth","token":"<session token>"}
+//   Either way: the server closes the socket (code 4401) if the token is
+//   invalid, or if no valid token arrives within 10 seconds of connecting.
+//   On success the server sends:
+//     <- {"type":"connected","userId":"<your user id>"}
+//   A user can have several sockets open at once (multiple tabs/devices) -
+//   every event below is delivered to ALL of a user's open sockets.
+//
+// ENVELOPE
+//   Every frame, both directions, is one JSON object with a "type" field.
+//   Unknown or malformed frames are silently ignored (no error echoed), so
+//   new client->server types can be added later without breaking old
+//   servers/clients.
+//
+// CLIENT -> SERVER
+//   {"type":"auth","token":"..."}
+//       Only needed as the first message when ?token= wasn't given on
+//       connect. Ignored once a connection is already authenticated.
+//   {"type":"typing:start","to":"<otherUserId>"}
+//   {"type":"typing:stop","to":"<otherUserId>"}
+//       Ephemeral - never written to the DB. Forwarded ONLY to `to`'s open
+//       sockets, as a {"type":"typing",...} frame (see below).
+//   {"type":"presence:query","userId":"<userId>"}
+//       Ask whether a specific user is online right now. Server replies to
+//       the requester only, with presence:result (below). The exact same
+//       info is also available over REST via GET /api/users/:id/presence
+//       for clients that aren't running the socket.
+//   {"type":"ping"}
+//       Optional app-level heartbeat; server replies {"type":"pong"}. (The
+//       server also runs its own low-level WS ping/pong every 30s to reap
+//       dead connections - this app-level ping is just for client code that
+//       wants an explicit round-trip signal.)
+//
+// SERVER -> CLIENT
+//   {"type":"connected","userId":"..."}
+//       Sent once, immediately after successful auth.
+//   {"type":"auth:error","error":"..."}
+//       Sent right before the socket is closed if auth fails.
+//   {"type":"message:new","message":{...}}
+//       A brand-new message in a conversation you're part of. Sent to BOTH
+//       the sender's and recipient's open sockets (so every open tab/device
+//       for either side stays in sync). The `message` object has the exact
+//       same shape as one entry from GET /api/conversations/:id - see the
+//       shapeMessage() shape documented in the MESSAGES section below
+//       (id, fromUserId, toUserId, text, productId, replyToId,
+//       attachmentUrl, attachmentType, reactions, deleted, read, createdAt).
+//   {"type":"message:read","conversationWith":"<userId>","messageIds":["..."],"readAt":1234567890}
+//       Sent to the ORIGINAL SENDER when the other participant reads their
+//       messages (i.e. opens/polls GET /api/conversations/:id).
+//       `messageIds` are the ids that just flipped read:true.
+//   {"type":"reaction:added","messageId":"...","emoji":"👍","userId":"...","reactions":{...}}
+//   {"type":"reaction:removed","messageId":"...","emoji":"👍","userId":"...","reactions":{...}}
+//       Sent to both participants whenever POST/DELETE
+//       /api/messages/:id/react changes a message's reactions map.
+//       `reactions` is the FULL updated map (not a diff) - replace your
+//       local copy with it rather than patching.
+//   {"type":"message:deleted","messageId":"...","mode":"forMe"|"forEveryone","conversationWith":"<otherUserId>"}
+//       "forEveryone": sent to BOTH participants - the message is now a
+//       tombstone for both of them (see DELETE /api/messages/:id below).
+//       "forMe": echoed back ONLY to the caller's own other sockets/tabs,
+//       since it doesn't change what the other participant sees at all.
+//   {"type":"presence:update","userId":"...","online":true,"lastSeenAt":1234567890}
+//       Broadcast whenever a user connects (all sockets were closed, now
+//       one is open) or fully disconnects (their last open socket closed).
+//       Only sent to that user's CONVERSATION PARTNERS (anyone they've ever
+//       exchanged a message with) - not a global broadcast.
+//   {"type":"presence:result","userId":"...","online":true,"lastSeenAt":1234567890}
+//       Reply to a presence:query, sent to the requester only.
+//   {"type":"pong"}
+//       Reply to an app-level {"type":"ping"}.
+//
+// SCALING NOTE (read before "fixing" presence/delivery that seems flaky):
+// connections live in an in-memory Map on THIS ONE Node process (see
+// wsConnections below) - there is no cross-process pub/sub. That is fine
+// for Render's current single-instance setup for this service. If this
+// service is ever moved to multiple instances/autoscaling, this whole layer
+// silently stops seeing sockets connected to other instances and needs a
+// shared broker (e.g. Redis pub/sub) behind it. Nothing in the current
+// deploy config suggests that's imminent, so it's intentionally not built
+// here - don't add that complexity until it's actually needed.
+
+const WS_PATH = "/ws";
+const WS_AUTH_TIMEOUT_MS = 10000;
+
+// userId -> Set<WebSocket>. A user can have multiple open sockets (tabs/devices).
+const wsConnections = new Map();
+
+function isUserOnline(userId) {
+  const set = wsConnections.get(userId);
+  return !!(set && set.size);
+}
+
+function wsSend(ws, payload) {
+  if (ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify(payload));
+    } catch (e) {
+      // A send failing here means the socket is on its way out; the
+      // close/error handlers below take care of removing it from
+      // wsConnections, so there's nothing else to do.
+    }
+  }
+}
+
+// Sends `payload` to every open socket belonging to `userId`. 0 sockets
+// (user not connected right now) is a silent no-op - callers never need to
+// check isUserOnline() first, this is always safe to call.
+function wsSendToUser(userId, payload) {
+  const set = wsConnections.get(userId);
+  if (!set || !set.size) return;
+  for (const ws of set) wsSend(ws, payload);
+}
+
+// Every user `userId` has ever exchanged a message with - the scope for
+// presence broadcasts (WhatsApp/Messenger-style: only people you've
+// actually talked to see when you come online, not the whole userbase).
+async function conversationPartnerIds(userId) {
+  const [fromMe, toMe] = await Promise.all([
+    db.select("mkt_messages", { from_user_id: "eq." + enc(userId), select: "to_user_id" }),
+    db.select("mkt_messages", { to_user_id: "eq." + enc(userId), select: "from_user_id" }),
+  ]);
+  const ids = new Set();
+  for (const m of fromMe) ids.add(m.to_user_id);
+  for (const m of toMe) ids.add(m.from_user_id);
+  ids.delete(userId);
+  return [...ids];
+}
+
+async function broadcastPresence(userId, online) {
+  try {
+    const partners = await conversationPartnerIds(userId);
+    if (!partners.length) return;
+    const users = await db.select("mkt_users", { id: "eq." + enc(userId), select: "last_seen_at" });
+    const lastSeenAt = (users && users[0] && users[0].last_seen_at) || null;
+    const payload = { type: "presence:update", userId, online, lastSeenAt };
+    for (const p of partners) wsSendToUser(p, payload);
+  } catch (e) {
+    console.error("broadcastPresence failed:", e.message);
+  }
+}
+
+// Throttled last_seen_at writes. Called from getUserByToken (every
+// authenticated HTTP request - see the auth helpers above) AND from every
+// WS connect/message below, so "online"/lastSeenAt stays accurate for both
+// socket clients and REST-polling-only clients. Throttled to at most one DB
+// write per user per 30s so this doesn't turn into a write on every single
+// request/message.
+const lastSeenThrottle = new Map(); // userId -> last write timestamp (ms)
+const LAST_SEEN_WRITE_INTERVAL_MS = 30000;
+function touchLastSeen(userId) {
+  const now = Date.now();
+  const last = lastSeenThrottle.get(userId) || 0;
+  if (now - last < LAST_SEEN_WRITE_INTERVAL_MS) return;
+  lastSeenThrottle.set(userId, now);
+  db.update("mkt_users", { id: "eq." + enc(userId) }, { last_seen_at: now }).catch(() => {});
+}
+
+function wsRegister(userId, ws) {
+  let set = wsConnections.get(userId);
+  if (!set) {
+    set = new Set();
+    wsConnections.set(userId, set);
+  }
+  const wasOffline = set.size === 0;
+  set.add(ws);
+  ws.userId = userId;
+  ws.isAlive = true;
+  lastSeenThrottle.set(userId, Date.now()); // force-write on connect, bypassing the throttle, so presence flips online immediately
+  db.update("mkt_users", { id: "eq." + enc(userId) }, { last_seen_at: Date.now() }).catch(() => {});
+  if (wasOffline) broadcastPresence(userId, true);
+}
+
+function wsUnregister(ws) {
+  if (!ws.userId) return;
+  const set = wsConnections.get(ws.userId);
+  if (!set) return;
+  set.delete(ws);
+  if (set.size === 0) {
+    wsConnections.delete(ws.userId);
+    lastSeenThrottle.set(ws.userId, Date.now()); // force-write on disconnect too, same reasoning as wsRegister
+    db.update("mkt_users", { id: "eq." + enc(ws.userId) }, { last_seen_at: Date.now() }).catch(() => {});
+    broadcastPresence(ws.userId, false);
+  }
+}
+
+const wss = new WebSocket.Server({ noServer: true });
+
+wss.on("connection", (ws, req) => {
+  const parsedUrl = url.parse(req.url, true);
+  const queryToken = parsedUrl.query && parsedUrl.query.token;
+  let authTimer = null;
+
+  async function tryAuth(token) {
+    try {
+      const user = await getUserByToken(token);
+      if (!user) {
+        wsSend(ws, { type: "auth:error", error: "Invalid or expired session" });
+        ws.close(4401, "Unauthorized");
+        return;
+      }
+      if (authTimer) clearTimeout(authTimer);
+      wsRegister(user.id, ws);
+      wsSend(ws, { type: "connected", userId: user.id });
+    } catch (e) {
+      wsSend(ws, { type: "auth:error", error: "Authentication failed" });
+      ws.close(4401, "Unauthorized");
+    }
+  }
+
+  if (queryToken) {
+    tryAuth(String(queryToken));
+  } else {
+    authTimer = setTimeout(() => {
+      if (!ws.userId) {
+        wsSend(ws, { type: "auth:error", error: "Authentication timeout" });
+        ws.close(4401, "Unauthorized");
+      }
+    }, WS_AUTH_TIMEOUT_MS);
+  }
+
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
+
+  ws.on("message", async (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch (e) {
+      return; // ignore malformed frames
+    }
+    if (!msg || typeof msg.type !== "string") return;
+
+    if (!ws.userId) {
+      if (msg.type === "auth" && msg.token) await tryAuth(String(msg.token));
+      return; // no other message types are processed before auth succeeds
+    }
+
+    touchLastSeen(ws.userId);
+
+    if (msg.type === "ping") {
+      wsSend(ws, { type: "pong" });
+      return;
+    }
+    if (msg.type === "typing:start" || msg.type === "typing:stop") {
+      const to = msg.to && String(msg.to);
+      if (!to) return;
+      wsSendToUser(to, { type: "typing", from: ws.userId, state: msg.type === "typing:start" ? "start" : "stop" });
+      return;
+    }
+    if (msg.type === "presence:query") {
+      const targetId = msg.userId && String(msg.userId);
+      if (!targetId) return;
+      let lastSeenAt = null;
+      try {
+        const users = await db.select("mkt_users", { id: "eq." + enc(targetId), select: "last_seen_at" });
+        lastSeenAt = (users && users[0] && users[0].last_seen_at) || null;
+      } catch (e) {}
+      wsSend(ws, { type: "presence:result", userId: targetId, online: isUserOnline(targetId), lastSeenAt });
+      return;
+    }
+    // Unknown type: ignored, per the envelope contract documented above.
+  });
+
+  ws.on("close", () => {
+    if (authTimer) clearTimeout(authTimer);
+    wsUnregister(ws);
+  });
+  ws.on("error", () => {
+    if (authTimer) clearTimeout(authTimer);
+    wsUnregister(ws);
+  });
+});
+
+// Low-level heartbeat (distinct from the app-level {"type":"ping"} above):
+// terminates sockets that stop responding to WS-protocol pings, so a client
+// that vanishes without a clean close (phone locked, wifi dropped mid-air)
+// doesn't linger forever in wsConnections and quietly break presence.
+setInterval(() => {
+  for (const set of wsConnections.values()) {
+    for (const ws of set) {
+      if (ws.isAlive === false) {
+        ws.terminate();
+        continue;
+      }
+      ws.isAlive = false;
+      try {
+        ws.ping();
+      } catch (e) {}
+    }
+  }
+}, 30000).unref();
 
 // ---------- http helpers ----------
 
@@ -1908,6 +2240,46 @@ async function handleApi(req, res, pathname, query) {
   }
 
   // ---- MESSAGES ----
+  //
+  // Message shape returned by shapeMessage() below - this is THE canonical
+  // shape used by GET /api/conversations/:id, the POST send response, and
+  // every WS "message:new" frame. Documented once here for the frontend:
+  //   {
+  //     id, fromUserId, toUserId,
+  //     text: string,                                // "" for an attachment-only message, or a deleted-for-everyone message
+  //     productId: string|null,                       // unchanged from before - optional link to a listing
+  //     replyToId: string|null,                        // soft reference to another message's id (not validated/FK'd - same convention as productId)
+  //     attachmentUrl: string|null, attachmentType: "image"|"video"|"audio"|null,
+  //     reactions: { [emoji]: string[] },              // e.g. { "👍": ["userId1","userId2"] } - userIds who reacted with that emoji
+  //     deleted: boolean,                               // true = "deleted for everyone" tombstone. When true, text/attachment*/reactions above are already cleared - render a placeholder ("This message was deleted"), don't rely on the client to hide content.
+  //     read: boolean, createdAt: number (epoch ms),
+  //   }
+  // Messages the CALLER deleted "for me" are simply absent from the list -
+  // no tombstone, they don't exist from that user's point of view.
+
+  function messageHiddenForUser(m, userId) {
+    const hiddenFor = Array.isArray(m.deleted_for_user_ids) ? m.deleted_for_user_ids : [];
+    return hiddenFor.includes(userId);
+  }
+
+  function shapeMessage(m) {
+    const deleted = !!m.deleted_for_everyone;
+    return {
+      id: m.id,
+      fromUserId: m.from_user_id,
+      toUserId: m.to_user_id,
+      text: deleted ? "" : m.text || "",
+      productId: m.product_id,
+      replyToId: deleted ? null : m.reply_to_id || null,
+      attachmentUrl: deleted ? null : m.attachment_url || null,
+      attachmentType: deleted ? null : m.attachment_type || null,
+      reactions: deleted ? {} : m.reactions || {},
+      deleted,
+      read: !!m.read,
+      createdAt: m.created_at,
+    };
+  }
+
   if (method === "GET" && pathname === "/api/conversations") {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -1915,7 +2287,7 @@ async function handleApi(req, res, pathname, query) {
       db.select("mkt_messages", { from_user_id: "eq." + enc(me.id), select: "*" }),
       db.select("mkt_messages", { to_user_id: "eq." + enc(me.id), select: "*" }),
     ]);
-    const messages = [...fromMe, ...toMe];
+    const messages = [...fromMe, ...toMe].filter((m) => !messageHiddenForUser(m, me.id));
 
     const byOther = {};
     for (const m of messages) {
@@ -1932,11 +2304,17 @@ async function handleApi(req, res, pathname, query) {
     const list = otherIds.map((otherId) => {
       const other = others.find((u) => u.id === otherId);
       const last = byOther[otherId];
+      const lastDeleted = !!last.deleted_for_everyone;
       return {
         userId: otherId,
         userName: other ? other.name : "Deleted user",
         userPhoto: other ? other.photo : null,
-        lastMessage: last.text,
+        // lastMessage is "" (not the deleted text) when lastMessageDeleted
+        // is true - render your own bilingual "message was deleted" label
+        // client-side, same tombstone convention as the full history below.
+        lastMessage: lastDeleted ? "" : last.text,
+        lastMessageDeleted: lastDeleted,
+        lastMessageAttachmentType: lastDeleted ? null : last.attachment_type || null,
         lastAt: last.created_at,
         unread: messages.some((m) => m.from_user_id === otherId && m.to_user_id === me.id && !m.read),
       };
@@ -1954,22 +2332,28 @@ async function handleApi(req, res, pathname, query) {
       db.select("mkt_messages", { from_user_id: "eq." + enc(me.id), to_user_id: "eq." + enc(otherId), select: "*" }),
       db.select("mkt_messages", { from_user_id: "eq." + enc(otherId), to_user_id: "eq." + enc(me.id), select: "*" }),
     ]);
-    const messages = [...sent, ...received].sort((a, b) => a.created_at - b.created_at);
+    const messages = [...sent, ...received]
+      .filter((m) => !messageHiddenForUser(m, me.id))
+      .sort((a, b) => a.created_at - b.created_at);
 
-    const unreadIds = received.filter((m) => !m.read).map((m) => m.id);
+    const unreadIds = received.filter((m) => !m.read && !messageHiddenForUser(m, me.id)).map((m) => m.id);
     if (unreadIds.length) {
       await db.update("mkt_messages", { id: "in.(" + unreadIds.map(enc).join(",") + ")" }, { read: true });
+      // Tell the sender (otherId) their message(s) were just read, live -
+      // no-op if they have no open socket right now.
+      wsSendToUser(otherId, {
+        type: "message:read",
+        conversationWith: me.id,
+        messageIds: unreadIds,
+        readAt: Date.now(),
+      });
     }
 
-    const out = messages.map((m) => ({
-      id: m.id,
-      fromUserId: m.from_user_id,
-      toUserId: m.to_user_id,
-      text: m.text,
-      productId: m.product_id,
-      read: unreadIds.includes(m.id) ? true : m.read,
-      createdAt: m.created_at,
-    }));
+    const out = messages.map((m) => {
+      const shaped = shapeMessage(m);
+      if (unreadIds.includes(m.id)) shaped.read = true;
+      return shaped;
+    });
     return sendJson(res, 200, out);
   }
 
@@ -1991,35 +2375,221 @@ async function handleApi(req, res, pathname, query) {
       }
     }
 
+    // Body: { text?: string, productId?: string, replyToId?: string,
+    //         attachmentUrl?: string, attachmentType?: "image"|"video"|"audio" }
+    // At least one of text / attachmentUrl is required (an attachment-only
+    // message, e.g. a photo or voice note with no caption, is valid -
+    // Instagram/WhatsApp/Messenger all allow this).
     const body = await readBody(req);
-    if (!body.text || !String(body.text).trim()) return sendJson(res, 400, { error: "Message text is required" });
+    const text = body.text ? String(body.text).trim().slice(0, 2000) : "";
+    const attachmentType = ["image", "video", "audio"].includes(body.attachmentType) ? body.attachmentType : null;
+    const attachmentUrl = body.attachmentUrl ? String(body.attachmentUrl).trim().slice(0, 1000) : null;
+    if (attachmentUrl && !attachmentType) {
+      return sendJson(res, 400, { error: "attachmentType is required when attachmentUrl is set" });
+    }
+    if (!text && !attachmentUrl) {
+      return sendJson(res, 400, { error: "Message text or attachment is required" });
+    }
 
     const message = {
       id: crypto.randomBytes(8).toString("hex"),
       from_user_id: me.id,
       to_user_id: otherId,
-      text: String(body.text).trim().slice(0, 2000),
+      text,
       product_id: body.productId || null,
+      reply_to_id: body.replyToId ? String(body.replyToId) : null, // soft reference, not validated - see productId above for precedent
+      attachment_url: attachmentUrl,
+      attachment_type: attachmentType,
+      reactions: {},
+      deleted_for_everyone: false,
+      deleted_for_user_ids: [],
       read: false,
       created_at: Date.now(),
     };
     await db.insert("mkt_messages", message);
+
+    const shaped = shapeMessage(message);
+    // Deliver instantly over WS to anyone with an open tab/device right now
+    // (both sides, so the sender's own other tabs also get it immediately).
+    wsSendToUser(otherId, { type: "message:new", message: shaped });
+    wsSendToUser(me.id, { type: "message:new", message: shaped });
+
+    // ...AND always fire the push notification too (same helper/category
+    // every other push in this app uses) - if the recipient has a live
+    // socket they'll just get both and the client is expected to dedupe by
+    // message id; if they don't, push is the only way they find out.
+    const pushBody =
+      text ||
+      (attachmentType === "audio" ? "🎤 Voice note" : attachmentType === "video" ? "🎥 Video" : attachmentType === "image" ? "📷 Photo" : "New message");
     notifyUser(otherId, "messages", {
       type: "message",
       tag: "message-" + me.id,
       title: (me.name || "Alguien") + " te envió un mensaje",
-      body: message.text,
+      body: pushBody,
       url: "/#/messages/" + me.id,
     }).catch(() => {});
-    return sendJson(res, 201, {
-      id: message.id,
-      fromUserId: message.from_user_id,
-      toUserId: message.to_user_id,
-      text: message.text,
-      productId: message.product_id,
-      read: message.read,
-      createdAt: message.created_at,
-    });
+
+    return sendJson(res, 201, shaped);
+  }
+
+  // Thin upload endpoint for chat attachments (images, video clips, voice
+  // notes). Deliberately NOT reusing /api/users/me/photos or the
+  // moments/loops upload code paths - those each carry feature-specific
+  // validation (video-length caps, own-listing checks, image-only, etc.)
+  // that doesn't apply here. This calls the exact same sbStorageUpload()
+  // helper everything else in the app uses - no new storage mechanism,
+  // just a different bucket path prefix ("chat/<conversationKey>/...").
+  //
+  // Request:  POST /api/messages/attachments
+  //   { "media": "data:<mime>;base64,<...>", "type": "image"|"video"|"audio", "conversationWith": "<otherUserId>" }
+  // Response: 200 { "url": "<public Storage URL>", "type": "image"|"video"|"audio" }
+  //
+  // Typical flow: upload here first to get `url`, then POST
+  // /api/conversations/:otherId with { attachmentUrl: url, attachmentType: type }.
+  if (method === "POST" && pathname === "/api/messages/attachments") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const type = body.type;
+    if (!["image", "video", "audio"].includes(type)) {
+      return sendJson(res, 400, { error: "type must be image, video, or audio" });
+    }
+    const media = body.media;
+    const match = typeof media === "string" && /^data:([^;]+);base64,/.exec(media);
+    if (!match) return sendJson(res, 400, { error: "A valid media data URL is required" });
+    const mimePrefix = { image: "image/", video: "video/", audio: "audio/" }[type];
+    if (!match[1].startsWith(mimePrefix)) {
+      return sendJson(res, 400, { error: "media MIME type doesn't match the declared type" });
+    }
+    const extByMime = {
+      "image/jpeg": ".jpg",
+      "image/png": ".png",
+      "image/webp": ".webp",
+      "image/gif": ".gif",
+      "video/mp4": ".mp4",
+      "video/webm": ".webm",
+      "video/quicktime": ".mov",
+      "audio/webm": ".webm",
+      "audio/mpeg": ".mp3",
+      "audio/mp4": ".m4a",
+      "audio/ogg": ".ogg",
+      "audio/wav": ".wav",
+    };
+    const ext = extByMime[match[1]] || (type === "image" ? ".jpg" : type === "video" ? ".mp4" : ".webm");
+    // Both directions of a conversation share one folder so an admin/DB
+    // browse of Storage shows a whole chat's media together.
+    const otherId = body.conversationWith ? String(body.conversationWith) : "misc";
+    const conversationKey = [me.id, otherId].sort().join("_");
+    let mediaUrl;
+    try {
+      mediaUrl = await sbStorageUpload("media", "chat/" + conversationKey + "/" + crypto.randomBytes(8).toString("hex") + ext, media);
+    } catch (e) {
+      return sendJson(res, 500, { error: "Could not upload attachment" });
+    }
+    return sendJson(res, 200, { url: mediaUrl, type });
+  }
+
+  // POST   /api/messages/:id/react   body { emoji: "👍" }  -> adds caller's userId to reactions[emoji]
+  // DELETE /api/messages/:id/react   body { emoji: "👍" }  -> removes caller's userId from reactions[emoji]
+  // Both respond 200 { id, reactions } with the FULL updated reactions map,
+  // and broadcast reaction:added / reaction:removed to both participants
+  // over WS (see the realtime chat section above for the exact frame shape).
+  const reactMatch = pathname.match(/^\/api\/messages\/([a-zA-Z0-9]+)\/react$/);
+  if ((method === "POST" || method === "DELETE") && reactMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const msgId = reactMatch[1];
+    const rows = await db.select("mkt_messages", { id: "eq." + enc(msgId), select: "*" });
+    const m = rows && rows[0];
+    if (!m) return sendJson(res, 404, { error: "Message not found" });
+    if (m.from_user_id !== me.id && m.to_user_id !== me.id) {
+      return sendJson(res, 403, { error: "Not part of this conversation" });
+    }
+    if (m.deleted_for_everyone) return sendJson(res, 400, { error: "This message was deleted" });
+
+    const body = await readBody(req);
+    const emoji = body.emoji ? String(body.emoji).slice(0, 8) : "";
+    if (!emoji) return sendJson(res, 400, { error: "emoji is required" });
+
+    const reactions = Object.assign({}, m.reactions || {});
+    const reactedUsers = new Set(reactions[emoji] || []);
+    if (method === "POST") {
+      reactedUsers.add(me.id);
+    } else {
+      reactedUsers.delete(me.id);
+    }
+    if (reactedUsers.size) {
+      reactions[emoji] = [...reactedUsers];
+    } else {
+      delete reactions[emoji]; // keep the map clean once an emoji has no reactors left
+    }
+    await db.update("mkt_messages", { id: "eq." + enc(msgId) }, { reactions });
+
+    const otherId = m.from_user_id === me.id ? m.to_user_id : m.from_user_id;
+    const payload = {
+      type: method === "POST" ? "reaction:added" : "reaction:removed",
+      messageId: msgId,
+      emoji,
+      userId: me.id,
+      reactions,
+    };
+    wsSendToUser(otherId, payload);
+    wsSendToUser(me.id, payload);
+
+    return sendJson(res, 200, { id: msgId, reactions });
+  }
+
+  // DELETE /api/messages/:id   body { mode: "forMe" | "forEveryone" }
+  //   "forMe": hides the message from the CALLER's own view only (added to
+  //     deleted_for_user_ids) - the other participant's view is untouched.
+  //     No WS broadcast to the other side (nothing changed for them); only
+  //     echoed back to the caller's own other sockets so their other tabs
+  //     hide it too.
+  //   "forEveryone": only the ORIGINAL SENDER (from_user_id) may do this.
+  //     The row is kept (not hard-deleted) but flagged
+  //     deleted_for_everyone=true with text/attachment_url/attachment_type/
+  //     reactions cleared server-side - so the content is actually gone
+  //     from every future API response, not just hidden client-side.
+  //     Broadcast to BOTH participants over WS as message:deleted.
+  const deleteMsgMatch = pathname.match(/^\/api\/messages\/([a-zA-Z0-9]+)$/);
+  if (method === "DELETE" && deleteMsgMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const msgId = deleteMsgMatch[1];
+    const rows = await db.select("mkt_messages", { id: "eq." + enc(msgId), select: "*" });
+    const m = rows && rows[0];
+    if (!m) return sendJson(res, 404, { error: "Message not found" });
+    if (m.from_user_id !== me.id && m.to_user_id !== me.id) {
+      return sendJson(res, 403, { error: "Not part of this conversation" });
+    }
+    const body = await readBody(req);
+    const mode = body.mode;
+    if (mode !== "forMe" && mode !== "forEveryone") {
+      return sendJson(res, 400, { error: 'mode must be "forMe" or "forEveryone"' });
+    }
+    const otherId = m.from_user_id === me.id ? m.to_user_id : m.from_user_id;
+
+    if (mode === "forEveryone") {
+      if (m.from_user_id !== me.id) {
+        return sendJson(res, 403, { error: "Only the sender can delete a message for everyone" });
+      }
+      await db.update(
+        "mkt_messages",
+        { id: "eq." + enc(msgId) },
+        { deleted_for_everyone: true, text: "", attachment_url: null, attachment_type: null, reactions: {} }
+      );
+      const payload = { type: "message:deleted", messageId: msgId, mode: "forEveryone", conversationWith: otherId };
+      wsSendToUser(otherId, payload);
+      wsSendToUser(me.id, payload);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // mode === "forMe"
+    const hidden = new Set(Array.isArray(m.deleted_for_user_ids) ? m.deleted_for_user_ids : []);
+    hidden.add(me.id);
+    await db.update("mkt_messages", { id: "eq." + enc(msgId) }, { deleted_for_user_ids: [...hidden] });
+    wsSendToUser(me.id, { type: "message:deleted", messageId: msgId, mode: "forMe", conversationWith: otherId });
+    return sendJson(res, 200, { ok: true });
   }
 
   // ---- USER PHOTOS (gallery) ----
@@ -2292,6 +2862,28 @@ async function handleApi(req, res, pathname, query) {
       select: "id",
     });
     return sendJson(res, 200, { blocked: !!(rows && rows[0]) });
+  }
+
+  // GET /api/users/:id/presence -> { online: boolean, lastSeenAt: number|null }
+  // Part of task #233 (chat). "online" is true if the user has at least one
+  // open WebSocket right now (see isUserOnline/wsConnections in the
+  // realtime chat section above), OR their last_seen_at was within the
+  // last 60 seconds - that window absorbs brief reconnects/tab-switches/
+  // network blips without the badge visibly flapping offline/online, while
+  // still going stale quickly if they've actually left. lastSeenAt is
+  // always returned (even while online) so the client can show "Active
+  // Xm ago" once online flips false, Instagram/Messenger-style.
+  const presenceMatch = pathname.match(/^\/api\/users\/([a-zA-Z0-9]+)\/presence$/);
+  if (method === "GET" && presenceMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const targetId = presenceMatch[1];
+    const users = await db.select("mkt_users", { id: "eq." + enc(targetId), select: "id,last_seen_at" });
+    if (!users || !users[0]) return sendJson(res, 404, { error: "User not found" });
+    const lastSeenAt = users[0].last_seen_at || null;
+    const PRESENCE_WINDOW_MS = 60000;
+    const online = isUserOnline(targetId) || !!(lastSeenAt && Date.now() - lastSeenAt < PRESENCE_WINDOW_MS);
+    return sendJson(res, 200, { online, lastSeenAt });
   }
 
   // ---- FOLLOW (one-directional, only for "Public Page" accounts - separate from friends) ----
@@ -4223,6 +4815,22 @@ const server = http.createServer(async (req, res) => {
   }
 
   sendJson(res, 405, { error: "Method not allowed" });
+});
+
+// Attach the chat WebSocket server (see "realtime chat" section above) to
+// this SAME http.Server/port - Render only exposes one port per service, so
+// this deliberately reuses the existing server instance rather than
+// listening separately. Any upgrade request to a path other than /ws (i.e.
+// everything else) is left alone/destroyed, never handled here.
+server.on("upgrade", (req, socket, head) => {
+  const pathname = url.parse(req.url).pathname;
+  if (pathname !== WS_PATH) {
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, req);
+  });
 });
 
 // Reminder sweep: nudge sellers whose listing has been "reserved" for 3+ days.

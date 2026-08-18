@@ -4,12 +4,23 @@
   "description": "Mercado Global - bilingual classifieds marketplace",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "cap:sync": "npx cap sync android",
+    "cap:open": "npx cap open android"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "web-push": "^3.6.7"
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^6.1.2"
+  },
+  "allowScripts": {
+    "sharp@0.32.6": true
   }
 }
