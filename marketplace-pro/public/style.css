@@ -529,6 +529,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .post-isbn-row { display: flex; gap: 8px; align-items: center; }
 .post-isbn-row input { flex: 1; }
+.form-field-hint { font-size: 12px; margin: 4px 0 0; color: var(--text-secondary); }
 .post-isbn-lookup-hint { font-size: 12px; margin-top: 4px; }
 .post-isbn-lookup-hint.ok { color: var(--success); }
 .post-isbn-lookup-hint.error { color: var(--danger); }
@@ -766,6 +767,11 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 /* Dead-end screens (404, unexpected errors) always offer a way back to Home
    instead of leaving the visitor stuck with only the phone back button. */
 .not-found-state { text-align: center; padding: 60px 20px; display: flex; flex-direction: column; align-items: center; gap: 14px; color: var(--text-secondary); }
+/* Home feed empty state: shown instead of hiding the whole section when a
+   brand-new account has no friends yet, so first login doesn't look blank. */
+.home-feed-empty { width: 100%; }
+.home-feed-empty-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+.messages-empty .btn { margin-top: 12px; }
 .rating-count { color: var(--text-muted); font-size: 11px; }
 
 /* ---- Status badge (reserved / sold) ---- */
@@ -902,7 +908,10 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .photo-upload-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 6px; }
 .photo-slot { position: relative; aspect-ratio: 1; border: 1px dashed var(--border-color); border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--bg-surface-alt); font-size: 11px; color: var(--text-muted); }
 .photo-slot img { width: 100%; height: 100%; object-fit: cover; }
-.photo-slot .remove-photo { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 1; }
+/* Tap target enlarged from the original 18px to ~32px (closer to the
+   44px comfortable-tap-target guideline) - the visual "x" glyph still
+   looks the same size via font-size, just easier to hit on a phone. */
+.photo-slot .remove-photo { position: absolute; top: 0; right: 0; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 32px; height: 32px; font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
 
 /* ---- Profile (Facebook-style: cover photo + overlapping avatar) ---- */
 .profile-cover-wrap { position: relative; margin-bottom: 56px; }
@@ -979,7 +988,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .photo-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .photo-gallery-item { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: var(--bg-surface-alt); }
 .photo-gallery-item img { width: 100%; height: 100%; object-fit: cover; }
-.photo-gallery-item .photo-remove-btn { position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 22px; height: 22px; font-size: 13px; line-height: 1; }
+.photo-gallery-item .photo-remove-btn { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 32px; height: 32px; font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
 .photo-gallery-add { aspect-ratio: 1; border: 2px dashed var(--border-color); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: var(--text-muted); cursor: pointer; background: var(--bg-surface-alt); text-align: center; padding: 8px; }
 .photo-gallery-add:hover { border-color: var(--accent-text); color: var(--accent-text); }
 .photo-gallery-add input { display: none; }

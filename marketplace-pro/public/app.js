@@ -962,8 +962,19 @@ function renderHomeFeedPosts(groups) {
   const items = buildHomeFeedItems(groups);
   homeFeedMomentsList = items;
   if (!items.length) {
-    el.innerHTML = "";
-    el.style.display = "none";
+    // A brand-new account with zero friends used to just make this whole
+    // section vanish, leaving Home looking blank/broken on first login.
+    // Show a friendly prompt with somewhere useful to go instead.
+    el.style.display = "flex";
+    el.innerHTML = `
+      <div class="empty-state home-feed-empty">
+        <p>${I18N.t("home.feedEmpty")}</p>
+        <div class="home-feed-empty-actions">
+          <a href="#/friends" class="btn btn-secondary">${I18N.t("home.feedEmptyFindPeople")}</a>
+          <a href="#/marketplace" class="btn btn-secondary">${I18N.t("home.feedEmptyBrowse")}</a>
+        </div>
+      </div>
+    `;
     return;
   }
   el.style.display = "flex";
@@ -1510,7 +1521,8 @@ function renderRegister() {
       </div>
       <div class="form-group">
         <label>${I18N.t("auth.password")}</label>
-        <input type="password" id="reg-password" />
+        <input type="password" id="reg-password" minlength="6" />
+        <p class="form-field-hint">${I18N.t("auth.passwordHint")}</p>
       </div>
       <div class="form-group">
         <label>${I18N.t("auth.phone")}</label>
@@ -1900,7 +1912,7 @@ function renderPhotoGrid() {
   let html = "";
   for (let i = 0; i < MAX_PHOTOS; i++) {
     if (photoBuffer[i]) {
-      html += `<div class="photo-slot"><img src="${photoBuffer[i]}" /><button class="remove-photo" data-i="${i}">&times;</button></div>`;
+      html += `<div class="photo-slot"><img src="${photoBuffer[i]}" /><button class="remove-photo" data-i="${i}" aria-label="${I18N.t("postAd.removePhoto")}">&times;</button></div>`;
     } else {
       html += `<div class="photo-slot">+</div>`;
     }
@@ -2814,7 +2826,7 @@ function renderPhotosGalleryTab(photos, isMe) {
       (p) => `
     <div class="photo-gallery-item" data-id="${p.id}">
       <img src="${p.url}" />
-      ${isMe ? `<button class="photo-remove-btn" data-id="${p.id}">&times;</button>` : ""}
+      ${isMe ? `<button class="photo-remove-btn" data-id="${p.id}" aria-label="${I18N.t("postAd.removePhoto")}">&times;</button>` : ""}
     </div>`
     )
     .join("");
@@ -3194,7 +3206,7 @@ function drawMomentComments() {
     <div class="moment-comments-sheet">
       <div class="moment-comments-head">
         <span>${I18N.t("moments.commentsTitle") || "Comments"}</span>
-        <button class="moment-comments-close" id="moment-comments-close">&times;</button>
+        <button class="moment-comments-close" id="moment-comments-close" aria-label="${I18N.t("common.close")}">&times;</button>
       </div>
       <div class="moment-comments-list">${listHtml}</div>
       ${
@@ -3321,7 +3333,7 @@ function drawMomentViewer() {
               }</button>`
             : ""
         }
-        <button class="moment-viewer-close" id="moment-viewer-close">&times;</button>
+        <button class="moment-viewer-close" id="moment-viewer-close" aria-label="${I18N.t("common.close")}">&times;</button>
       </div>
       ${
         m.mediaType === "video"
@@ -3691,7 +3703,7 @@ function drawClips() {
   overlay.innerHTML = `
     <div class="clips-item">
       <video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>
-      <button class="clips-close" id="clips-close">&times;</button>
+      <button class="clips-close" id="clips-close" aria-label="${I18N.t("common.close")}">&times;</button>
       <div class="clips-info">
         <a class="clips-author-link" href="#/profile/${v.userId}">
           ${v.userPhoto ? `<img class="clips-avatar" src="${v.userPhoto}" />` : `<div class="clips-avatar-placeholder">${initials(v.userName)}</div>`}
@@ -5605,7 +5617,10 @@ async function loadConvoList(activeId) {
       </a>`
         )
         .join("")
-    : `<p style="padding:16px;color:#888;font-size:13px;">${I18N.t("messages.noConversations")}</p>`;
+    : `<div class="empty-state messages-empty">
+        <p>${I18N.t("messages.noConversations")}</p>
+        <a href="#/marketplace" class="btn btn-secondary">${I18N.t("messages.emptyBrowseCta")}</a>
+      </div>`;
 }
 
 async function loadChat(otherUserId, silent) {
