@@ -110,6 +110,33 @@ category by category after owning books).
   treat every session as a chance to push the book-C2C + reader-social core
   forward, even absent a new explicit request.
 
+**Update — 2026-08-17 (later same day), set explicitly by Carlos:** the social
+network and the marketplace are BOTH the center of the app, equally — not
+"marketplace with social bolted on." The explicit long-term vision: connect
+people who share interests (books first), eventually add a **dating/matching
+section** as a third pillar once there's a real, active community circulating
+through the app. The goal is to build a community that grows and teaches us
+the logic of C2C book selling AND human behavior/connection patterns, then use
+both to help users make money, buy books, meet friends, and eventually find a
+partner — all inside the same app.
+
+Reconciling this with "marketplace first" navigation decisions made the same
+day (e.g. what a logged-out guest sees first): those are about the **first
+impression / entry funnel** for someone who has never used the app — lead
+with something concrete and immediately useful (books to browse) rather than
+an empty social feed with zero friends, because that's what earns enough
+trust for a stranger to create an account. It is NOT a decision to
+deprioritize social features overall. Once someone is logged in, Moments,
+Friends, Communities (and later Dating) get full, equal investment — this is
+a funnel-sequencing choice, not a product-scope narrowing.
+
+**Update — 2026-08-17, same day, explicit from Carlos:** the overriding goal
+across everything being built is to generate real revenue. Every feature —
+marketplace, social, and eventually dating — is ultimately in service of
+that. When two roadmap items are otherwise close in priority, the one with
+clearer near-term revenue impact (commission-ready flows, trust/safety that
+protects real transactions, conversion-friendly UX) should win.
+
 ## 2. Tech stack & architecture
 
 - **Backend**: Plain Node.js (`http` module, no framework) — `marketplace-pro/server.js`.
@@ -355,6 +382,13 @@ low ROI for a marketplace) and an open Twitter/X-style public real-time feed
 (moderation/spam risk without a clear marketplace benefit). YouTube-style
 long-form video is a "maybe later" — only if there's real demand for video
 tours on high-value listings (cars, real estate).
+
+5. 🔮 **Dating/matching section** — future third pillar, explicitly requested
+   2026-08-17. Not scoped or started. Sequencing per Carlos: build this once
+   there's a real, active community circulating through the books C2C +
+   social layer first — the existing user base and behavioral data (who
+   connects with whom, shared interests/genres) is meant to inform how
+   matching should work, rather than building it speculatively now.
 
 ## 7. Cost / infrastructure ceiling
 
