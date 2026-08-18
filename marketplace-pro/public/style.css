@@ -514,12 +514,30 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   display: flex; align-items: center; justify-content: center;
 }
 .wizard-fs-capture-wrap { position: relative; width: 76px; height: 76px; display: flex; align-items: center; justify-content: center; }
-.wizard-fs-capture-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+/* pointer-events:none is the actual fix for the "camera preview works but
+   the red shutter never reacts" bug: this ring is position:absolute and
+   covers the exact same 76x76 box as the button, and since positioned
+   elements paint (and receive touches/clicks) above normal-flow siblings
+   regardless of DOM order, every tap was landing on this decorative SVG
+   instead of #wizard-fs-capture-btn underneath it - no JS handler on the
+   button was ever being reached. */
+.wizard-fs-capture-ring { position: absolute; inset: 0; transform: rotate(-90deg); pointer-events: none; }
 .wizard-fs-capture-btn {
   width: 62px; height: 62px; border-radius: 50%; background: #FF3B30;
   border: 4px solid #fff; cursor: pointer; padding: 0;
   box-shadow: 0 2px 8px rgba(255,59,48,0.5);
   transition: transform 0.1s, border-radius 0.15s;
+  /* Without this, a press-and-hold on mobile gets intercepted by the
+     browser's own touch handling (long-press context menu / "is this a
+     scroll?" gesture detection) before our pointerdown/pointerup JS ever
+     sees it reliably - the camera preview works fine but the shutter looks
+     completely dead. touch-action tells the browser this element handles
+     its own gestures; the -webkit lines stop iOS/Android from popping a
+     text-selection/context menu on the hold. */
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .wizard-fs-capture-btn.pressed { transform: scale(0.9); }
 .wizard-fs-capture-btn.recording { border-radius: 14px; width: 40px; height: 40px; }
