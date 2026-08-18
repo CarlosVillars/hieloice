@@ -1416,6 +1416,114 @@ async function handleApi(req, res, pathname, query) {
     }
   }
 
+  // ---- AI: "auto-clip" - suggest the best highlight window for a video Moment ----
+  // MVP: no server-side video re-encoding/ffmpeg. The client samples ~6-8
+  // small frames evenly across the raw video (see wizard-ai-clip in app.js)
+  // and sends them here with their timestamps; Claude picks the single most
+  // engaging contiguous window for a short-form vertical video. The result
+  // is stored as trim_start_sec/trim_end_sec metadata on the moment (see
+  // POST /api/moments below) and enforced client-side at playback time
+  // (seek to the start, loop back once the end is reached) - never an
+  // actual cut file. Same shape as suggest-caption above (auth, 503-if-
+  // unconfigured, rate limit, "final message is pure JSON" contract).
+  if (method === "POST" && pathname === "/api/ai/suggest-clip") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!ANTHROPIC_API_KEY) return sendJson(res, 503, { error: "AI features are not configured on this server yet." });
+    // Similar budget to suggest-caption: a handful of small images, no web
+    // search tool.
+    if (!checkRateLimit("ai-clip:" + me.id, 20, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many AI requests. Please try again in a bit." });
+    }
+
+    const body = await readBody(req);
+    const durationSec = Number(body.durationSec);
+    if (!Number.isFinite(durationSec) || durationSec <= 0) {
+      return sendJson(res, 400, { error: "A valid video duration is required." });
+    }
+    const framesIn = Array.isArray(body.frames) ? body.frames : [];
+    if (!framesIn.length) return sendJson(res, 400, { error: "At least one sampled frame is required." });
+
+    const frames = [];
+    for (const f of framesIn.slice(0, 8)) {
+      const t = Number(f && f.t);
+      const fm = typeof (f && f.image) === "string" ? f.image.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/) : null;
+      if (!Number.isFinite(t) || !fm) continue;
+      const [, frameMediaType, base64Data] = fm;
+      if (base64Data.length > 2 * 1024 * 1024) continue; // frames are meant to be thumbnail-sized
+      frames.push({ t, mediaType: frameMediaType, base64Data });
+    }
+    if (!frames.length) return sendJson(res, 400, { error: "No valid frames were provided." });
+    frames.sort((a, b) => a.t - b.t);
+
+    const MIN_CLIP_SEC = 8;
+    const MAX_CLIP_SEC = 45;
+    const content = [];
+    frames.forEach((f) => {
+      content.push({ type: "text", text: "Frame at t=" + f.t.toFixed(1) + "s:" });
+      content.push({ type: "image", source: { type: "base64", media_type: f.mediaType, data: f.base64Data } });
+    });
+    content.push({
+      type: "text",
+      text:
+        "The video is " + durationSec.toFixed(1) + " seconds long in total. Based on these sampled frames, pick the " +
+        "single most engaging contiguous highlight window to publish as a short-form vertical video (think " +
+        "Reels/TikTok/Shorts hook quality - a strong opening moment, visual interest, and a natural stopping " +
+        "point). Return the JSON now.",
+    });
+
+    try {
+      const data = await callClaude({
+        model: "claude-sonnet-5",
+        max_tokens: 500,
+        system:
+          "You are a short-form video editor assistant for HieloIce, a marketplace and social app. You will be " +
+          "shown a handful of frames sampled evenly across a raw video clip, each labeled with its timestamp in " +
+          "seconds. Choose the best contiguous highlight window (startSec/endSec) to publish, between " + MIN_CLIP_SEC +
+          " and " + MAX_CLIP_SEC + " seconds long, fully within [0, " + durationSec.toFixed(1) + "]. Your FINAL " +
+          "message must be ONLY a single JSON object, no markdown fences, no text before or after it, in this " +
+          'exact shape: {"startSec": 0, "endSec": 0, "reason": "..."}. reason must be a short (under 140 ' +
+          "characters) plain-English explanation of why that window is the strongest highlight.",
+        messages: [{ role: "user", content }],
+      });
+      const textBlocks = Array.isArray(data.content) ? data.content.filter((b) => b.type === "text") : [];
+      const raw = textBlocks.length ? textBlocks[textBlocks.length - 1].text : "";
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI did not return JSON");
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      let startSec = Number(parsed.startSec);
+      let endSec = Number(parsed.endSec);
+      if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) throw new Error("AI returned an invalid window");
+      // Clamp (rather than reject) if the model overshoots slightly - be lenient here.
+      startSec = Math.max(0, Math.min(startSec, durationSec));
+      endSec = Math.max(0, Math.min(endSec, durationSec));
+      if (endSec <= startSec) throw new Error("AI returned an invalid window");
+      let clipLen = endSec - startSec;
+      if (clipLen < MIN_CLIP_SEC) {
+        endSec = Math.min(durationSec, startSec + MIN_CLIP_SEC);
+        clipLen = endSec - startSec;
+      }
+      if (clipLen > 60) {
+        endSec = startSec + 60;
+        clipLen = 60;
+      }
+      if (endSec > durationSec) {
+        endSec = durationSec;
+        startSec = Math.max(0, endSec - clipLen);
+      }
+
+      return sendJson(res, 200, {
+        startSec: Math.round(startSec * 10) / 10,
+        endSec: Math.round(endSec * 10) / 10,
+        reason: String(parsed.reason || "").slice(0, 140),
+      });
+    } catch (e) {
+      console.error("AI clip suggestion failed:", e && e.message);
+      return sendJson(res, 502, { error: "AI could not suggest a highlight clip right now. Please try again or use the full video." });
+    }
+  }
+
   // ---- AI: help assistant chatbot (replaces the old rule-based FAQ widget) ----
   if (method === "POST" && pathname === "/api/ai/chat") {
     if (!ANTHROPIC_API_KEY) return sendJson(res, 503, { error: "AI features are not configured on this server yet." });
@@ -2527,7 +2635,7 @@ async function handleApi(req, res, pathname, query) {
   // column soon, and re-adding a dropped column is wasted churn.
 
   function momentOut(m) {
-    const { user_id, media_url, media_type, created_at, expires_at, repost_of, ...rest } = m;
+    const { user_id, media_url, media_type, created_at, expires_at, repost_of, trim_start_sec, trim_end_sec, ...rest } = m;
     return {
       ...rest,
       userId: user_id,
@@ -2536,6 +2644,11 @@ async function handleApi(req, res, pathname, query) {
       createdAt: created_at,
       expiresAt: expires_at,
       repostOf: repost_of || null,
+      // AI auto-clip trim window (task #160) - both null means "play the
+      // whole thing". See wireMomentTrimLoop() in app.js for the client-side
+      // bounded-loop playback that enforces this.
+      trimStartSec: trim_start_sec != null ? Number(trim_start_sec) : null,
+      trimEndSec: trim_end_sec != null ? Number(trim_end_sec) : null,
     };
   }
 
@@ -2595,6 +2708,20 @@ async function handleApi(req, res, pathname, query) {
     } catch (e) {
       return sendJson(res, 500, { error: "Could not upload moment" });
     }
+    // AI auto-clip trim window (task #160, optional) - only meaningful for
+    // videos. Stored as plain metadata (no server-side re-encoding); null
+    // means "play the whole thing". See POST /api/ai/suggest-clip above and
+    // wireMomentTrimLoop() in app.js.
+    let trimStartSec = null;
+    let trimEndSec = null;
+    if (mediaType === "video" && body.trimStartSec !== undefined && body.trimEndSec !== undefined && body.trimStartSec !== null && body.trimEndSec !== null) {
+      const ts = Number(body.trimStartSec);
+      const te = Number(body.trimEndSec);
+      if (Number.isFinite(ts) && Number.isFinite(te) && ts >= 0 && te > ts) {
+        trimStartSec = ts;
+        trimEndSec = te;
+      }
+    }
     const now = Date.now();
     const moment = {
       id: crypto.randomBytes(8).toString("hex"),
@@ -2604,6 +2731,8 @@ async function handleApi(req, res, pathname, query) {
       caption: String(body.caption || "").slice(0, 300),
       created_at: now,
       expires_at: now + 24 * 60 * 60 * 1000,
+      trim_start_sec: trimStartSec,
+      trim_end_sec: trimEndSec,
     };
     await db.insert("mkt_moments", moment);
     return sendJson(res, 201, momentOut(moment));
