@@ -378,7 +378,12 @@ function applyStaticI18n() {
   updateGlobalSearchPlaceholder();
   setText("nav-messages", I18N.t("nav.messages"));
   setText("nav-profile", I18N.t("nav.profile"));
-  setText("nav-notifications-label", I18N.t("iconnav.notifications"));
+  const navNotifEl = document.getElementById("nav-notifications");
+  if (navNotifEl) {
+    const notifLabel = I18N.t("iconnav.notifications");
+    navNotifEl.title = notifLabel;
+    navNotifEl.setAttribute("aria-label", notifLabel);
+  }
   setText("nav-post", I18N.t("nav.postAd"));
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
