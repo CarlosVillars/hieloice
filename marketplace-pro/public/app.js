@@ -5247,18 +5247,36 @@ function startWizardCameraStream() {
     if (fallback) fallback.style.display = "flex";
     return;
   }
+  const onStream = (stream) => {
+    createWizard.stream = stream;
+    video.srcObject = stream;
+    video.style.display = "";
+    if (fallback) fallback.style.display = "none";
+    updateWizardFlashSupport();
+  };
   navigator.mediaDevices
     .getUserMedia({ video: { facingMode: createWizard.facingMode }, audio: true })
-    .then((stream) => {
-      createWizard.stream = stream;
-      video.srcObject = stream;
-      video.style.display = "";
-      if (fallback) fallback.style.display = "none";
-      updateWizardFlashSupport();
-    })
-    .catch(() => {
-      video.style.display = "none";
-      if (fallback) fallback.style.display = "flex";
+    .then(onStream)
+    .catch((err) => {
+      // Bugfix: requesting video+audio together fails outright on some
+      // devices/browsers when the microphone is unavailable or its
+      // permission was denied separately from the camera's - which used to
+      // leave the whole capture screen with no live stream at all (video
+      // stays hidden, fallback message shown) even though the camera itself
+      // was fine, making the shutter button look completely dead since
+      // takePhoto()/beginHoldRecording() both bail out early on
+      // `!video.srcObject`. Retry camera-only before giving up, so a
+      // mic-permission problem degrades to "photo/video without your own
+      // voice" instead of "capture screen doesn't work at all".
+      console.error("getUserMedia(video+audio) failed, retrying video-only:", err);
+      navigator.mediaDevices
+        .getUserMedia({ video: { facingMode: createWizard.facingMode } })
+        .then(onStream)
+        .catch((err2) => {
+          console.error("getUserMedia(video-only) also failed:", err2);
+          video.style.display = "none";
+          if (fallback) fallback.style.display = "flex";
+        });
     });
 }
 
@@ -5426,7 +5444,13 @@ function wireWizardCaptureGesture() {
     btn.classList.add("pressed");
     createWizard.holdArmed = true;
     createWizard.holdTimer = setTimeout(() => {
-      if (createWizard.holdArmed) runCaptureFlow(true);
+      if (!createWizard.holdArmed) return;
+      try {
+        runCaptureFlow(true);
+      } catch (err) {
+        console.error("Camera shutter hold-start failed:", err);
+        wizardShowToast(I18N.t("create.cameraUnavailable"));
+      }
     }, WIZARD_HOLD_THRESHOLD_MS);
   });
 
@@ -5438,10 +5462,21 @@ function wireWizardCaptureGesture() {
       clearTimeout(createWizard.holdTimer);
       createWizard.holdTimer = null;
     }
-    if (createWizard.recording) {
-      pauseHoldRecording();
-    } else if (createWizard.recordAccumMs === 0) {
-      runCaptureFlow(false);
+    // Defensive: a thrown error inside pauseHoldRecording()/runCaptureFlow()
+    // (e.g. from the newer brightness/sound-mixing code added in tasks
+    // #202/#203) must never leave the shutter permanently unresponsive -
+    // this codebase has a documented history of exactly that failure mode
+    // ("every following tap on the shutter does nothing at all"). Catch and
+    // log instead of letting it propagate silently.
+    try {
+      if (createWizard.recording) {
+        pauseHoldRecording();
+      } else if (createWizard.recordAccumMs === 0) {
+        runCaptureFlow(false);
+      }
+    } catch (err) {
+      console.error("Camera shutter release handler failed:", err);
+      wizardShowToast(I18N.t("create.cameraUnavailable"));
     }
   };
   btn.addEventListener("pointerup", release);
