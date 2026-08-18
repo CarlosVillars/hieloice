@@ -711,8 +711,12 @@ function categoryCardsHtml() {
 function renderHome() {
   if (!state.token) return renderMarketplaceHome();
 
+  // No ad-carousel here on purpose: Home is now a full-bleed content feed,
+  // and a banner above it would eat into the swipe viewport and compete
+  // with the feed the same way the old friends-post list used to. Ads still
+  // run on Marketplace (renderMarketplaceHome), which is the shopping-intent
+  // page where they belong.
   viewEl.innerHTML = `
-    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
     <div class="home-stories-strip" id="home-stories-strip">
       <div class="moments-bar" id="home-moments-bar-friends"></div>
     </div>
@@ -732,7 +736,6 @@ function renderHome() {
   });
   wireHomeSwipeFeedResize();
   sizeHomeSwipeFeed();
-  loadAdCarousel();
   loadHomeStoriesStrip();
   loadHomeSwipeFeed();
 }
