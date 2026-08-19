@@ -385,6 +385,7 @@ function applyStaticI18n() {
     navNotifEl.setAttribute("aria-label", notifLabel);
   }
   setText("nav-post", I18N.t("nav.postAd"));
+  setText("nav-book-club-label", I18N.t("iconnav.bookClub"));
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
   setText("nav-logout", I18N.t("nav.logout"));
@@ -408,7 +409,6 @@ function applyStaticI18n() {
   setText("icon-nav-create-video-label", I18N.t("iconnav.createVideo"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
-  setText("icon-nav-book-club-label", I18N.t("iconnav.bookClub"));
   setText("icon-nav-videos-label", I18N.t("iconnav.dropdownVideos"));
   setText("icon-nav-dropdown-soon-label", I18N.t("iconnav.comingSoon"));
   setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
