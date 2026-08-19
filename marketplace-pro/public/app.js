@@ -408,6 +408,7 @@ function applyStaticI18n() {
   setText("icon-nav-create-video-label", I18N.t("iconnav.createVideo"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
+  setText("icon-nav-book-club-label", I18N.t("iconnav.bookClub"));
   setText("icon-nav-videos-label", I18N.t("iconnav.dropdownVideos"));
   setText("icon-nav-dropdown-soon-label", I18N.t("iconnav.comingSoon"));
   setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
@@ -693,6 +694,8 @@ async function router() {
     if (parts[0] === "videos") return renderVideosFeed();
     if (parts[0] === "groups" && parts[1]) return renderGroupDetail(parts[1]);
     if (parts[0] === "groups") return renderGroupsHome();
+    if (parts[0] === "book-club" && parts[1]) return renderBookClubDetail(parts[1]);
+    if (parts[0] === "book-club") return renderBookClubHome();
     if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
@@ -3002,6 +3005,269 @@ async function renderGroupDetail(slug) {
           },
         });
         renderGroupDetail(slug);
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+
+  document.querySelectorAll("[data-vote]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      try {
+        const result = await api("/api/posts/" + btn.dataset.vote + "/vote", {
+          method: "POST",
+          auth: true,
+          body: { value: Number(btn.dataset.value) },
+        });
+        const postEl = btn.closest(".group-post");
+        postEl.querySelector(".vote-score").textContent = result.score;
+        postEl.querySelectorAll(".vote-btn").forEach((b) => b.classList.remove("active"));
+        if (result.myVote !== 0) {
+          postEl.querySelector('[data-value="' + result.myVote + '"]').classList.add("active");
+        }
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+}
+
+// ---------------- Book Club ("#/book-club", "#/book-club/:slug") ----------------
+// Task #240 - reuses the exact same mkt_groups/mkt_group_posts backend as
+// Communities (see groupOut()/POST/GET /api/groups in server.js), just
+// filtered to isBookClub groups and with book-specific extras: a required
+// book title, an optional link to the seller's own listing, a free group
+// video call (Jitsi Meet, no account/API key needed - see POST
+// /api/groups/:slug/video-room), and a "Pick of the Month" author-rights
+// panel that stays visible but locked until Carlos finishes the legal
+// agreement (task #242, AUTHOR_PICK_PROGRAM_ENABLED in server.js).
+
+let bookClubConfigCache = null;
+async function getBookClubConfig() {
+  if (bookClubConfigCache) return bookClubConfigCache;
+  try {
+    bookClubConfigCache = await api("/api/book-club/config");
+  } catch (e) {
+    bookClubConfigCache = { authorPickEnabled: false };
+  }
+  return bookClubConfigCache;
+}
+
+async function renderBookClubHome() {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const groups = await api("/api/groups?bookClub=true");
+
+  const listHtml = groups.length
+    ? `<div class="groups-grid bookclub-grid">${groups
+        .map(
+          (g) => `
+      <a class="group-card bookclub-card" href="#/book-club/${g.slug}">
+        <p class="bookclub-card-book">&#128214; ${escapeHtml(g.bookTitle || "")}</p>
+        <p class="group-card-name">${escapeHtml(g.name)}</p>
+        <p class="group-card-meta">${[g.city].filter(Boolean).map(escapeHtml).join(" · ")}</p>
+        ${g.description ? `<p class="group-card-desc">${escapeHtml(g.description)}</p>` : ""}
+      </a>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("bookClub.empty")}</div>`;
+
+  viewEl.innerHTML = `
+    <div class="groups-header">
+      <h2 class="section-heading">${I18N.t("bookClub.heading")}</h2>
+      ${state.token ? `<button class="btn btn-primary" id="bookclub-create-btn">${I18N.t("bookClub.create")}</button>` : ""}
+    </div>
+    <p class="groups-subtitle">${I18N.t("bookClub.subtitle")}</p>
+    <div id="bookclub-create-form" style="display:none;"></div>
+    ${listHtml}
+  `;
+
+  const createBtn = document.getElementById("bookclub-create-btn");
+  if (createBtn) {
+    createBtn.addEventListener("click", () => {
+      const formWrap = document.getElementById("bookclub-create-form");
+      if (formWrap.style.display !== "none") {
+        formWrap.style.display = "none";
+        return;
+      }
+      formWrap.style.display = "block";
+      formWrap.innerHTML = `
+        <form id="bookclub-create-form-el" class="stacked-form">
+          <label>${I18N.t("bookClub.bookTitle")}<input type="text" name="bookTitle" required maxlength="200" placeholder="${I18N.t("bookClub.bookTitlePlaceholder")}" /></label>
+          <label>${I18N.t("groups.name")}<input type="text" name="name" required maxlength="100" placeholder="${I18N.t("bookClub.namePlaceholder")}" /></label>
+          <label>${I18N.t("groups.city")}<input type="text" name="city" maxlength="80" placeholder="${I18N.t("bookClub.cityPlaceholder")}" /></label>
+          <label>${I18N.t("groups.description")}<textarea name="description" maxlength="1000"></textarea></label>
+          <button type="submit" class="btn btn-primary">${I18N.t("bookClub.createSubmit")}</button>
+          <p class="form-msg" id="bookclub-create-msg"></p>
+        </form>
+      `;
+      document.getElementById("bookclub-create-form-el").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const msgEl = document.getElementById("bookclub-create-msg");
+        try {
+          const g = await api("/api/groups", {
+            method: "POST",
+            auth: true,
+            body: {
+              isBookClub: true,
+              bookTitle: fd.get("bookTitle"),
+              name: fd.get("name"),
+              city: fd.get("city"),
+              description: fd.get("description"),
+            },
+          });
+          location.hash = "#/book-club/" + g.slug;
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+        }
+      });
+    });
+  }
+}
+
+function openBookClubVideoOverlay(roomName) {
+  const overlay = document.createElement("div");
+  overlay.className = "bookclub-video-overlay";
+  overlay.innerHTML = `
+    <div class="bookclub-video-topbar">
+      <span>${I18N.t("bookClub.videoCallLive")}</span>
+      <button class="bookclub-video-close" id="bookclub-video-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+    </div>
+    <iframe class="bookclub-video-frame" src="https://meet.jit.si/${encodeURIComponent(roomName)}#config.prejoinPageEnabled=true" allow="camera; microphone; fullscreen; display-capture; autoplay"></iframe>
+  `;
+  document.body.appendChild(overlay);
+  document.getElementById("bookclub-video-close").addEventListener("click", () => overlay.remove());
+}
+
+async function renderBookClubDetail(slug) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let group, posts, bcConfig;
+  try {
+    [group, posts, bcConfig] = await Promise.all([
+      api("/api/groups/" + encodeURIComponent(slug)),
+      api("/api/groups/" + encodeURIComponent(slug) + "/posts", state.token ? { auth: true } : {}),
+      getBookClubConfig(),
+    ]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const postsHtml = posts.length
+    ? posts
+        .map(
+          (p) => `
+      <div class="group-post" data-post="${p.id}">
+        <div class="group-post-votes">
+          <button class="vote-btn vote-up ${p.myVote === 1 ? "active" : ""}" data-vote="${p.id}" data-value="1">&#9650;</button>
+          <span class="vote-score">${p.score}</span>
+          <button class="vote-btn vote-down ${p.myVote === -1 ? "active" : ""}" data-vote="${p.id}" data-value="-1">&#9660;</button>
+        </div>
+        <div class="group-post-body">
+          <span class="group-post-type group-post-type-${p.postType}">${I18N.t("groups.postType." + p.postType)}</span>
+          <p class="group-post-title">${escapeHtml(p.title)}</p>
+          ${p.body ? `<p class="group-post-text">${escapeHtml(p.body)}</p>` : ""}
+          <p class="group-post-meta">${escapeHtml(p.authorName)} &middot; ${fmtDate(p.createdAt)}</p>
+        </div>
+      </div>`
+        )
+        .join("")
+    : `<div class="empty-state">${I18N.t("groups.noPosts")}</div>`;
+
+  // Task #242 - the "Pick of the Month" panel is always rendered (per
+  // Carlos's request to "have the space ready") but only actionable once
+  // AUTHOR_PICK_PROGRAM_ENABLED flips true on the server; until then it
+  // shows a clear "coming soon" state instead of a working submit button,
+  // so nobody can accidentally trigger a program with no real legal terms
+  // behind it yet.
+  const authorPickHtml = `
+    <div class="bookclub-authorpick ${bcConfig.authorPickEnabled ? "" : "locked"}">
+      <p class="bookclub-authorpick-title">&#127942; ${I18N.t("bookClub.authorPickTitle")}</p>
+      <p class="bookclub-authorpick-desc">${I18N.t("bookClub.authorPickDesc")}</p>
+      ${
+        bcConfig.authorPickEnabled
+          ? `<button class="btn btn-primary" id="bookclub-authorpick-btn">${I18N.t("bookClub.authorPickSubmit")}</button>`
+          : `<span class="bookclub-authorpick-soon">${I18N.t("bookClub.authorPickComingSoon")}</span>`
+      }
+    </div>
+  `;
+
+  viewEl.innerHTML = `
+    <a href="#/book-club" class="back-link">&larr; ${I18N.t("bookClub.backToList")}</a>
+    <div class="bookclub-detail-header">
+      <div>
+        <p class="bookclub-detail-book">&#128214; ${escapeHtml(group.bookTitle || "")}</p>
+        <h2 class="section-heading">${escapeHtml(group.name)}</h2>
+        <p class="groups-subtitle">${[group.city].filter(Boolean).map(escapeHtml).join(" · ")}</p>
+      </div>
+      <button class="btn btn-primary bookclub-video-btn" id="bookclub-video-btn">&#128249; ${I18N.t("bookClub.joinVideoCall")}</button>
+    </div>
+    ${group.description ? `<p class="group-detail-desc">${escapeHtml(group.description)}</p>` : ""}
+    ${authorPickHtml}
+    <div id="group-post-form-wrap">${
+      state.token
+        ? `
+      <form id="group-post-form" class="stacked-form">
+        <label>${I18N.t("groups.postTitleLabel")}<input type="text" name="title" required maxlength="200" /></label>
+        <label>${I18N.t("groups.postBodyLabel")}<textarea name="body" maxlength="5000"></textarea></label>
+        <label>${I18N.t("groups.postTypeLabel")}
+          <select name="postType">
+            <option value="discussion">${I18N.t("groups.postType.discussion")}</option>
+            <option value="question">${I18N.t("groups.postType.question")}</option>
+            <option value="review">${I18N.t("groups.postType.review")}</option>
+            <option value="warning">${I18N.t("groups.postType.warning")}</option>
+          </select>
+        </label>
+        <button type="submit" class="btn btn-primary">${I18N.t("groups.postSubmit")}</button>
+        <p class="form-msg" id="group-post-msg"></p>
+      </form>`
+        : `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`
+    }</div>
+    <div id="group-posts-list">${postsHtml}</div>
+  `;
+
+  const videoBtn = document.getElementById("bookclub-video-btn");
+  if (videoBtn) {
+    videoBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      videoBtn.disabled = true;
+      try {
+        const { videoRoomName } = await api("/api/groups/" + encodeURIComponent(slug) + "/video-room", { method: "POST", auth: true });
+        openBookClubVideoOverlay(videoRoomName);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        videoBtn.disabled = false;
+      }
+    });
+  }
+
+  const postForm = document.getElementById("group-post-form");
+  if (postForm) {
+    postForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("group-post-msg");
+      try {
+        await api("/api/groups/" + encodeURIComponent(slug) + "/posts", {
+          method: "POST",
+          auth: true,
+          body: {
+            title: fd.get("title"),
+            body: fd.get("body"),
+            postType: fd.get("postType"),
+          },
+        });
+        renderBookClubDetail(slug);
       } catch (err) {
         msgEl.textContent = err.message;
         msgEl.className = "form-msg error";

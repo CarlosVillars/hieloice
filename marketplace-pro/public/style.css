@@ -1031,6 +1031,32 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .group-post-type-review { background: #fdf2e0; color: #8a5d00; }
 .group-post-type-warning { background: var(--danger-bg); color: var(--danger); }
 
+/* ---- Book Club (task #240/#242) ---- */
+.bookclub-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.bookclub-card { position: relative; overflow: hidden; }
+.bookclub-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--gold); }
+.bookclub-card-book { font-size: 13px; font-weight: 700; color: var(--gold); margin: 0 0 6px; letter-spacing: 0.2px; }
+.bookclub-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+.bookclub-detail-book { font-size: 14px; font-weight: 700; color: var(--gold); margin: 0 0 2px; }
+.bookclub-video-btn { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.bookclub-authorpick {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  background: linear-gradient(135deg, var(--bg-surface-alt), var(--bg-surface));
+  border: 1px solid var(--gold); border-radius: 12px; padding: 16px 18px; margin: 14px 0 18px;
+}
+.bookclub-authorpick.locked { border-color: var(--border-color); opacity: 0.85; }
+.bookclub-authorpick-title { font-weight: 800; font-size: 15px; margin: 0; color: var(--gold); }
+.bookclub-authorpick.locked .bookclub-authorpick-title { color: var(--text-primary); }
+.bookclub-authorpick-desc { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+.bookclub-authorpick-soon { font-size: 12.5px; font-weight: 700; color: var(--text-muted); background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 20px; padding: 5px 12px; }
+
+/* Live group video call - Jitsi Meet embedded full-screen, no API key
+   needed (see POST /api/groups/:slug/video-room in server.js). */
+.bookclub-video-overlay { position: fixed; inset: 0; z-index: 900; background: #000; display: flex; flex-direction: column; }
+.bookclub-video-topbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: #111; color: #fff; font-size: 14px; font-weight: 700; }
+.bookclub-video-close { background: none; border: none; color: #fff; font-size: 26px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.bookclub-video-frame { flex: 1; width: 100%; border: none; }
+
 /* ---- Saved items ("Guardar", Pinterest-style) ---- */
 .detail-price-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .save-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 20px; padding: 7px 14px; font-size: 13px; font-weight: 700; color: var(--text-secondary); }

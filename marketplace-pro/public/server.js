@@ -9,6 +9,7 @@ const path = require("path");
 const crypto = require("crypto");
 const url = require("url");
 const webpush = require("web-push");
+const WebSocket = require("ws"); // real-time 1:1 chat delivery (task #233) - see the "realtime chat" section below
 
 const PORT = process.env.PORT || 3000;
 const ROOT_DIR = __dirname;
@@ -55,9 +56,20 @@ const MAX_PHOTOS = 12;
 // "Loops" feature below (see POST /api/loops), which is the genuinely
 // ephemeral Stories-style feature this cap always made sense for.
 const MAX_ACTIVE_MOMENTS = 3;
-const MAX_MOMENT_VIDEO_SECONDS = 180; // 3 minutes - enforced client-side (no server-side video parsing)
-const MAX_LOOP_VIDEO_SECONDS = 60; // Loops are short looping clips, not 3-minute Moments - enforced client-side same as MAX_MOMENT_VIDEO_SECONDS (no server-side video parsing)
+const MAX_MOMENT_VIDEO_SECONDS = 90; // matches Instagram Reels cap - enforced client-side (no server-side video parsing)
+const MAX_LOOP_VIDEO_SECONDS = 20; // matches Stories-style short clips - enforced client-side same as MAX_MOMENT_VIDEO_SECONDS (no server-side video parsing)
 const MAX_PRODUCT_VIDEO_SECONDS = 20; // enforced client-side (no server-side video parsing)
+// Long-form "Videos" hub (task #231) - a general-purpose, YouTube-like
+// video feature, NOT limited to book reviews. Reuses the mkt_moments table
+// (see the "is_long_video" columns added by the mkt_moments_video_hub_columns
+// migration) rather than a parallel table, so it inherits the same
+// likes/saves/comments/view-tracking infra Moments already has. A long
+// video is just a moment row with is_long_video=true, a title, and an
+// optional linked_product_id - see POST /api/moments below, which branches
+// on body.target === "video". 20 minutes is a generous ceiling for
+// long-form content, enforced client-side same as every other video cap in
+// this file (no server-side video parsing exists here).
+const MAX_LONG_VIDEO_SECONDS = 1200;
 
 // Reused keep-alive HTTPS agent so every outbound call (Supabase REST,
 // Supabase Storage, OAuth token exchanges) reuses pooled TCP+TLS connections
@@ -298,9 +310,12 @@ function verifyPassword(password, stored) {
 const authUserCache = new Map(); // token -> { promise, expires }
 const AUTH_CACHE_TTL_MS = 5000;
 
-async function getAuthUser(req) {
-  const auth = req.headers["authorization"] || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+// Shared by HTTP auth (getAuthUser below, reading the "Authorization: Bearer
+// <token>" header) AND WebSocket auth (see the "realtime chat" section
+// further down, reading ?token= or a first {"type":"auth"} frame) - both
+// paths use the exact same mkt_sessions token, so this is the one place
+// that resolves a token to a user.
+async function getUserByToken(token) {
   if (!token) return null;
 
   const cached = authUserCache.get(token);
@@ -314,12 +329,26 @@ async function getAuthUser(req) {
     // Suspended accounts are treated as logged-out for every authenticated
     // action app-wide (their public listings/profile stay visible to others).
     if (user && user.suspended) return null;
+    // Chat presence (GET /api/users/:id/presence, WS presence:update) is
+    // driven off mkt_users.last_seen_at. Bumping it here (throttled - see
+    // touchLastSeen in the realtime chat section) means EVERY authenticated
+    // HTTP request keeps a user's presence fresh, not just chat-specific
+    // ones or WS traffic - simplest option given getAuthUser/getUserByToken
+    // already run on nearly every request.
+    if (user) touchLastSeen(user.id);
     return user;
   })();
 
   authUserCache.set(token, { promise, expires: Date.now() + AUTH_CACHE_TTL_MS });
   promise.catch(() => authUserCache.delete(token)); // don't cache failures
   return promise;
+}
+
+async function getAuthUser(req) {
+  const auth = req.headers["authorization"] || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!token) return null;
+  return getUserByToken(token);
 }
 
 function publicUser(u) {
@@ -594,6 +623,320 @@ async function notifyAllOptedIn(category, payload, filterFn) {
     await sendPushToSubscriptions(subs, payload);
   }
 }
+
+// ---------- realtime chat (WebSocket) ----------
+//
+// Task #233. Everything below is the COMPLETE real-time contract for 1:1
+// messaging - written for whoever builds the frontend (task #234) with no
+// other context. The REST endpoints under "MESSAGES" further down keep
+// working unchanged for any client that isn't using the socket at all
+// (progressive enhancement, not a hard requirement): every socket action
+// below writes to mkt_messages first, so polling GET /api/conversations/:id
+// always reflects the full truth regardless of whether either side has a
+// live connection.
+//
+// CONNECTING
+//   Open a WebSocket to   wss://<host>/ws?token=<session token>
+//   `token` is the exact same opaque string normally sent as
+//   `Authorization: Bearer <token>` on every other API call (the one
+//   returned by /api/auth/login, /api/auth/register, etc). It has to travel
+//   as a query param because browsers can't set custom headers on a
+//   WebSocket handshake.
+//   If you'd rather not put the token in the URL (query strings can end up
+//   in logs), connect to wss://<host>/ws with no query param and send an
+//   auth frame as the very first message instead:
+//     -> {"type":"auth","token":"<session token>"}
+//   Either way: the server closes the socket (code 4401) if the token is
+//   invalid, or if no valid token arrives within 10 seconds of connecting.
+//   On success the server sends:
+//     <- {"type":"connected","userId":"<your user id>"}
+//   A user can have several sockets open at once (multiple tabs/devices) -
+//   every event below is delivered to ALL of a user's open sockets.
+//
+// ENVELOPE
+//   Every frame, both directions, is one JSON object with a "type" field.
+//   Unknown or malformed frames are silently ignored (no error echoed), so
+//   new client->server types can be added later without breaking old
+//   servers/clients.
+//
+// CLIENT -> SERVER
+//   {"type":"auth","token":"..."}
+//       Only needed as the first message when ?token= wasn't given on
+//       connect. Ignored once a connection is already authenticated.
+//   {"type":"typing:start","to":"<otherUserId>"}
+//   {"type":"typing:stop","to":"<otherUserId>"}
+//       Ephemeral - never written to the DB. Forwarded ONLY to `to`'s open
+//       sockets, as a {"type":"typing",...} frame (see below).
+//   {"type":"presence:query","userId":"<userId>"}
+//       Ask whether a specific user is online right now. Server replies to
+//       the requester only, with presence:result (below). The exact same
+//       info is also available over REST via GET /api/users/:id/presence
+//       for clients that aren't running the socket.
+//   {"type":"ping"}
+//       Optional app-level heartbeat; server replies {"type":"pong"}. (The
+//       server also runs its own low-level WS ping/pong every 30s to reap
+//       dead connections - this app-level ping is just for client code that
+//       wants an explicit round-trip signal.)
+//
+// SERVER -> CLIENT
+//   {"type":"connected","userId":"..."}
+//       Sent once, immediately after successful auth.
+//   {"type":"auth:error","error":"..."}
+//       Sent right before the socket is closed if auth fails.
+//   {"type":"message:new","message":{...}}
+//       A brand-new message in a conversation you're part of. Sent to BOTH
+//       the sender's and recipient's open sockets (so every open tab/device
+//       for either side stays in sync). The `message` object has the exact
+//       same shape as one entry from GET /api/conversations/:id - see the
+//       shapeMessage() shape documented in the MESSAGES section below
+//       (id, fromUserId, toUserId, text, productId, replyToId,
+//       attachmentUrl, attachmentType, reactions, deleted, read, createdAt).
+//   {"type":"message:read","conversationWith":"<userId>","messageIds":["..."],"readAt":1234567890}
+//       Sent to the ORIGINAL SENDER when the other participant reads their
+//       messages (i.e. opens/polls GET /api/conversations/:id).
+//       `messageIds` are the ids that just flipped read:true.
+//   {"type":"reaction:added","messageId":"...","emoji":"👍","userId":"...","reactions":{...}}
+//   {"type":"reaction:removed","messageId":"...","emoji":"👍","userId":"...","reactions":{...}}
+//       Sent to both participants whenever POST/DELETE
+//       /api/messages/:id/react changes a message's reactions map.
+//       `reactions` is the FULL updated map (not a diff) - replace your
+//       local copy with it rather than patching.
+//   {"type":"message:deleted","messageId":"...","mode":"forMe"|"forEveryone","conversationWith":"<otherUserId>"}
+//       "forEveryone": sent to BOTH participants - the message is now a
+//       tombstone for both of them (see DELETE /api/messages/:id below).
+//       "forMe": echoed back ONLY to the caller's own other sockets/tabs,
+//       since it doesn't change what the other participant sees at all.
+//   {"type":"presence:update","userId":"...","online":true,"lastSeenAt":1234567890}
+//       Broadcast whenever a user connects (all sockets were closed, now
+//       one is open) or fully disconnects (their last open socket closed).
+//       Only sent to that user's CONVERSATION PARTNERS (anyone they've ever
+//       exchanged a message with) - not a global broadcast.
+//   {"type":"presence:result","userId":"...","online":true,"lastSeenAt":1234567890}
+//       Reply to a presence:query, sent to the requester only.
+//   {"type":"pong"}
+//       Reply to an app-level {"type":"ping"}.
+//
+// SCALING NOTE (read before "fixing" presence/delivery that seems flaky):
+// connections live in an in-memory Map on THIS ONE Node process (see
+// wsConnections below) - there is no cross-process pub/sub. That is fine
+// for Render's current single-instance setup for this service. If this
+// service is ever moved to multiple instances/autoscaling, this whole layer
+// silently stops seeing sockets connected to other instances and needs a
+// shared broker (e.g. Redis pub/sub) behind it. Nothing in the current
+// deploy config suggests that's imminent, so it's intentionally not built
+// here - don't add that complexity until it's actually needed.
+
+const WS_PATH = "/ws";
+const WS_AUTH_TIMEOUT_MS = 10000;
+
+// userId -> Set<WebSocket>. A user can have multiple open sockets (tabs/devices).
+const wsConnections = new Map();
+
+function isUserOnline(userId) {
+  const set = wsConnections.get(userId);
+  return !!(set && set.size);
+}
+
+function wsSend(ws, payload) {
+  if (ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify(payload));
+    } catch (e) {
+      // A send failing here means the socket is on its way out; the
+      // close/error handlers below take care of removing it from
+      // wsConnections, so there's nothing else to do.
+    }
+  }
+}
+
+// Sends `payload` to every open socket belonging to `userId`. 0 sockets
+// (user not connected right now) is a silent no-op - callers never need to
+// check isUserOnline() first, this is always safe to call.
+function wsSendToUser(userId, payload) {
+  const set = wsConnections.get(userId);
+  if (!set || !set.size) return;
+  for (const ws of set) wsSend(ws, payload);
+}
+
+// Every user `userId` has ever exchanged a message with - the scope for
+// presence broadcasts (WhatsApp/Messenger-style: only people you've
+// actually talked to see when you come online, not the whole userbase).
+async function conversationPartnerIds(userId) {
+  const [fromMe, toMe] = await Promise.all([
+    db.select("mkt_messages", { from_user_id: "eq." + enc(userId), select: "to_user_id" }),
+    db.select("mkt_messages", { to_user_id: "eq." + enc(userId), select: "from_user_id" }),
+  ]);
+  const ids = new Set();
+  for (const m of fromMe) ids.add(m.to_user_id);
+  for (const m of toMe) ids.add(m.from_user_id);
+  ids.delete(userId);
+  return [...ids];
+}
+
+async function broadcastPresence(userId, online) {
+  try {
+    const partners = await conversationPartnerIds(userId);
+    if (!partners.length) return;
+    const users = await db.select("mkt_users", { id: "eq." + enc(userId), select: "last_seen_at" });
+    const lastSeenAt = (users && users[0] && users[0].last_seen_at) || null;
+    const payload = { type: "presence:update", userId, online, lastSeenAt };
+    for (const p of partners) wsSendToUser(p, payload);
+  } catch (e) {
+    console.error("broadcastPresence failed:", e.message);
+  }
+}
+
+// Throttled last_seen_at writes. Called from getUserByToken (every
+// authenticated HTTP request - see the auth helpers above) AND from every
+// WS connect/message below, so "online"/lastSeenAt stays accurate for both
+// socket clients and REST-polling-only clients. Throttled to at most one DB
+// write per user per 30s so this doesn't turn into a write on every single
+// request/message.
+const lastSeenThrottle = new Map(); // userId -> last write timestamp (ms)
+const LAST_SEEN_WRITE_INTERVAL_MS = 30000;
+function touchLastSeen(userId) {
+  const now = Date.now();
+  const last = lastSeenThrottle.get(userId) || 0;
+  if (now - last < LAST_SEEN_WRITE_INTERVAL_MS) return;
+  lastSeenThrottle.set(userId, now);
+  db.update("mkt_users", { id: "eq." + enc(userId) }, { last_seen_at: now }).catch(() => {});
+}
+
+function wsRegister(userId, ws) {
+  let set = wsConnections.get(userId);
+  if (!set) {
+    set = new Set();
+    wsConnections.set(userId, set);
+  }
+  const wasOffline = set.size === 0;
+  set.add(ws);
+  ws.userId = userId;
+  ws.isAlive = true;
+  lastSeenThrottle.set(userId, Date.now()); // force-write on connect, bypassing the throttle, so presence flips online immediately
+  db.update("mkt_users", { id: "eq." + enc(userId) }, { last_seen_at: Date.now() }).catch(() => {});
+  if (wasOffline) broadcastPresence(userId, true);
+}
+
+function wsUnregister(ws) {
+  if (!ws.userId) return;
+  const set = wsConnections.get(ws.userId);
+  if (!set) return;
+  set.delete(ws);
+  if (set.size === 0) {
+    wsConnections.delete(ws.userId);
+    lastSeenThrottle.set(ws.userId, Date.now()); // force-write on disconnect too, same reasoning as wsRegister
+    db.update("mkt_users", { id: "eq." + enc(ws.userId) }, { last_seen_at: Date.now() }).catch(() => {});
+    broadcastPresence(ws.userId, false);
+  }
+}
+
+const wss = new WebSocket.Server({ noServer: true });
+
+wss.on("connection", (ws, req) => {
+  const parsedUrl = url.parse(req.url, true);
+  const queryToken = parsedUrl.query && parsedUrl.query.token;
+  let authTimer = null;
+
+  async function tryAuth(token) {
+    try {
+      const user = await getUserByToken(token);
+      if (!user) {
+        wsSend(ws, { type: "auth:error", error: "Invalid or expired session" });
+        ws.close(4401, "Unauthorized");
+        return;
+      }
+      if (authTimer) clearTimeout(authTimer);
+      wsRegister(user.id, ws);
+      wsSend(ws, { type: "connected", userId: user.id });
+    } catch (e) {
+      wsSend(ws, { type: "auth:error", error: "Authentication failed" });
+      ws.close(4401, "Unauthorized");
+    }
+  }
+
+  if (queryToken) {
+    tryAuth(String(queryToken));
+  } else {
+    authTimer = setTimeout(() => {
+      if (!ws.userId) {
+        wsSend(ws, { type: "auth:error", error: "Authentication timeout" });
+        ws.close(4401, "Unauthorized");
+      }
+    }, WS_AUTH_TIMEOUT_MS);
+  }
+
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
+
+  ws.on("message", async (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch (e) {
+      return; // ignore malformed frames
+    }
+    if (!msg || typeof msg.type !== "string") return;
+
+    if (!ws.userId) {
+      if (msg.type === "auth" && msg.token) await tryAuth(String(msg.token));
+      return; // no other message types are processed before auth succeeds
+    }
+
+    touchLastSeen(ws.userId);
+
+    if (msg.type === "ping") {
+      wsSend(ws, { type: "pong" });
+      return;
+    }
+    if (msg.type === "typing:start" || msg.type === "typing:stop") {
+      const to = msg.to && String(msg.to);
+      if (!to) return;
+      wsSendToUser(to, { type: "typing", from: ws.userId, state: msg.type === "typing:start" ? "start" : "stop" });
+      return;
+    }
+    if (msg.type === "presence:query") {
+      const targetId = msg.userId && String(msg.userId);
+      if (!targetId) return;
+      let lastSeenAt = null;
+      try {
+        const users = await db.select("mkt_users", { id: "eq." + enc(targetId), select: "last_seen_at" });
+        lastSeenAt = (users && users[0] && users[0].last_seen_at) || null;
+      } catch (e) {}
+      wsSend(ws, { type: "presence:result", userId: targetId, online: isUserOnline(targetId), lastSeenAt });
+      return;
+    }
+    // Unknown type: ignored, per the envelope contract documented above.
+  });
+
+  ws.on("close", () => {
+    if (authTimer) clearTimeout(authTimer);
+    wsUnregister(ws);
+  });
+  ws.on("error", () => {
+    if (authTimer) clearTimeout(authTimer);
+    wsUnregister(ws);
+  });
+});
+
+// Low-level heartbeat (distinct from the app-level {"type":"ping"} above):
+// terminates sockets that stop responding to WS-protocol pings, so a client
+// that vanishes without a clean close (phone locked, wifi dropped mid-air)
+// doesn't linger forever in wsConnections and quietly break presence.
+setInterval(() => {
+  for (const set of wsConnections.values()) {
+    for (const ws of set) {
+      if (ws.isAlive === false) {
+        ws.terminate();
+        continue;
+      }
+      ws.isAlive = false;
+      try {
+        ws.ping();
+      } catch (e) {}
+    }
+  }
+}, 30000).unref();
 
 // ---------- http helpers ----------
 
@@ -1347,6 +1690,183 @@ async function handleApi(req, res, pathname, query) {
     }
   }
 
+  // ---- AI: suggest a short social caption + hashtags for a Moment/Loop photo ----
+  // Same shape as analyze-book-photo above (auth, 503-if-unconfigured, rate
+  // limit, base64 validation, "final message is pure JSON" contract) but
+  // cheaper: no web_search tool, smaller max_tokens, higher rate limit. v1 is
+  // image-only - the client is expected to only offer this for photo
+  // captures (or a video's poster frame, if one is ever generated
+  // client-side); there is no server-side video frame extraction here.
+  if (method === "POST" && pathname === "/api/ai/suggest-caption") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!ANTHROPIC_API_KEY) return sendJson(res, 503, { error: "AI features are not configured on this server yet." });
+    // Cheaper than the book-photo analysis (no web search tool), so a
+    // higher hourly ceiling than "ai-photo:" is fine.
+    if (!checkRateLimit("ai-caption:" + me.id, 20, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many AI requests. Please try again in a bit." });
+    }
+
+    const body = await readBody(req);
+    const image = typeof body.image === "string" ? body.image : "";
+    const m = image.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/);
+    if (!m) return sendJson(res, 400, { error: "Please provide a JPEG, PNG, or WEBP photo." });
+    const [, mediaType, base64Data] = m;
+    if (base64Data.length > 8 * 1024 * 1024) {
+      return sendJson(res, 400, { error: "Photo is too large." });
+    }
+    const locale = body.locale === "es" ? "es" : "en";
+    const context = typeof body.context === "string" ? body.context.slice(0, 120) : "";
+
+    try {
+      const data = await callClaude({
+        model: "claude-sonnet-5",
+        max_tokens: 500,
+        system:
+          "You are a social caption writer for HieloIce, a marketplace and social app. " +
+          "You will be shown a photo" + (context ? " (" + context + ")" : "") + ". Write a short, engaging " +
+          "social caption for it - 1-2 sentences, casual and authentic in tone, the way a real person captions " +
+          "a photo on Instagram or TikTok, NOT a formal product description. Write it " +
+          (locale === "es" ? "in Spanish. " : "in English. ") +
+          "Also suggest 3-5 relevant hashtag words (no # symbol, just the words - the app will add the # itself). " +
+          "Your FINAL message must be ONLY a single JSON object, no markdown fences, no text before or after it, " +
+          'in this exact shape: {"caption": "...", "hashtags": ["...", "..."]}.',
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
+              { type: "text", text: "Write a short social caption and hashtags for this photo, and return the JSON." },
+            ],
+          },
+        ],
+      });
+      const textBlocks = Array.isArray(data.content) ? data.content.filter((b) => b.type === "text") : [];
+      const raw = textBlocks.length ? textBlocks[textBlocks.length - 1].text : "";
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI did not return JSON");
+      const parsed = JSON.parse(jsonMatch[0]);
+      const hashtags = Array.isArray(parsed.hashtags)
+        ? parsed.hashtags.filter((h) => typeof h === "string" && h.trim()).slice(0, 5).map((h) => h.trim().replace(/^#/, "").slice(0, 30))
+        : [];
+      return sendJson(res, 200, {
+        caption: String(parsed.caption || "").slice(0, 200),
+        hashtags,
+      });
+    } catch (e) {
+      console.error("AI caption suggestion failed:", e && e.message);
+      return sendJson(res, 502, { error: "AI could not suggest a caption right now. Please try again or write your own." });
+    }
+  }
+
+  // ---- AI: "auto-clip" - suggest the best highlight window for a video Moment ----
+  // MVP: no server-side video re-encoding/ffmpeg. The client samples ~6-8
+  // small frames evenly across the raw video (see wizard-ai-clip in app.js)
+  // and sends them here with their timestamps; Claude picks the single most
+  // engaging contiguous window for a short-form vertical video. The result
+  // is stored as trim_start_sec/trim_end_sec metadata on the moment (see
+  // POST /api/moments below) and enforced client-side at playback time
+  // (seek to the start, loop back once the end is reached) - never an
+  // actual cut file. Same shape as suggest-caption above (auth, 503-if-
+  // unconfigured, rate limit, "final message is pure JSON" contract).
+  if (method === "POST" && pathname === "/api/ai/suggest-clip") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!ANTHROPIC_API_KEY) return sendJson(res, 503, { error: "AI features are not configured on this server yet." });
+    // Similar budget to suggest-caption: a handful of small images, no web
+    // search tool.
+    if (!checkRateLimit("ai-clip:" + me.id, 20, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many AI requests. Please try again in a bit." });
+    }
+
+    const body = await readBody(req);
+    const durationSec = Number(body.durationSec);
+    if (!Number.isFinite(durationSec) || durationSec <= 0) {
+      return sendJson(res, 400, { error: "A valid video duration is required." });
+    }
+    const framesIn = Array.isArray(body.frames) ? body.frames : [];
+    if (!framesIn.length) return sendJson(res, 400, { error: "At least one sampled frame is required." });
+
+    const frames = [];
+    for (const f of framesIn.slice(0, 8)) {
+      const t = Number(f && f.t);
+      const fm = typeof (f && f.image) === "string" ? f.image.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/) : null;
+      if (!Number.isFinite(t) || !fm) continue;
+      const [, frameMediaType, base64Data] = fm;
+      if (base64Data.length > 2 * 1024 * 1024) continue; // frames are meant to be thumbnail-sized
+      frames.push({ t, mediaType: frameMediaType, base64Data });
+    }
+    if (!frames.length) return sendJson(res, 400, { error: "No valid frames were provided." });
+    frames.sort((a, b) => a.t - b.t);
+
+    const MIN_CLIP_SEC = 8;
+    const MAX_CLIP_SEC = 45;
+    const content = [];
+    frames.forEach((f) => {
+      content.push({ type: "text", text: "Frame at t=" + f.t.toFixed(1) + "s:" });
+      content.push({ type: "image", source: { type: "base64", media_type: f.mediaType, data: f.base64Data } });
+    });
+    content.push({
+      type: "text",
+      text:
+        "The video is " + durationSec.toFixed(1) + " seconds long in total. Based on these sampled frames, pick the " +
+        "single most engaging contiguous highlight window to publish as a short-form vertical video (think " +
+        "Reels/TikTok/Shorts hook quality - a strong opening moment, visual interest, and a natural stopping " +
+        "point). Return the JSON now.",
+    });
+
+    try {
+      const data = await callClaude({
+        model: "claude-sonnet-5",
+        max_tokens: 500,
+        system:
+          "You are a short-form video editor assistant for HieloIce, a marketplace and social app. You will be " +
+          "shown a handful of frames sampled evenly across a raw video clip, each labeled with its timestamp in " +
+          "seconds. Choose the best contiguous highlight window (startSec/endSec) to publish, between " + MIN_CLIP_SEC +
+          " and " + MAX_CLIP_SEC + " seconds long, fully within [0, " + durationSec.toFixed(1) + "]. Your FINAL " +
+          "message must be ONLY a single JSON object, no markdown fences, no text before or after it, in this " +
+          'exact shape: {"startSec": 0, "endSec": 0, "reason": "..."}. reason must be a short (under 140 ' +
+          "characters) plain-English explanation of why that window is the strongest highlight.",
+        messages: [{ role: "user", content }],
+      });
+      const textBlocks = Array.isArray(data.content) ? data.content.filter((b) => b.type === "text") : [];
+      const raw = textBlocks.length ? textBlocks[textBlocks.length - 1].text : "";
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI did not return JSON");
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      let startSec = Number(parsed.startSec);
+      let endSec = Number(parsed.endSec);
+      if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) throw new Error("AI returned an invalid window");
+      // Clamp (rather than reject) if the model overshoots slightly - be lenient here.
+      startSec = Math.max(0, Math.min(startSec, durationSec));
+      endSec = Math.max(0, Math.min(endSec, durationSec));
+      if (endSec <= startSec) throw new Error("AI returned an invalid window");
+      let clipLen = endSec - startSec;
+      if (clipLen < MIN_CLIP_SEC) {
+        endSec = Math.min(durationSec, startSec + MIN_CLIP_SEC);
+        clipLen = endSec - startSec;
+      }
+      if (clipLen > 60) {
+        endSec = startSec + 60;
+        clipLen = 60;
+      }
+      if (endSec > durationSec) {
+        endSec = durationSec;
+        startSec = Math.max(0, endSec - clipLen);
+      }
+
+      return sendJson(res, 200, {
+        startSec: Math.round(startSec * 10) / 10,
+        endSec: Math.round(endSec * 10) / 10,
+        reason: String(parsed.reason || "").slice(0, 140),
+      });
+    } catch (e) {
+      console.error("AI clip suggestion failed:", e && e.message);
+      return sendJson(res, 502, { error: "AI could not suggest a highlight clip right now. Please try again or use the full video." });
+    }
+  }
+
   // ---- AI: help assistant chatbot (replaces the old rule-based FAQ widget) ----
   if (method === "POST" && pathname === "/api/ai/chat") {
     if (!ANTHROPIC_API_KEY) return sendJson(res, 503, { error: "AI features are not configured on this server yet." });
@@ -1720,6 +2240,46 @@ async function handleApi(req, res, pathname, query) {
   }
 
   // ---- MESSAGES ----
+  //
+  // Message shape returned by shapeMessage() below - this is THE canonical
+  // shape used by GET /api/conversations/:id, the POST send response, and
+  // every WS "message:new" frame. Documented once here for the frontend:
+  //   {
+  //     id, fromUserId, toUserId,
+  //     text: string,                                // "" for an attachment-only message, or a deleted-for-everyone message
+  //     productId: string|null,                       // unchanged from before - optional link to a listing
+  //     replyToId: string|null,                        // soft reference to another message's id (not validated/FK'd - same convention as productId)
+  //     attachmentUrl: string|null, attachmentType: "image"|"video"|"audio"|null,
+  //     reactions: { [emoji]: string[] },              // e.g. { "👍": ["userId1","userId2"] } - userIds who reacted with that emoji
+  //     deleted: boolean,                               // true = "deleted for everyone" tombstone. When true, text/attachment*/reactions above are already cleared - render a placeholder ("This message was deleted"), don't rely on the client to hide content.
+  //     read: boolean, createdAt: number (epoch ms),
+  //   }
+  // Messages the CALLER deleted "for me" are simply absent from the list -
+  // no tombstone, they don't exist from that user's point of view.
+
+  function messageHiddenForUser(m, userId) {
+    const hiddenFor = Array.isArray(m.deleted_for_user_ids) ? m.deleted_for_user_ids : [];
+    return hiddenFor.includes(userId);
+  }
+
+  function shapeMessage(m) {
+    const deleted = !!m.deleted_for_everyone;
+    return {
+      id: m.id,
+      fromUserId: m.from_user_id,
+      toUserId: m.to_user_id,
+      text: deleted ? "" : m.text || "",
+      productId: m.product_id,
+      replyToId: deleted ? null : m.reply_to_id || null,
+      attachmentUrl: deleted ? null : m.attachment_url || null,
+      attachmentType: deleted ? null : m.attachment_type || null,
+      reactions: deleted ? {} : m.reactions || {},
+      deleted,
+      read: !!m.read,
+      createdAt: m.created_at,
+    };
+  }
+
   if (method === "GET" && pathname === "/api/conversations") {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -1727,7 +2287,7 @@ async function handleApi(req, res, pathname, query) {
       db.select("mkt_messages", { from_user_id: "eq." + enc(me.id), select: "*" }),
       db.select("mkt_messages", { to_user_id: "eq." + enc(me.id), select: "*" }),
     ]);
-    const messages = [...fromMe, ...toMe];
+    const messages = [...fromMe, ...toMe].filter((m) => !messageHiddenForUser(m, me.id));
 
     const byOther = {};
     for (const m of messages) {
@@ -1744,11 +2304,17 @@ async function handleApi(req, res, pathname, query) {
     const list = otherIds.map((otherId) => {
       const other = others.find((u) => u.id === otherId);
       const last = byOther[otherId];
+      const lastDeleted = !!last.deleted_for_everyone;
       return {
         userId: otherId,
         userName: other ? other.name : "Deleted user",
         userPhoto: other ? other.photo : null,
-        lastMessage: last.text,
+        // lastMessage is "" (not the deleted text) when lastMessageDeleted
+        // is true - render your own bilingual "message was deleted" label
+        // client-side, same tombstone convention as the full history below.
+        lastMessage: lastDeleted ? "" : last.text,
+        lastMessageDeleted: lastDeleted,
+        lastMessageAttachmentType: lastDeleted ? null : last.attachment_type || null,
         lastAt: last.created_at,
         unread: messages.some((m) => m.from_user_id === otherId && m.to_user_id === me.id && !m.read),
       };
@@ -1766,22 +2332,28 @@ async function handleApi(req, res, pathname, query) {
       db.select("mkt_messages", { from_user_id: "eq." + enc(me.id), to_user_id: "eq." + enc(otherId), select: "*" }),
       db.select("mkt_messages", { from_user_id: "eq." + enc(otherId), to_user_id: "eq." + enc(me.id), select: "*" }),
     ]);
-    const messages = [...sent, ...received].sort((a, b) => a.created_at - b.created_at);
+    const messages = [...sent, ...received]
+      .filter((m) => !messageHiddenForUser(m, me.id))
+      .sort((a, b) => a.created_at - b.created_at);
 
-    const unreadIds = received.filter((m) => !m.read).map((m) => m.id);
+    const unreadIds = received.filter((m) => !m.read && !messageHiddenForUser(m, me.id)).map((m) => m.id);
     if (unreadIds.length) {
       await db.update("mkt_messages", { id: "in.(" + unreadIds.map(enc).join(",") + ")" }, { read: true });
+      // Tell the sender (otherId) their message(s) were just read, live -
+      // no-op if they have no open socket right now.
+      wsSendToUser(otherId, {
+        type: "message:read",
+        conversationWith: me.id,
+        messageIds: unreadIds,
+        readAt: Date.now(),
+      });
     }
 
-    const out = messages.map((m) => ({
-      id: m.id,
-      fromUserId: m.from_user_id,
-      toUserId: m.to_user_id,
-      text: m.text,
-      productId: m.product_id,
-      read: unreadIds.includes(m.id) ? true : m.read,
-      createdAt: m.created_at,
-    }));
+    const out = messages.map((m) => {
+      const shaped = shapeMessage(m);
+      if (unreadIds.includes(m.id)) shaped.read = true;
+      return shaped;
+    });
     return sendJson(res, 200, out);
   }
 
@@ -1803,35 +2375,221 @@ async function handleApi(req, res, pathname, query) {
       }
     }
 
+    // Body: { text?: string, productId?: string, replyToId?: string,
+    //         attachmentUrl?: string, attachmentType?: "image"|"video"|"audio" }
+    // At least one of text / attachmentUrl is required (an attachment-only
+    // message, e.g. a photo or voice note with no caption, is valid -
+    // Instagram/WhatsApp/Messenger all allow this).
     const body = await readBody(req);
-    if (!body.text || !String(body.text).trim()) return sendJson(res, 400, { error: "Message text is required" });
+    const text = body.text ? String(body.text).trim().slice(0, 2000) : "";
+    const attachmentType = ["image", "video", "audio"].includes(body.attachmentType) ? body.attachmentType : null;
+    const attachmentUrl = body.attachmentUrl ? String(body.attachmentUrl).trim().slice(0, 1000) : null;
+    if (attachmentUrl && !attachmentType) {
+      return sendJson(res, 400, { error: "attachmentType is required when attachmentUrl is set" });
+    }
+    if (!text && !attachmentUrl) {
+      return sendJson(res, 400, { error: "Message text or attachment is required" });
+    }
 
     const message = {
       id: crypto.randomBytes(8).toString("hex"),
       from_user_id: me.id,
       to_user_id: otherId,
-      text: String(body.text).trim().slice(0, 2000),
+      text,
       product_id: body.productId || null,
+      reply_to_id: body.replyToId ? String(body.replyToId) : null, // soft reference, not validated - see productId above for precedent
+      attachment_url: attachmentUrl,
+      attachment_type: attachmentType,
+      reactions: {},
+      deleted_for_everyone: false,
+      deleted_for_user_ids: [],
       read: false,
       created_at: Date.now(),
     };
     await db.insert("mkt_messages", message);
+
+    const shaped = shapeMessage(message);
+    // Deliver instantly over WS to anyone with an open tab/device right now
+    // (both sides, so the sender's own other tabs also get it immediately).
+    wsSendToUser(otherId, { type: "message:new", message: shaped });
+    wsSendToUser(me.id, { type: "message:new", message: shaped });
+
+    // ...AND always fire the push notification too (same helper/category
+    // every other push in this app uses) - if the recipient has a live
+    // socket they'll just get both and the client is expected to dedupe by
+    // message id; if they don't, push is the only way they find out.
+    const pushBody =
+      text ||
+      (attachmentType === "audio" ? "🎤 Voice note" : attachmentType === "video" ? "🎥 Video" : attachmentType === "image" ? "📷 Photo" : "New message");
     notifyUser(otherId, "messages", {
       type: "message",
       tag: "message-" + me.id,
       title: (me.name || "Alguien") + " te envió un mensaje",
-      body: message.text,
+      body: pushBody,
       url: "/#/messages/" + me.id,
     }).catch(() => {});
-    return sendJson(res, 201, {
-      id: message.id,
-      fromUserId: message.from_user_id,
-      toUserId: message.to_user_id,
-      text: message.text,
-      productId: message.product_id,
-      read: message.read,
-      createdAt: message.created_at,
-    });
+
+    return sendJson(res, 201, shaped);
+  }
+
+  // Thin upload endpoint for chat attachments (images, video clips, voice
+  // notes). Deliberately NOT reusing /api/users/me/photos or the
+  // moments/loops upload code paths - those each carry feature-specific
+  // validation (video-length caps, own-listing checks, image-only, etc.)
+  // that doesn't apply here. This calls the exact same sbStorageUpload()
+  // helper everything else in the app uses - no new storage mechanism,
+  // just a different bucket path prefix ("chat/<conversationKey>/...").
+  //
+  // Request:  POST /api/messages/attachments
+  //   { "media": "data:<mime>;base64,<...>", "type": "image"|"video"|"audio", "conversationWith": "<otherUserId>" }
+  // Response: 200 { "url": "<public Storage URL>", "type": "image"|"video"|"audio" }
+  //
+  // Typical flow: upload here first to get `url`, then POST
+  // /api/conversations/:otherId with { attachmentUrl: url, attachmentType: type }.
+  if (method === "POST" && pathname === "/api/messages/attachments") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const type = body.type;
+    if (!["image", "video", "audio"].includes(type)) {
+      return sendJson(res, 400, { error: "type must be image, video, or audio" });
+    }
+    const media = body.media;
+    const match = typeof media === "string" && /^data:([^;]+);base64,/.exec(media);
+    if (!match) return sendJson(res, 400, { error: "A valid media data URL is required" });
+    const mimePrefix = { image: "image/", video: "video/", audio: "audio/" }[type];
+    if (!match[1].startsWith(mimePrefix)) {
+      return sendJson(res, 400, { error: "media MIME type doesn't match the declared type" });
+    }
+    const extByMime = {
+      "image/jpeg": ".jpg",
+      "image/png": ".png",
+      "image/webp": ".webp",
+      "image/gif": ".gif",
+      "video/mp4": ".mp4",
+      "video/webm": ".webm",
+      "video/quicktime": ".mov",
+      "audio/webm": ".webm",
+      "audio/mpeg": ".mp3",
+      "audio/mp4": ".m4a",
+      "audio/ogg": ".ogg",
+      "audio/wav": ".wav",
+    };
+    const ext = extByMime[match[1]] || (type === "image" ? ".jpg" : type === "video" ? ".mp4" : ".webm");
+    // Both directions of a conversation share one folder so an admin/DB
+    // browse of Storage shows a whole chat's media together.
+    const otherId = body.conversationWith ? String(body.conversationWith) : "misc";
+    const conversationKey = [me.id, otherId].sort().join("_");
+    let mediaUrl;
+    try {
+      mediaUrl = await sbStorageUpload("media", "chat/" + conversationKey + "/" + crypto.randomBytes(8).toString("hex") + ext, media);
+    } catch (e) {
+      return sendJson(res, 500, { error: "Could not upload attachment" });
+    }
+    return sendJson(res, 200, { url: mediaUrl, type });
+  }
+
+  // POST   /api/messages/:id/react   body { emoji: "👍" }  -> adds caller's userId to reactions[emoji]
+  // DELETE /api/messages/:id/react   body { emoji: "👍" }  -> removes caller's userId from reactions[emoji]
+  // Both respond 200 { id, reactions } with the FULL updated reactions map,
+  // and broadcast reaction:added / reaction:removed to both participants
+  // over WS (see the realtime chat section above for the exact frame shape).
+  const reactMatch = pathname.match(/^\/api\/messages\/([a-zA-Z0-9]+)\/react$/);
+  if ((method === "POST" || method === "DELETE") && reactMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const msgId = reactMatch[1];
+    const rows = await db.select("mkt_messages", { id: "eq." + enc(msgId), select: "*" });
+    const m = rows && rows[0];
+    if (!m) return sendJson(res, 404, { error: "Message not found" });
+    if (m.from_user_id !== me.id && m.to_user_id !== me.id) {
+      return sendJson(res, 403, { error: "Not part of this conversation" });
+    }
+    if (m.deleted_for_everyone) return sendJson(res, 400, { error: "This message was deleted" });
+
+    const body = await readBody(req);
+    const emoji = body.emoji ? String(body.emoji).slice(0, 8) : "";
+    if (!emoji) return sendJson(res, 400, { error: "emoji is required" });
+
+    const reactions = Object.assign({}, m.reactions || {});
+    const reactedUsers = new Set(reactions[emoji] || []);
+    if (method === "POST") {
+      reactedUsers.add(me.id);
+    } else {
+      reactedUsers.delete(me.id);
+    }
+    if (reactedUsers.size) {
+      reactions[emoji] = [...reactedUsers];
+    } else {
+      delete reactions[emoji]; // keep the map clean once an emoji has no reactors left
+    }
+    await db.update("mkt_messages", { id: "eq." + enc(msgId) }, { reactions });
+
+    const otherId = m.from_user_id === me.id ? m.to_user_id : m.from_user_id;
+    const payload = {
+      type: method === "POST" ? "reaction:added" : "reaction:removed",
+      messageId: msgId,
+      emoji,
+      userId: me.id,
+      reactions,
+    };
+    wsSendToUser(otherId, payload);
+    wsSendToUser(me.id, payload);
+
+    return sendJson(res, 200, { id: msgId, reactions });
+  }
+
+  // DELETE /api/messages/:id   body { mode: "forMe" | "forEveryone" }
+  //   "forMe": hides the message from the CALLER's own view only (added to
+  //     deleted_for_user_ids) - the other participant's view is untouched.
+  //     No WS broadcast to the other side (nothing changed for them); only
+  //     echoed back to the caller's own other sockets so their other tabs
+  //     hide it too.
+  //   "forEveryone": only the ORIGINAL SENDER (from_user_id) may do this.
+  //     The row is kept (not hard-deleted) but flagged
+  //     deleted_for_everyone=true with text/attachment_url/attachment_type/
+  //     reactions cleared server-side - so the content is actually gone
+  //     from every future API response, not just hidden client-side.
+  //     Broadcast to BOTH participants over WS as message:deleted.
+  const deleteMsgMatch = pathname.match(/^\/api\/messages\/([a-zA-Z0-9]+)$/);
+  if (method === "DELETE" && deleteMsgMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const msgId = deleteMsgMatch[1];
+    const rows = await db.select("mkt_messages", { id: "eq." + enc(msgId), select: "*" });
+    const m = rows && rows[0];
+    if (!m) return sendJson(res, 404, { error: "Message not found" });
+    if (m.from_user_id !== me.id && m.to_user_id !== me.id) {
+      return sendJson(res, 403, { error: "Not part of this conversation" });
+    }
+    const body = await readBody(req);
+    const mode = body.mode;
+    if (mode !== "forMe" && mode !== "forEveryone") {
+      return sendJson(res, 400, { error: 'mode must be "forMe" or "forEveryone"' });
+    }
+    const otherId = m.from_user_id === me.id ? m.to_user_id : m.from_user_id;
+
+    if (mode === "forEveryone") {
+      if (m.from_user_id !== me.id) {
+        return sendJson(res, 403, { error: "Only the sender can delete a message for everyone" });
+      }
+      await db.update(
+        "mkt_messages",
+        { id: "eq." + enc(msgId) },
+        { deleted_for_everyone: true, text: "", attachment_url: null, attachment_type: null, reactions: {} }
+      );
+      const payload = { type: "message:deleted", messageId: msgId, mode: "forEveryone", conversationWith: otherId };
+      wsSendToUser(otherId, payload);
+      wsSendToUser(me.id, payload);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // mode === "forMe"
+    const hidden = new Set(Array.isArray(m.deleted_for_user_ids) ? m.deleted_for_user_ids : []);
+    hidden.add(me.id);
+    await db.update("mkt_messages", { id: "eq." + enc(msgId) }, { deleted_for_user_ids: [...hidden] });
+    wsSendToUser(me.id, { type: "message:deleted", messageId: msgId, mode: "forMe", conversationWith: otherId });
+    return sendJson(res, 200, { ok: true });
   }
 
   // ---- USER PHOTOS (gallery) ----
@@ -2106,6 +2864,28 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { blocked: !!(rows && rows[0]) });
   }
 
+  // GET /api/users/:id/presence -> { online: boolean, lastSeenAt: number|null }
+  // Part of task #233 (chat). "online" is true if the user has at least one
+  // open WebSocket right now (see isUserOnline/wsConnections in the
+  // realtime chat section above), OR their last_seen_at was within the
+  // last 60 seconds - that window absorbs brief reconnects/tab-switches/
+  // network blips without the badge visibly flapping offline/online, while
+  // still going stale quickly if they've actually left. lastSeenAt is
+  // always returned (even while online) so the client can show "Active
+  // Xm ago" once online flips false, Instagram/Messenger-style.
+  const presenceMatch = pathname.match(/^\/api\/users\/([a-zA-Z0-9]+)\/presence$/);
+  if (method === "GET" && presenceMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const targetId = presenceMatch[1];
+    const users = await db.select("mkt_users", { id: "eq." + enc(targetId), select: "id,last_seen_at" });
+    if (!users || !users[0]) return sendJson(res, 404, { error: "User not found" });
+    const lastSeenAt = users[0].last_seen_at || null;
+    const PRESENCE_WINDOW_MS = 60000;
+    const online = isUserOnline(targetId) || !!(lastSeenAt && Date.now() - lastSeenAt < PRESENCE_WINDOW_MS);
+    return sendJson(res, 200, { online, lastSeenAt });
+  }
+
   // ---- FOLLOW (one-directional, only for "Public Page" accounts - separate from friends) ----
 
   // Subscribing to a Page sends a request that stays "pending" until the
@@ -2277,10 +3057,33 @@ async function handleApi(req, res, pathname, query) {
     );
   }
 
+  // Task #240/#242 - Book Club is a specialized flavor of the existing
+  // Communities groups system (not a parallel table): is_book_club just
+  // marks a group so the frontend can route it into the Book Club UI, and
+  // video_room_name/book_title/book_product_id/author_pick_* are nullable
+  // extras only book-club groups use. Regular Communities groups are
+  // unaffected (is_book_club defaults false).
   function groupOut(g) {
-    const { created_by, created_at, ...rest } = g;
-    return { ...rest, createdBy: created_by, createdAt: created_at };
+    const { created_by, created_at, is_book_club, video_room_name, book_title, book_product_id, author_pick_status, author_pick_agreed_at, ...rest } = g;
+    return {
+      ...rest,
+      createdBy: created_by,
+      createdAt: created_at,
+      isBookClub: !!is_book_club,
+      videoRoomName: video_room_name || null,
+      bookTitle: book_title || null,
+      bookProductId: book_product_id || null,
+      authorPickStatus: author_pick_status || "not_available",
+      authorPickAgreedAt: author_pick_agreed_at || null,
+    };
   }
+
+  // Task #242 - flip this to true (and wire up a real terms-of-participation
+  // agreement) once Carlos has finalized the legal side of the "Pick of the
+  // Month" author-rights program. Until then the UI for it stays visible
+  // (so the space is ready) but shows a "coming soon" locked state instead
+  // of a working submit action - see GET /api/book-club/config below.
+  const AUTHOR_PICK_PROGRAM_ENABLED = false;
 
   function groupPostOut(p) {
     const { group_id, author_id, post_type, created_at, ...rest } = p;
@@ -2297,6 +3100,7 @@ async function handleApi(req, res, pathname, query) {
     let slug = slugify(body.name);
     const existing = await db.select("mkt_groups", { slug: "eq." + enc(slug), select: "id" });
     if (existing && existing[0]) slug = slug + "-" + crypto.randomBytes(3).toString("hex");
+    const isBookClub = body.isBookClub === true || body.isBookClub === "true";
     const group = {
       id: crypto.randomBytes(8).toString("hex"),
       slug,
@@ -2306,19 +3110,62 @@ async function handleApi(req, res, pathname, query) {
       description: String(body.description || "").slice(0, 1000),
       created_by: me.id,
       created_at: Date.now(),
+      is_book_club: isBookClub,
+      // Task #240 - book title is the whole point of a book-club group (what
+      // you're discussing); bookProductId optionally links it to one of the
+      // seller's own mkt_products listings so readers can jump straight to
+      // buying the copy being discussed. Both are ignored for a plain
+      // Communities group (isBookClub false).
+      book_title: isBookClub ? String(body.bookTitle || "").trim().slice(0, 200) || null : null,
+      book_product_id: isBookClub && body.bookProductId ? String(body.bookProductId) : null,
     };
     await db.insert("mkt_groups", group);
     return sendJson(res, 201, groupOut(group));
   }
 
   if (method === "GET" && pathname === "/api/groups") {
-    const { category, city, q } = query;
+    const { category, city, q, bookClub } = query;
     const params = { select: "*", order: "created_at.desc" };
     if (category) params.category = "eq." + enc(category);
     if (city) params.city = "ilike.*" + enc(city) + "*";
     if (q) params.name = "ilike.*" + enc(q) + "*";
+    // Task #240 - Book Club and Communities are the same underlying table,
+    // split purely by this flag so the two sections never bleed into each
+    // other's listings.
+    if (bookClub === "true") params.is_book_club = "eq.true";
+    else if (bookClub === "false") params.is_book_club = "eq.false";
     const groups = await db.select("mkt_groups", params);
     return sendJson(res, 200, groups.map(groupOut));
+  }
+
+  // GET /api/book-club/config - lets the frontend know whether the "Pick of
+  // the Month" author-rights program (task #242) is live yet. See
+  // AUTHOR_PICK_PROGRAM_ENABLED above for how this gets turned on.
+  if (method === "GET" && pathname === "/api/book-club/config") {
+    return sendJson(res, 200, { authorPickEnabled: AUTHOR_PICK_PROGRAM_ENABLED });
+  }
+
+  // POST /api/groups/:slug/video-room - lazily creates (once) and returns a
+  // Jitsi Meet room name for this group's video call. Jitsi's public
+  // meet.jit.si server needs no API key/account and is free to embed, so
+  // this works today without waiting on Carlos to set up a paid provider
+  // (Daily.co/Twilio/Agora) - see PROJECT.md for the trade-off if a more
+  // branded/controlled experience is wanted later. The room name is
+  // randomized once and reused by everyone in the group, not regenerated
+  // per-call, so members always land in the same room.
+  const groupVideoRoomMatch = pathname.match(/^\/api\/groups\/([a-zA-Z0-9-]+)\/video-room$/);
+  if (method === "POST" && groupVideoRoomMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_groups", { slug: "eq." + enc(groupVideoRoomMatch[1]), select: "*" });
+    const g = rows && rows[0];
+    if (!g) return sendJson(res, 404, { error: "Group not found" });
+    let roomName = g.video_room_name;
+    if (!roomName) {
+      roomName = "hieloice-" + g.slug + "-" + crypto.randomBytes(4).toString("hex");
+      await db.update("mkt_groups", { id: "eq." + enc(g.id) }, { video_room_name: roomName });
+    }
+    return sendJson(res, 200, { videoRoomName: roomName });
   }
 
   const groupMatch = pathname.match(/^\/api\/groups\/([a-zA-Z0-9-]+)$/);
@@ -2458,7 +3305,7 @@ async function handleApi(req, res, pathname, query) {
   // column soon, and re-adding a dropped column is wasted churn.
 
   function momentOut(m) {
-    const { user_id, media_url, media_type, created_at, expires_at, repost_of, ...rest } = m;
+    const { user_id, media_url, media_type, created_at, expires_at, repost_of, trim_start_sec, trim_end_sec, title, linked_product_id, is_long_video, overlay_json, ...rest } = m;
     return {
       ...rest,
       userId: user_id,
@@ -2467,7 +3314,57 @@ async function handleApi(req, res, pathname, query) {
       createdAt: created_at,
       expiresAt: expires_at,
       repostOf: repost_of || null,
+      // AI auto-clip trim window (task #160) - both null means "play the
+      // whole thing". See wireMomentTrimLoop() in app.js for the client-side
+      // bounded-loop playback that enforces this.
+      trimStartSec: trim_start_sec != null ? Number(trim_start_sec) : null,
+      trimEndSec: trim_end_sec != null ? Number(trim_end_sec) : null,
+      // Long-form "Videos" hub (task #231) - title is only ever set for
+      // long videos (short-form Moments don't have one); linkedProductId is
+      // an optional, unenforced cross-reference to one of the poster's own
+      // mkt_products rows (same "plain text id, no FK constraint" style as
+      // repost_of above) so a video can double as a review/demo on a
+      // listing's page without requiring one.
+      title: title || null,
+      linkedProductId: linked_product_id || null,
+      isLongVideo: !!is_long_video,
+      // Text/sticker overlay metadata (task #204) - only ever set for VIDEO
+      // captures (photo overlays are baked directly into the JPEG pixels
+      // client-side before upload, so they never need this). Rendered as an
+      // absolutely-positioned HTML layer on top of the <video> wherever one
+      // plays - see renderMediaOverlayLayer() in app.js.
+      overlays: Array.isArray(overlay_json) ? overlay_json : [],
     };
+  }
+
+  // Task #204 - server-side allowlist/clamp for overlay metadata coming from
+  // the create wizard, applied before it's ever written to mkt_moments.
+  // Caps the list length and each field's size/range so a malicious client
+  // can't stuff arbitrarily large or malformed data into overlay_json.
+  function sanitizeOverlayList(raw) {
+    if (!Array.isArray(raw) || !raw.length) return null;
+    const out = raw
+      .slice(0, 20)
+      .map((ov) => {
+        if (!ov || typeof ov !== "object") return null;
+        const value = String(ov.value || "").slice(0, 60);
+        if (!value) return null;
+        const type = ov.type === "sticker" ? "sticker" : "text";
+        const size = ov.size === "sm" || ov.size === "lg" ? ov.size : "md";
+        const xPct = Number(ov.xPct);
+        const yPct = Number(ov.yPct);
+        const entry = {
+          type,
+          value,
+          size,
+          xPct: Number.isFinite(xPct) ? Math.max(0, Math.min(100, xPct)) : 50,
+          yPct: Number.isFinite(yPct) ? Math.max(0, Math.min(100, yPct)) : 50,
+        };
+        if (type === "text") entry.color = typeof ov.color === "string" ? ov.color.slice(0, 20) : "#FFD84D";
+        return entry;
+      })
+      .filter(Boolean);
+    return out.length ? out : null;
   }
 
   // Decorates a list of already-momentOut()'d moments in place with
@@ -2508,16 +3405,54 @@ async function handleApi(req, res, pathname, query) {
     // handful of "active" ones no longer makes sense. The per-IP rate limit
     // above still guards against spam/abuse.
     const body = await readBody(req);
+    // Long-form "Videos" hub (task #231) - the create wizard signals a
+    // long-form upload with target:"video" in the payload, the same idiom
+    // openCreateWizard()/drawCreateWizard() already use client-side to pick
+    // which endpoint/shape to post (see the "loop" target for /api/loops).
+    // Everything else about the row is a normal mkt_moments insert; only
+    // the duration cap, the required title, and the optional product link
+    // differ from a regular Moment.
+    const isLongVideo = body.target === "video";
     const mediaType = body.mediaType === "video" ? "video" : "image";
     const prefix = mediaType === "video" ? "data:video/" : "data:image/";
     if (!body.media || typeof body.media !== "string" || !body.media.startsWith(prefix)) {
       return sendJson(res, 400, { error: "Valid media is required" });
     }
+    if (isLongVideo && mediaType !== "video") {
+      return sendJson(res, 400, { error: "Videos must be a video file." });
+    }
+    let title = null;
+    if (isLongVideo) {
+      title = String(body.title || "").trim().slice(0, 120);
+      if (!title) return sendJson(res, 400, { error: "A title is required for videos." });
+    }
+    const maxVideoSeconds = isLongVideo ? MAX_LONG_VIDEO_SECONDS : MAX_MOMENT_VIDEO_SECONDS;
     if (mediaType === "video" && body.durationSeconds !== undefined) {
       const dur = Number(body.durationSeconds);
-      if (dur && dur > MAX_MOMENT_VIDEO_SECONDS) {
-        return sendJson(res, 400, { error: "Videos can be at most " + MAX_MOMENT_VIDEO_SECONDS / 60 + " minutes long." });
+      if (dur && dur > maxVideoSeconds) {
+        return sendJson(res, 400, {
+          error: isLongVideo
+            ? "Videos can be at most " + Math.round(MAX_LONG_VIDEO_SECONDS / 60) + " minutes long."
+            : "Videos can be at most " + MAX_MOMENT_VIDEO_SECONDS / 60 + " minutes long.",
+        });
       }
+    }
+    // Optional link to one of the poster's OWN listings (any category, not
+    // book-specific) - task #231 explicitly scopes this to the owner's own
+    // products only, not third-party review tooling. Silently ignored if
+    // missing/not-owned would hide a mistake from the client, so this
+    // rejects instead of dropping it.
+    let linkedProductId = null;
+    if (isLongVideo && body.linkedProductId) {
+      const ownProducts = await db.select("mkt_products", {
+        id: "eq." + enc(body.linkedProductId),
+        seller_id: "eq." + enc(me.id),
+        select: "id",
+      });
+      if (!ownProducts || !ownProducts[0]) {
+        return sendJson(res, 400, { error: "You can only link a video to your own listing." });
+      }
+      linkedProductId = body.linkedProductId;
     }
     const ext = mediaType === "video" ? ".mp4" : ".jpg";
     let mediaUrl;
@@ -2526,6 +3461,25 @@ async function handleApi(req, res, pathname, query) {
     } catch (e) {
       return sendJson(res, 500, { error: "Could not upload moment" });
     }
+    // AI auto-clip trim window (task #160, optional) - only meaningful for
+    // videos. Stored as plain metadata (no server-side re-encoding); null
+    // means "play the whole thing". See POST /api/ai/suggest-clip above and
+    // wireMomentTrimLoop() in app.js.
+    let trimStartSec = null;
+    let trimEndSec = null;
+    if (mediaType === "video" && body.trimStartSec !== undefined && body.trimEndSec !== undefined && body.trimStartSec !== null && body.trimEndSec !== null) {
+      const ts = Number(body.trimStartSec);
+      const te = Number(body.trimEndSec);
+      if (Number.isFinite(ts) && Number.isFinite(te) && ts >= 0 && te > ts) {
+        trimStartSec = ts;
+        trimEndSec = te;
+      }
+    }
+    // Text/sticker overlay metadata (task #204, video only - photo overlays
+    // are baked into the JPEG client-side before upload and never sent
+    // here). sanitizeOverlayList() clamps/allowlists every field so this
+    // never trusts the client's shape/size directly.
+    const overlayJson = mediaType === "video" ? sanitizeOverlayList(body.overlays) : null;
     const now = Date.now();
     const moment = {
       id: crypto.randomBytes(8).toString("hex"),
@@ -2535,6 +3489,12 @@ async function handleApi(req, res, pathname, query) {
       caption: String(body.caption || "").slice(0, 300),
       created_at: now,
       expires_at: now + 24 * 60 * 60 * 1000,
+      trim_start_sec: trimStartSec,
+      trim_end_sec: trimEndSec,
+      title,
+      linked_product_id: linkedProductId,
+      is_long_video: isLongVideo,
+      overlay_json: overlayJson,
     };
     await db.insert("mkt_moments", moment);
     return sendJson(res, 201, momentOut(moment));
@@ -2585,6 +3545,13 @@ async function handleApi(req, res, pathname, query) {
       user_id: "in.(" + userIds.map(enc).join(",") + ")",
       // No expires_at filter - Moments are permanent now, so every
       // non-deleted moment from these users is included.
+      // is_long_video=eq.false - long-form Videos hub uploads (task #231)
+      // live in this same table but never belong in the short-form scroll
+      // feed; they have their own GET /api/videos/feed. This is a
+      // deliberate product decision, not an oversight - short-form passive
+      // scroll and long-form active search are different mental modes and
+      // must stay visually/contextually separate.
+      is_long_video: "eq.false",
       order: "created_at.asc",
       select: "*",
     });
@@ -2657,6 +3624,11 @@ async function handleApi(req, res, pathname, query) {
       // No expires_at filter - Moments are permanent now, so the pool of
       // candidates is every moment on the platform (bounded by the limit
       // below), not just ones posted in the last 24h.
+      // is_long_video=eq.false - this backs the short-form swipe feed
+      // (#/clips) - see the identical exclusion + comment on GET
+      // /api/moments/feed above. Long videos belong in GET /api/videos/feed
+      // instead (task #231).
+      is_long_video: "eq.false",
       order: "created_at.desc",
       select: "*",
       limit: "200",
@@ -3002,6 +3974,24 @@ async function handleApi(req, res, pathname, query) {
   }
 
   const momentMatch = pathname.match(/^\/api\/moments\/([a-zA-Z0-9]+)$/);
+  // Single-moment fetch, public (no auth required) - added for the Videos
+  // hub watch page (task #231, GET /#/videos/:id), which needs to load one
+  // specific moment by id directly (e.g. from a shared link) rather than
+  // finding it inside a feed page. Works for any moment, short or long form.
+  if (method === "GET" && momentMatch) {
+    const rows = await db.select("mkt_moments", { id: "eq." + enc(momentMatch[1]), select: "*" });
+    const m = rows && rows[0];
+    if (!m) return sendJson(res, 404, { error: "Moment not found" });
+    const authorRows = await db.select("mkt_users", { id: "eq." + enc(m.user_id), select: "id,name,photo,is_page" });
+    const author = authorRows && authorRows[0];
+    const out = momentOut(m);
+    out.userName = author ? author.name : "Unknown";
+    out.userPhoto = author ? author.photo : null;
+    out.isPage = !!(author && author.is_page);
+    const me = await getAuthUser(req);
+    await attachMomentEngagement([out], me ? me.id : null);
+    return sendJson(res, 200, out);
+  }
   if (method === "DELETE" && momentMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -3011,6 +4001,76 @@ async function handleApi(req, res, pathname, query) {
     if (m.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this moment" });
     await db.remove("mkt_moments", { id: "eq." + enc(m.id) });
     return sendJson(res, 200, { ok: true });
+  }
+
+  // ---- VIDEOS (long-form video hub, task #231 - "Videos", plain and
+  // general-purpose, NOT limited to book reviews and NOT named after any
+  // other platform's short-form feature). Every long video is just an
+  // mkt_moments row with is_long_video=true, a title, and an optional
+  // linked_product_id - see POST /api/moments above (target:"video") and
+  // momentOut() for the shape. This section only adds the two read
+  // endpoints the Videos hub needs on top of that; like/save/comment/delete
+  // all reuse the existing /api/moments/:id/... endpoints unchanged, since
+  // these rows really are moments under the hood. ----
+
+  // Reverse-chronological "home" feed for the Videos hub - deliberately
+  // simple (no ranking algorithm) for MVP, unlike the Moments v2 feed.
+  // Works for guests too (like/saved just come back false) so the section
+  // is always browsable, matching how the rest of the app treats browsing
+  // vs. the auth-gated write actions.
+  if (method === "GET" && pathname === "/api/videos/feed") {
+    const me = await getAuthUser(req);
+    const limitNum = Math.min(60, Math.max(1, Number(query.limit) || 30));
+    const offsetNum = Math.max(0, Number(query.offset) || 0);
+    const videos = await db.select("mkt_moments", {
+      is_long_video: "eq.true",
+      order: "created_at.desc",
+      select: "*",
+      limit: String(limitNum),
+      offset: String(offsetNum),
+    });
+    if (!videos.length) return sendJson(res, 200, []);
+    const authorIds = [...new Set(videos.map((v) => v.user_id))];
+    const authors = await db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,photo,is_page" });
+    const out = videos.map((v) => {
+      const author = authors.find((a) => a.id === v.user_id);
+      return {
+        ...momentOut(v),
+        userName: author ? author.name : "Unknown",
+        userPhoto: author ? author.photo : null,
+        isPage: !!(author && author.is_page),
+      };
+    });
+    await attachMomentEngagement(out, me ? me.id : null);
+    return sendJson(res, 200, out);
+  }
+
+  // Long videos linked to a given product listing - rendered as a "Related
+  // videos" strip on that product's detail page. Public (no auth required),
+  // same as the product detail endpoint itself.
+  const videosByProductMatch = pathname.match(/^\/api\/videos\/by-product\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && videosByProductMatch) {
+    const me = await getAuthUser(req);
+    const videos = await db.select("mkt_moments", {
+      is_long_video: "eq.true",
+      linked_product_id: "eq." + enc(videosByProductMatch[1]),
+      order: "created_at.desc",
+      select: "*",
+    });
+    if (!videos.length) return sendJson(res, 200, []);
+    const authorIds = [...new Set(videos.map((v) => v.user_id))];
+    const authors = await db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,photo,is_page" });
+    const out = videos.map((v) => {
+      const author = authors.find((a) => a.id === v.user_id);
+      return {
+        ...momentOut(v),
+        userName: author ? author.name : "Unknown",
+        userPhoto: author ? author.photo : null,
+        isPage: !!(author && author.is_page),
+      };
+    });
+    await attachMomentEngagement(out, me ? me.id : null);
+    return sendJson(res, 200, out);
   }
 
   // ---- LOOPS (genuinely ephemeral 24h stories, Instagram/FB-Stories-style) ----
@@ -3822,6 +4882,22 @@ const server = http.createServer(async (req, res) => {
   }
 
   sendJson(res, 405, { error: "Method not allowed" });
+});
+
+// Attach the chat WebSocket server (see "realtime chat" section above) to
+// this SAME http.Server/port - Render only exposes one port per service, so
+// this deliberately reuses the existing server instance rather than
+// listening separately. Any upgrade request to a path other than /ws (i.e.
+// everything else) is left alone/destroyed, never handled here.
+server.on("upgrade", (req, socket, head) => {
+  const pathname = url.parse(req.url).pathname;
+  if (pathname !== WS_PATH) {
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, req);
+  });
 });
 
 // Reminder sweep: nudge sellers whose listing has been "reserved" for 3+ days.
