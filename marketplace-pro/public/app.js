@@ -665,6 +665,19 @@ function updateGlobalSearchPlaceholder() {
       e.stopPropagation();
       const willOpen = postDropdown.style.display !== "block";
       closeAllDropdowns();
+      if (willOpen) {
+        // The dropdown lives inside .topbar-nav, which now scrolls
+        // horizontally (task: "never wraps to a second row"). Setting
+        // overflow-x on an element also forces its overflow-y to behave as
+        // "auto" per the CSS spec, which silently clips any absolutely-
+        // positioned child that pokes out below the row - so the menu was
+        // opening (display:block) but invisible. Anchoring it with
+        // position:fixed at click time, computed from the button's real
+        // screen position, escapes that clipping entirely.
+        const rect = postBtn.getBoundingClientRect();
+        postDropdown.style.top = rect.bottom + 6 + "px";
+        postDropdown.style.left = rect.left + "px";
+      }
       postDropdown.style.display = willOpen ? "block" : "none";
     });
     postDropdown.addEventListener("click", (e) => e.stopPropagation());

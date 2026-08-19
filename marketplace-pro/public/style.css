@@ -273,6 +273,13 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .nav-post-btn:hover { color: var(--gold-text-on); background: color-mix(in srgb, var(--gold) 85%, black); }
 .nav-post-dropdown-wrap { position: relative; flex: 0 0 auto; }
 .nav-post-dropdown-wrap .nav-post-btn { border: none; font: inherit; cursor: pointer; }
+/* .topbar-nav scrolls horizontally (overflow-x: auto) so it never wraps to
+   a second row; per the CSS spec that also forces overflow-y to behave as
+   "auto", which would clip this dropdown's normal position:absolute/top:100%
+   placement since it renders below the row. Fixed positioning (with top/left
+   set in JS at click time - see wireIconNav in app.js) escapes that clipping
+   entirely by anchoring to the viewport instead of the scrolling row. */
+#nav-post-dropdown { position: fixed; top: auto; left: auto; transform: none; }
 
 /* On narrow phones, shrink the text/padding/gaps a bit so the row reads as
    one clean line instead of relying on horizontal scroll as much. */
