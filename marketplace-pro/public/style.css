@@ -253,6 +253,24 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .nav-post-btn:hover { color: var(--gold-text-on); background: color-mix(in srgb, var(--gold) 85%, black); }
 
+/* On narrow phones, "Profile", "Messages", "PUBLISH A BOOK" 📖 🔔 no longer
+   fit on one line at the base sizing and the bell would wrap to a second
+   row. Shrink text/padding/gaps here, and keep everything on a single row
+   (scrolling sideways in the rare case it's still too tight) instead of
+   letting it wrap awkwardly. */
+@media (max-width: 480px) {
+  .topbar-nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 8px;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .topbar-nav::-webkit-scrollbar { display: none; }
+  .topbar-nav .nav-link { flex: 0 0 auto; white-space: nowrap; font-size: 12.5px; }
+  .topbar-nav .nav-post-btn { padding: 6px 9px; }
+}
+
 .nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; margin-left: 5px; border-radius: 8px; background: var(--gold); color: var(--gold-text-on); font-size: 10px; font-weight: 800; vertical-align: middle; }
 
 .lang-toggle { display: flex; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
