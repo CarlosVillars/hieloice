@@ -3436,7 +3436,7 @@ async function getPublishBookConfig() {
 }
 
 function publishBookStatusBadge(status) {
-  const cls = { draft: "", needs_revision: "warn", team_review: "pending", approved_pending_legal: "approved", rejected: "rejected" }[status] || "";
+  const cls = { draft: "", needs_revision: "warn", team_review: "pending", approved_pending_legal: "approved", published: "approved", rejected: "rejected" }[status] || "";
   return `<span class="publishbook-status publishbook-status-${cls || "draft"}">${I18N.t("publishBook.status." + status)}</span>`;
 }
 
@@ -3468,30 +3468,58 @@ async function renderPublishBookHome() {
         .join("")}</div>`
     : `<div class="empty-state">${I18N.t("publishBook.empty")}</div>`;
 
+  const steps = [
+    { emoji: "&#9997;&#65039;", title: I18N.t("publishBook.howStep1Title"), body: I18N.t("publishBook.howStep1Body") },
+    { emoji: "&#129302;", title: I18N.t("publishBook.howStep2Title"), body: I18N.t("publishBook.howStep2Body") },
+    { emoji: "&#128101;", title: I18N.t("publishBook.howStep3Title"), body: I18N.t("publishBook.howStep3Body") },
+    { emoji: "&#127942;", title: I18N.t("publishBook.howStep4Title"), body: I18N.t("publishBook.howStep4Body") },
+  ];
+
   viewEl.innerHTML = `
-    <h2 class="section-heading">&#9997;&#65039; ${I18N.t("publishBook.heading")}</h2>
-    <p class="groups-subtitle">${I18N.t("publishBook.subtitle")}</p>
-    <div class="publishbook-intro">
-      <p class="publishbook-intro-title">${I18N.t("publishBook.introTitle")}</p>
-      <p>${I18N.t("publishBook.introBody")}</p>
+    <div class="publishbook-hero">
+      <p class="publishbook-hero-eyebrow">${I18N.t("publishBook.eyebrow")}</p>
+      <h2 class="publishbook-hero-title">${I18N.t("publishBook.heading")}</h2>
+      <p class="publishbook-hero-subtitle">${I18N.t("publishBook.subtitle")}</p>
       ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+      <button type="button" class="btn btn-primary publishbook-hero-cta" id="publishbook-new-btn">${I18N.t("publishBook.newBook")}</button>
     </div>
-    <button type="button" class="btn btn-primary" id="publishbook-new-btn">+ ${I18N.t("publishBook.newBook")}</button>
-    <form id="publishbook-new-form" class="stacked-form" style="display:none; margin-top:12px;">
+
+    <h3 class="publishbook-how-heading">${I18N.t("publishBook.howHeading")}</h3>
+    <div class="publishbook-how-grid">
+      ${steps
+        .map(
+          (s, i) => `
+        <div class="publishbook-how-card">
+          <span class="publishbook-how-num">${i + 1}</span>
+          <p class="publishbook-how-emoji">${s.emoji}</p>
+          <p class="publishbook-how-title">${s.title}</p>
+          <p class="publishbook-how-body">${s.body}</p>
+        </div>`
+        )
+        .join("")}
+    </div>
+
+    <form id="publishbook-new-form" class="stacked-form publishbook-new-form" style="display:none;">
+      <h3 class="publishbook-chapters-heading">${I18N.t("publishBook.newBook")}</h3>
       <label>${I18N.t("publishBook.titleLabel")}<input type="text" name="title" required maxlength="200" /></label>
       <label>${I18N.t("publishBook.genreLabel")}<input type="text" name="genre" maxlength="60" placeholder="${I18N.t("publishBook.genrePlaceholder")}" /></label>
       <label>${I18N.t("publishBook.synopsisLabel")}<textarea name="synopsis" maxlength="2000" placeholder="${I18N.t("publishBook.synopsisPlaceholder")}"></textarea></label>
       <button type="submit" class="btn btn-primary">${I18N.t("publishBook.createSubmit")}</button>
       <p class="form-msg" id="publishbook-new-msg"></p>
     </form>
-    <div style="margin-top:20px;">${worksHtml}</div>
+
+    ${works.length ? `<h3 class="publishbook-chapters-heading">${I18N.t("publishBook.yourBooks")}</h3>` : ""}
+    <div style="margin-top:8px;">${worksHtml}</div>
   `;
 
   const newBtn = document.getElementById("publishbook-new-btn");
   const newForm = document.getElementById("publishbook-new-form");
   if (newBtn && newForm) {
     newBtn.addEventListener("click", () => {
-      newForm.style.display = newForm.style.display === "none" ? "block" : "none";
+      newForm.style.display = "block";
+      newForm.scrollIntoView({ behavior: "smooth", block: "center" });
+      const titleInput = newForm.querySelector('[name="title"]');
+      if (titleInput) titleInput.focus();
     });
     newForm.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -3541,60 +3569,100 @@ async function renderPublishBookEditor(id) {
     statusNoteHtml = `<p class="publishbook-status-note">${escapeHtml(work.teamDecisionNotes)}</p>`;
   }
 
-  const chaptersHtml = chapters
-    .map(
-      (c, i) => `
+  function chapterBlockHtml(c, i) {
+    return `
     <div class="publishbook-chapter" data-chapter="${i}">
       <div class="publishbook-chapter-head">
         <input type="text" class="publishbook-chapter-title" value="${escapeHtml(c.title || "")}" placeholder="${I18N.t("publishBook.chapterTitlePlaceholder")} ${i + 1}" ${editable ? "" : "disabled"} />
-        ${editable && chapters.length > 1 ? `<button type="button" class="publishbook-chapter-remove" data-remove-chapter="${i}" aria-label="${I18N.t("common.cancel")}">&times;</button>` : ""}
+        ${editable ? `<button type="button" class="publishbook-chapter-remove" data-remove-chapter aria-label="${I18N.t("common.cancel")}">&times;</button>` : ""}
       </div>
       <textarea class="publishbook-chapter-content" rows="8" placeholder="${I18N.t("publishBook.chapterContentPlaceholder")}" ${editable ? "" : "disabled"}>${escapeHtml(c.content || "")}</textarea>
       ${
         editable
-          ? `<button type="button" class="btn btn-secondary publishbook-ai-btn" data-ai-chapter="${i}">&#129302; ${I18N.t("publishBook.askAi")}</button>
-      <div class="publishbook-ai-panel" id="publishbook-ai-panel-${i}" style="display:none;">
+          ? `<button type="button" class="btn btn-secondary publishbook-ai-btn" data-ai-toggle>&#129302; ${I18N.t("publishBook.askAi")}</button>
+      <div class="publishbook-ai-panel" data-ai-panel style="display:none;">
         <input type="text" class="publishbook-ai-instruction" placeholder="${I18N.t("publishBook.aiInstructionPlaceholder")}" />
-        <button type="button" class="btn btn-primary publishbook-ai-go" data-ai-go="${i}">${I18N.t("publishBook.aiGo")}</button>
-        <p class="form-msg" id="publishbook-ai-msg-${i}"></p>
-        <div class="publishbook-ai-suggestion" id="publishbook-ai-suggestion-${i}" style="display:none;">
+        <button type="button" class="btn btn-primary" data-ai-go>${I18N.t("publishBook.aiGo")}</button>
+        <p class="form-msg" data-ai-msg></p>
+        <div class="publishbook-ai-suggestion" data-ai-suggestion style="display:none;">
           <p class="publishbook-ai-suggestion-text"></p>
-          <button type="button" class="btn btn-primary publishbook-ai-insert" data-ai-insert="${i}">${I18N.t("publishBook.aiInsert")}</button>
+          <button type="button" class="btn btn-primary" data-ai-insert>${I18N.t("publishBook.aiInsert")}</button>
         </div>
       </div>`
           : ""
       }
-    </div>`
-    )
-    .join("");
+    </div>`;
+  }
 
-  viewEl.innerHTML = `
-    <a href="#/publish-book" class="back-link">&larr; ${I18N.t("publishBook.backToList")}</a>
-    <div class="publishbook-detail-header">
-      <div>
-        ${publishBookStatusBadge(work.status)}
-        ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
-      </div>
-    </div>
-    ${statusNoteHtml}
-    <form id="publishbook-form" class="stacked-form">
-      <label>${I18N.t("publishBook.titleLabel")}<input type="text" name="title" required maxlength="200" value="${escapeHtml(work.title || "")}" ${editable ? "" : "disabled"} /></label>
-      <label>${I18N.t("publishBook.genreLabel")}<input type="text" name="genre" maxlength="60" value="${escapeHtml(work.genre || "")}" ${editable ? "" : "disabled"} /></label>
-      <label>${I18N.t("publishBook.synopsisLabel")}<textarea name="synopsis" maxlength="2000" ${editable ? "" : "disabled"}>${escapeHtml(work.synopsis || "")}</textarea></label>
-    </form>
-    <h3 class="publishbook-chapters-heading">${I18N.t("publishBook.chaptersHeading")}</h3>
-    <div id="publishbook-chapters">${chaptersHtml}</div>
-    ${editable ? `<button type="button" class="btn btn-secondary" id="publishbook-add-chapter">+ ${I18N.t("publishBook.addChapter")}</button>` : ""}
-    ${
-      editable
-        ? `<div class="publishbook-actions">
-      <button type="button" class="btn btn-secondary" id="publishbook-save-btn">${I18N.t("publishBook.saveDraft")}</button>
-      <button type="button" class="btn btn-primary" id="publishbook-submit-btn">${I18N.t("publishBook.submitForReview")}</button>
-    </div>
-    <p class="form-msg" id="publishbook-save-msg"></p>`
-        : ""
+  // Wires the AI-assist / remove buttons for exactly one chapter block, so
+  // new chapters added mid-session work without re-rendering (and losing)
+  // the wizard's current step.
+  function wireChapterBlock(el) {
+    const removeBtn = el.querySelector("[data-remove-chapter]");
+    if (removeBtn) {
+      removeBtn.addEventListener("click", () => {
+        if (document.querySelectorAll(".publishbook-chapter").length <= 1) return;
+        el.remove();
+        saveDraft().catch(() => {});
+        renumberChapters();
+      });
     }
-  `;
+    const aiToggle = el.querySelector("[data-ai-toggle]");
+    const aiPanel = el.querySelector("[data-ai-panel]");
+    if (aiToggle && aiPanel) {
+      aiToggle.addEventListener("click", () => {
+        aiPanel.style.display = aiPanel.style.display === "none" ? "block" : "none";
+      });
+    }
+    const aiGoBtn = el.querySelector("[data-ai-go]");
+    if (aiGoBtn) {
+      aiGoBtn.addEventListener("click", async () => {
+        const instruction = el.querySelector(".publishbook-ai-instruction").value.trim();
+        const currentText = el.querySelector(".publishbook-chapter-content").value;
+        const msgEl = el.querySelector("[data-ai-msg]");
+        if (!instruction) {
+          msgEl.textContent = I18N.t("publishBook.aiInstructionRequired");
+          msgEl.className = "form-msg error";
+          return;
+        }
+        msgEl.textContent = "";
+        aiGoBtn.disabled = true;
+        try {
+          const { suggestion } = await api("/api/original-works/" + encodeURIComponent(id) + "/ai-assist", {
+            method: "POST",
+            auth: true,
+            body: { instruction, currentText, locale: I18N.lang },
+          });
+          const suggestionBox = el.querySelector("[data-ai-suggestion]");
+          suggestionBox.querySelector(".publishbook-ai-suggestion-text").textContent = suggestion;
+          suggestionBox.style.display = "block";
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+        } finally {
+          aiGoBtn.disabled = false;
+        }
+      });
+    }
+    const aiInsertBtn = el.querySelector("[data-ai-insert]");
+    if (aiInsertBtn) {
+      aiInsertBtn.addEventListener("click", () => {
+        const suggestionBox = el.querySelector("[data-ai-suggestion]");
+        const suggestionText = suggestionBox.querySelector(".publishbook-ai-suggestion-text").textContent;
+        const textarea = el.querySelector(".publishbook-chapter-content");
+        textarea.value = (textarea.value ? textarea.value + "\n\n" : "") + suggestionText;
+        suggestionBox.style.display = "none";
+      });
+    }
+  }
+
+  function renumberChapters() {
+    document.querySelectorAll(".publishbook-chapter").forEach((el, i) => {
+      el.dataset.chapter = i;
+      const titleInput = el.querySelector(".publishbook-chapter-title");
+      if (titleInput && !titleInput.value) titleInput.placeholder = I18N.t("publishBook.chapterTitlePlaceholder") + " " + (i + 1);
+    });
+  }
 
   function collectChapters() {
     return Array.from(document.querySelectorAll(".publishbook-chapter")).map((el) => ({
@@ -3604,133 +3672,202 @@ async function renderPublishBookEditor(id) {
   }
 
   async function saveDraft(chaptersOverride) {
-    const fd = new FormData(document.getElementById("publishbook-form"));
+    const formEl = document.getElementById("publishbook-form");
+    const fd = formEl ? new FormData(formEl) : null;
     return api("/api/original-works/" + encodeURIComponent(id), {
       method: "PATCH",
       auth: true,
       body: {
-        title: fd.get("title"),
-        genre: fd.get("genre"),
-        synopsis: fd.get("synopsis"),
+        title: fd ? fd.get("title") : work.title,
+        genre: fd ? fd.get("genre") : work.genre,
+        synopsis: fd ? fd.get("synopsis") : work.synopsis,
         chapters: chaptersOverride || collectChapters(),
       },
     });
   }
 
-  if (editable) {
-    const addChapterBtn = document.getElementById("publishbook-add-chapter");
-    if (addChapterBtn) {
-      addChapterBtn.addEventListener("click", async () => {
+  if (!editable) {
+    viewEl.innerHTML = `
+      <a href="#/publish-book" class="back-link">&larr; ${I18N.t("publishBook.backToList")}</a>
+      <div class="publishbook-detail-header">
+        <div>
+          ${publishBookStatusBadge(work.status)}
+          ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+        </div>
+      </div>
+      <h2 class="section-heading">${escapeHtml(work.title || I18N.t("publishBook.untitled"))}</h2>
+      <p class="groups-subtitle">${escapeHtml(work.genre || I18N.t("publishBook.genreUnset"))}</p>
+      ${statusNoteHtml}
+      ${
+        work.status === "approved_pending_legal"
+          ? `<div class="publishbook-publish-wrap" id="publishbook-publish-wrap">
+        <button type="button" class="btn btn-primary publishbook-publish-btn" id="publishbook-publish-btn">&#128640; ${I18N.t("publishBook.publishNow")}</button>
+      </div>`
+          : ""
+      }
+      ${work.synopsis ? `<p class="group-detail-desc">${escapeHtml(work.synopsis)}</p>` : ""}
+      <h3 class="publishbook-chapters-heading">${I18N.t("publishBook.chaptersHeading")}</h3>
+      <div id="publishbook-chapters">${chapters.map(chapterBlockHtml).join("")}</div>
+    `;
+
+    const publishBtn = document.getElementById("publishbook-publish-btn");
+    if (publishBtn) {
+      publishBtn.addEventListener("click", async () => {
+        publishBtn.disabled = true;
         try {
-          await saveDraft(collectChapters().concat([{ title: "", content: "" }]));
-          renderPublishBookEditor(id);
+          await api("/api/original-works/" + encodeURIComponent(id) + "/publish", { method: "POST", auth: true });
+          document.getElementById("publishbook-publish-wrap").innerHTML = `
+            <div class="publishbook-publish-thanks">
+              <p class="publishbook-publish-thanks-title">&#10024; ${I18N.t("publishBook.publishComingSoonTitle")}</p>
+              <p class="publishbook-publish-thanks-desc">${I18N.t("publishBook.publishComingSoonDesc")}</p>
+            </div>`;
         } catch (err) {
           alert(err.message);
+          publishBtn.disabled = false;
         }
       });
     }
+    return;
+  }
 
-    document.querySelectorAll("[data-remove-chapter]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const idx = Number(btn.dataset.removeChapter);
-        const remaining = collectChapters().filter((_, i) => i !== idx);
-        try {
-          await saveDraft(remaining);
-          renderPublishBookEditor(id);
-        } catch (err) {
-          alert(err.message);
-        }
-      });
+  // ---- Editable state: a guided 3-step wizard (Details -> Chapters ->
+  // Review & Submit) instead of one long form, per Carlos's request that
+  // publishing an original work feel fantastic and walk the author through
+  // it step by step. Submitting still never makes anything public - see
+  // ORIGINAL_BOOK_PROGRAM_ENABLED in server.js - but the whole exercise,
+  // including AI co-writing and the automated review verdict, is real.
+  viewEl.innerHTML = `
+    <a href="#/publish-book" class="back-link">&larr; ${I18N.t("publishBook.backToList")}</a>
+    <div class="publishbook-detail-header">
+      <h2 class="section-heading">${I18N.t("publishBook.wizardHeading")}</h2>
+      ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+    </div>
+    ${statusNoteHtml}
+    <div class="publishbook-steps">
+      <span class="publishbook-step-dot active" data-step-indicator="1"><span class="publishbook-step-num">1</span>${I18N.t("publishBook.stepDetails")}</span>
+      <span class="publishbook-step-line"></span>
+      <span class="publishbook-step-dot" data-step-indicator="2"><span class="publishbook-step-num">2</span>${I18N.t("publishBook.stepChapters")}</span>
+      <span class="publishbook-step-line"></span>
+      <span class="publishbook-step-dot" data-step-indicator="3"><span class="publishbook-step-num">3</span>${I18N.t("publishBook.stepReview")}</span>
+    </div>
+
+    <div class="publishbook-step-panel" data-step="1">
+      <p class="publishbook-step-intro">${I18N.t("publishBook.step1Intro")}</p>
+      <form id="publishbook-form" class="stacked-form">
+        <label>${I18N.t("publishBook.titleLabel")}<input type="text" name="title" required maxlength="200" value="${escapeHtml(work.title || "")}" /></label>
+        <label>${I18N.t("publishBook.genreLabel")}<input type="text" name="genre" maxlength="60" value="${escapeHtml(work.genre || "")}" placeholder="${I18N.t("publishBook.genrePlaceholder")}" /></label>
+        <label>${I18N.t("publishBook.synopsisLabel")}<textarea name="synopsis" maxlength="2000" placeholder="${I18N.t("publishBook.synopsisPlaceholder")}">${escapeHtml(work.synopsis || "")}</textarea></label>
+      </form>
+      <div class="publishbook-actions">
+        <button type="button" class="btn btn-primary" data-next="2">${I18N.t("publishBook.continueToChapters")}</button>
+      </div>
+    </div>
+
+    <div class="publishbook-step-panel" data-step="2" style="display:none;">
+      <p class="publishbook-step-intro">${I18N.t("publishBook.step2Intro")}</p>
+      <div id="publishbook-chapters">${chapters.map(chapterBlockHtml).join("")}</div>
+      <button type="button" class="btn btn-secondary" id="publishbook-add-chapter">+ ${I18N.t("publishBook.addChapter")}</button>
+      <div class="publishbook-actions">
+        <button type="button" class="btn btn-secondary" data-back="1">${I18N.t("publishBook.back")}</button>
+        <button type="button" class="btn btn-primary" data-next="3">${I18N.t("publishBook.continueToReview")}</button>
+      </div>
+    </div>
+
+    <div class="publishbook-step-panel" data-step="3" style="display:none;">
+      <p class="publishbook-step-intro">${I18N.t("publishBook.step3Intro")}</p>
+      <div class="publishbook-review-card" id="publishbook-review-card"></div>
+      <p class="publishbook-legal-note">&#128274; ${I18N.t("publishBook.legalPreviewNote")}</p>
+      <div class="publishbook-actions">
+        <button type="button" class="btn btn-secondary" data-back="2">${I18N.t("publishBook.back")}</button>
+        <button type="button" class="btn btn-primary" id="publishbook-submit-btn">${I18N.t("publishBook.submitForReview")}</button>
+      </div>
+      <p class="form-msg" id="publishbook-save-msg"></p>
+    </div>
+    <p class="publishbook-autosave-note">${I18N.t("publishBook.autosaveNote")}</p>
+  `;
+
+  document.querySelectorAll(".publishbook-chapter").forEach(wireChapterBlock);
+
+  function goToStep(n) {
+    document.querySelectorAll(".publishbook-step-panel").forEach((el) => {
+      el.style.display = Number(el.dataset.step) === n ? "" : "none";
     });
-
-    document.querySelectorAll("[data-ai-chapter]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const panel = document.getElementById("publishbook-ai-panel-" + btn.dataset.aiChapter);
-        if (panel) panel.style.display = panel.style.display === "none" ? "block" : "none";
-      });
+    document.querySelectorAll(".publishbook-step-dot").forEach((el) => {
+      el.classList.toggle("active", Number(el.dataset.stepIndicator) <= n);
     });
+    viewEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (n === 3) populateReview();
+  }
 
-    document.querySelectorAll("[data-ai-go]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const i = btn.dataset.aiGo;
-        const chapterEl = document.querySelector('.publishbook-chapter[data-chapter="' + i + '"]');
-        const instruction = chapterEl.querySelector(".publishbook-ai-instruction").value.trim();
-        const currentText = chapterEl.querySelector(".publishbook-chapter-content").value;
-        const msgEl = document.getElementById("publishbook-ai-msg-" + i);
-        if (!instruction) {
-          msgEl.textContent = I18N.t("publishBook.aiInstructionRequired");
-          msgEl.className = "form-msg error";
-          return;
-        }
-        msgEl.textContent = "";
-        btn.disabled = true;
-        try {
-          const { suggestion } = await api("/api/original-works/" + encodeURIComponent(id) + "/ai-assist", {
-            method: "POST",
-            auth: true,
-            body: { instruction, currentText, locale: I18N.lang },
-          });
-          const suggestionBox = document.getElementById("publishbook-ai-suggestion-" + i);
-          suggestionBox.querySelector(".publishbook-ai-suggestion-text").textContent = suggestion;
-          suggestionBox.style.display = "block";
-        } catch (err) {
-          msgEl.textContent = err.message;
-          msgEl.className = "form-msg error";
-        } finally {
-          btn.disabled = false;
-        }
-      });
+  function populateReview() {
+    const fd = new FormData(document.getElementById("publishbook-form"));
+    const title = fd.get("title") || I18N.t("publishBook.untitled");
+    const genre = fd.get("genre") || I18N.t("publishBook.genreUnset");
+    const synopsis = fd.get("synopsis") || "";
+    const chs = collectChapters();
+    const wordCount = chs.reduce((sum, c) => sum + String(c.content || "").trim().split(/\s+/).filter(Boolean).length, 0);
+    document.getElementById("publishbook-review-card").innerHTML = `
+      <p class="publishbook-review-genre">${escapeHtml(genre)}</p>
+      <h3>${escapeHtml(title)}</h3>
+      ${synopsis ? `<p class="publishbook-review-synopsis">${escapeHtml(synopsis)}</p>` : ""}
+      <p class="publishbook-review-stats">${chs.length} ${I18N.t("publishBook.chaptersHeading")} &middot; ${wordCount} ${I18N.t("publishBook.words")}</p>
+    `;
+  }
+
+  document.querySelectorAll("[data-next]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const target = Number(btn.dataset.next);
+      const formEl = document.getElementById("publishbook-form");
+      if (formEl && !formEl.reportValidity()) return;
+      btn.disabled = true;
+      try {
+        await saveDraft();
+        goToStep(target);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+      }
     });
+  });
+  document.querySelectorAll("[data-back]").forEach((btn) => {
+    btn.addEventListener("click", () => goToStep(Number(btn.dataset.back)));
+  });
 
-    document.querySelectorAll("[data-ai-insert]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const i = btn.dataset.aiInsert;
-        const chapterEl = document.querySelector('.publishbook-chapter[data-chapter="' + i + '"]');
-        const suggestionText = document.getElementById("publishbook-ai-suggestion-" + i).querySelector(".publishbook-ai-suggestion-text").textContent;
-        const textarea = chapterEl.querySelector(".publishbook-chapter-content");
-        textarea.value = (textarea.value ? textarea.value + "\n\n" : "") + suggestionText;
-        document.getElementById("publishbook-ai-suggestion-" + i).style.display = "none";
-      });
+  const addChapterBtn = document.getElementById("publishbook-add-chapter");
+  if (addChapterBtn) {
+    addChapterBtn.addEventListener("click", () => {
+      const container = document.getElementById("publishbook-chapters");
+      const index = container.children.length;
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = chapterBlockHtml({ title: "", content: "" }, index);
+      const newEl = wrapper.firstElementChild;
+      container.appendChild(newEl);
+      wireChapterBlock(newEl);
+      saveDraft().catch(() => {});
+      newEl.querySelector(".publishbook-chapter-title").focus();
     });
+  }
 
-    const saveBtn = document.getElementById("publishbook-save-btn");
-    if (saveBtn) {
-      saveBtn.addEventListener("click", async () => {
-        const msgEl = document.getElementById("publishbook-save-msg");
-        saveBtn.disabled = true;
-        try {
-          await saveDraft();
-          msgEl.textContent = I18N.t("publishBook.saved");
-          msgEl.className = "form-msg success";
-        } catch (err) {
-          msgEl.textContent = err.message;
-          msgEl.className = "form-msg error";
-        } finally {
-          saveBtn.disabled = false;
-        }
-      });
-    }
-
-    const submitBtn = document.getElementById("publishbook-submit-btn");
-    if (submitBtn) {
-      submitBtn.addEventListener("click", async () => {
-        const msgEl = document.getElementById("publishbook-save-msg");
-        submitBtn.disabled = true;
-        try {
-          await saveDraft();
-          await api("/api/original-works/" + encodeURIComponent(id) + "/submit", {
-            method: "POST",
-            auth: true,
-            body: { locale: I18N.lang },
-          });
-          renderPublishBookEditor(id);
-        } catch (err) {
-          msgEl.textContent = err.message;
-          msgEl.className = "form-msg error";
-          submitBtn.disabled = false;
-        }
-      });
-    }
+  const submitBtn = document.getElementById("publishbook-submit-btn");
+  if (submitBtn) {
+    submitBtn.addEventListener("click", async () => {
+      const msgEl = document.getElementById("publishbook-save-msg");
+      submitBtn.disabled = true;
+      try {
+        await saveDraft();
+        await api("/api/original-works/" + encodeURIComponent(id) + "/submit", {
+          method: "POST",
+          auth: true,
+          body: { locale: I18N.lang },
+        });
+        renderPublishBookEditor(id);
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+        submitBtn.disabled = false;
+      }
+    });
   }
 }
 

@@ -1127,6 +1127,45 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .publishbook-ai-suggestion-text { font-size: 13.5px; white-space: pre-wrap; margin: 0 0 8px; }
 .publishbook-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0 6px; }
 
+/* Landing/hero (renderPublishBookHome) */
+.publishbook-hero { text-align: center; padding: 30px 20px; margin-bottom: 24px; border-radius: 16px; background: linear-gradient(160deg, var(--bg-surface-alt), var(--bg-surface)); border: 1px solid var(--gold); display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.publishbook-hero-eyebrow { font-size: 12px; font-weight: 800; letter-spacing: 0.6px; text-transform: uppercase; color: var(--gold); margin: 0; }
+.publishbook-hero-title { font-size: 26px; margin: 0; }
+.publishbook-hero-subtitle { font-size: 14.5px; color: var(--text-secondary); max-width: 520px; margin: 0; }
+.publishbook-hero-cta { margin-top: 10px; padding: 12px 28px; font-size: 15px; }
+.publishbook-how-heading { text-align: center; margin: 0 0 12px; font-size: 17px; }
+.publishbook-how-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.publishbook-how-card { position: relative; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 18px 14px 14px; text-align: center; }
+.publishbook-how-num { position: absolute; top: -10px; left: -10px; width: 26px; height: 26px; border-radius: 50%; background: var(--gold); color: var(--gold-text-on); font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+.publishbook-how-emoji { font-size: 26px; margin: 4px 0; }
+.publishbook-how-title { font-weight: 800; font-size: 14px; margin: 0 0 4px; }
+.publishbook-how-body { font-size: 12.5px; color: var(--text-secondary); margin: 0; }
+.publishbook-new-form { background: var(--bg-surface); border: 1px solid var(--gold); border-radius: 12px; padding: 18px; margin-bottom: 24px; }
+
+/* Step wizard (renderPublishBookEditor, editable state) */
+.publishbook-steps { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 18px 0 22px; flex-wrap: wrap; }
+.publishbook-step-dot { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
+.publishbook-step-dot.active { color: var(--gold); }
+.publishbook-step-num { width: 22px; height: 22px; border-radius: 50%; background: var(--bg-page); border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center; font-size: 12px; }
+.publishbook-step-dot.active .publishbook-step-num { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+.publishbook-step-line { width: 24px; height: 1px; background: var(--border-color); }
+.publishbook-step-intro { font-size: 13.5px; color: var(--text-secondary); margin: 0 0 14px; }
+.publishbook-review-card { background: var(--bg-surface); border: 1px solid var(--gold); border-radius: 12px; padding: 16px 18px; margin-bottom: 12px; }
+.publishbook-review-genre { font-size: 12px; font-weight: 700; color: var(--gold); text-transform: uppercase; margin: 0 0 4px; }
+.publishbook-review-synopsis { font-size: 13.5px; color: var(--text-secondary); margin: 8px 0; }
+.publishbook-review-stats { font-size: 12.5px; color: var(--text-muted); margin: 8px 0 0; }
+.publishbook-legal-note { font-size: 12.5px; color: var(--text-secondary); background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin: 0 0 14px; }
+.publishbook-autosave-note { text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 16px; }
+
+/* Final "Publish my book" action - real and clickable (task: "necesito
+   todo el recorrido... pero al momento final... que no se pueda accionar"),
+   only reachable after team approval; see POST /api/original-works/:id/publish. */
+.publishbook-publish-wrap { margin: 14px 0 18px; }
+.publishbook-publish-btn { padding: 12px 26px; font-size: 15px; }
+.publishbook-publish-thanks { text-align: center; background: linear-gradient(135deg, var(--bg-surface-alt), var(--bg-surface)); border: 1px solid var(--gold); border-radius: 12px; padding: 18px 20px; }
+.publishbook-publish-thanks-title { font-size: 16px; font-weight: 800; color: var(--gold); margin: 0 0 8px; }
+.publishbook-publish-thanks-desc { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
 /* Live group video call - Jitsi Meet embedded full-screen, no API key
    needed (see POST /api/groups/:slug/video-room in server.js). */
 .bookclub-video-overlay { position: fixed; inset: 0; z-index: 900; background: #000; display: flex; flex-direction: column; }

@@ -4828,6 +4828,35 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, originalWorkOut(updated[0]));
   }
 
+  // POST /api/original-works/:id/publish - the genuine final "make it
+  // public and for sale" action, only reachable after our team approved
+  // the book (status === approved_pending_legal). The whole rest of the
+  // journey up to this point is real (writing, AI co-writing, AI review,
+  // team review) - per Carlos: "necesito todo el recorrido... pero al
+  // momento final... que no se pueda accionar" - so this exact click is
+  // the one that stays inert while ORIGINAL_BOOK_PROGRAM_ENABLED is false:
+  // it always answers with a friendly "not yet" and never flips the status
+  // to published or creates any public/purchasable listing. Flip the flag
+  // above once the author program's legal/monetization terms are final;
+  // the real publish logic already below is ready to go.
+  const publishMatch = pathname.match(/^\/api\/original-works\/([a-zA-Z0-9]+)\/publish$/);
+  if (method === "POST" && publishMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { id: "eq." + enc(publishMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (w.status !== "approved_pending_legal") {
+      return sendJson(res, 400, { error: "This book isn't approved for publishing yet." });
+    }
+    if (!ORIGINAL_BOOK_PROGRAM_ENABLED) {
+      return sendJson(res, 200, { ok: false, comingSoon: true });
+    }
+    const updated = await db.update("original_works", { id: "eq." + enc(w.id) }, { status: "published", updated_at: Date.now() });
+    return sendJson(res, 200, { ok: true, work: originalWorkOut(updated[0]) });
+  }
+
   // ---- ADS (advertiser carousel) ----
   function adOut(a) {
     const { image_url, link_url, advertiser_name, sort_order, created_at, ...rest } = a;
