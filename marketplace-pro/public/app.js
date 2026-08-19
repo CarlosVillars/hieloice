@@ -385,7 +385,12 @@ function applyStaticI18n() {
     navNotifEl.setAttribute("aria-label", notifLabel);
   }
   setText("nav-post", I18N.t("nav.postAd"));
-  setText("nav-book-club-label", I18N.t("iconnav.bookClub"));
+  const navBookClubEl = document.getElementById("nav-book-club");
+  if (navBookClubEl) {
+    const bookClubLabel = I18N.t("iconnav.bookClub");
+    navBookClubEl.title = bookClubLabel;
+    navBookClubEl.setAttribute("aria-label", bookClubLabel);
+  }
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
   setText("nav-logout", I18N.t("nav.logout"));
