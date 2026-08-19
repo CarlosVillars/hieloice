@@ -385,6 +385,8 @@ function applyStaticI18n() {
     navNotifEl.setAttribute("aria-label", notifLabel);
   }
   setText("nav-post", I18N.t("nav.postAd"));
+  setText("nav-post-original-label", I18N.t("nav.publishOriginal"));
+  setText("nav-post-used-label", I18N.t("nav.sellUsed"));
   const navBookClubEl = document.getElementById("nav-book-club");
   if (navBookClubEl) {
     const bookClubLabel = I18N.t("iconnav.bookClub");
@@ -516,7 +518,9 @@ function updateGlobalSearchPlaceholder() {
   const dropdown = document.getElementById("icon-nav-marketplace-dropdown");
   const createBtn = document.getElementById("icon-nav-create");
   const createDropdown = document.getElementById("icon-nav-create-dropdown");
-  const allDropdowns = [dropdown, createDropdown];
+  const postBtn = document.getElementById("nav-post");
+  const postDropdown = document.getElementById("nav-post-dropdown");
+  const allDropdowns = [dropdown, createDropdown, postDropdown];
   function closeAllDropdowns(except) {
     allDropdowns.forEach((d) => {
       if (d && d !== except) d.style.display = "none";
@@ -652,6 +656,23 @@ function updateGlobalSearchPlaceholder() {
       });
     }
   }
+  // "PUBLISH A BOOK" (task #244) - no longer navigates straight to the
+  // used-book listing form. It opens a small menu so people can pick
+  // between publishing their own original/unpublished work (new AI-assisted
+  // flow) or selling a used physical book (the original #/post form).
+  if (postBtn && postDropdown) {
+    postBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = postDropdown.style.display !== "block";
+      closeAllDropdowns();
+      postDropdown.style.display = willOpen ? "block" : "none";
+    });
+    postDropdown.addEventListener("click", (e) => e.stopPropagation());
+    ["original", "used"].forEach((key) => {
+      const link = document.getElementById("nav-post-" + key);
+      if (link) link.addEventListener("click", () => { postDropdown.style.display = "none"; });
+    });
+  }
   document.addEventListener("click", () => closeAllDropdowns());
 })();
 
@@ -701,6 +722,8 @@ async function router() {
     if (parts[0] === "groups") return renderGroupsHome();
     if (parts[0] === "book-club" && parts[1]) return renderBookClubDetail(parts[1]);
     if (parts[0] === "book-club") return renderBookClubHome();
+    if (parts[0] === "publish-book" && parts[1]) return renderPublishBookEditor(parts[1]);
+    if (parts[0] === "publish-book") return renderPublishBookHome();
     if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
@@ -3377,6 +3400,325 @@ async function renderBookClubDetail(slug) {
       }
     });
   });
+}
+
+// ---------------- Publish a Book ("#/publish-book", task #244) ----------------
+// Independent-author pipeline, separate from selling a used physical book
+// (#/post) and from the Book Club "Pick of the Month" panel. Author writes
+// chapters (optionally with AI co-writing help), submits, gets an automated
+// AI first-pass review, and - if that passes - lands in our team's review
+// queue. Nothing here ever becomes a public/purchasable listing until
+// ORIGINAL_BOOK_PROGRAM_ENABLED flips true on the server once real legal/
+// monetization terms exist, so every step here is real and navigable.
+
+let publishBookConfigCache = null;
+async function getPublishBookConfig() {
+  if (publishBookConfigCache) return publishBookConfigCache;
+  try {
+    publishBookConfigCache = await api("/api/original-works/config");
+  } catch (e) {
+    publishBookConfigCache = { programEnabled: false };
+  }
+  return publishBookConfigCache;
+}
+
+function publishBookStatusBadge(status) {
+  const cls = { draft: "", needs_revision: "warn", team_review: "pending", approved_pending_legal: "approved", rejected: "rejected" }[status] || "";
+  return `<span class="publishbook-status publishbook-status-${cls || "draft"}">${I18N.t("publishBook.status." + status)}</span>`;
+}
+
+async function renderPublishBookHome() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  let works, bpConfig;
+  try {
+    [works, bpConfig] = await Promise.all([api("/api/original-works/mine", { auth: true }), getPublishBookConfig()]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const worksHtml = works.length
+    ? `<div class="publishbook-grid">${works
+        .map(
+          (w) => `
+      <a class="card publishbook-card" href="#/publish-book/${w.id}">
+        <p class="publishbook-card-genre">${escapeHtml(w.genre || I18N.t("publishBook.genreUnset"))}</p>
+        <h3>${escapeHtml(w.title || I18N.t("publishBook.untitled"))}</h3>
+        ${publishBookStatusBadge(w.status)}
+      </a>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("publishBook.empty")}</div>`;
+
+  viewEl.innerHTML = `
+    <h2 class="section-heading">&#9997;&#65039; ${I18N.t("publishBook.heading")}</h2>
+    <p class="groups-subtitle">${I18N.t("publishBook.subtitle")}</p>
+    <div class="publishbook-intro">
+      <p class="publishbook-intro-title">${I18N.t("publishBook.introTitle")}</p>
+      <p>${I18N.t("publishBook.introBody")}</p>
+      ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+    </div>
+    <button type="button" class="btn btn-primary" id="publishbook-new-btn">+ ${I18N.t("publishBook.newBook")}</button>
+    <form id="publishbook-new-form" class="stacked-form" style="display:none; margin-top:12px;">
+      <label>${I18N.t("publishBook.titleLabel")}<input type="text" name="title" required maxlength="200" /></label>
+      <label>${I18N.t("publishBook.genreLabel")}<input type="text" name="genre" maxlength="60" placeholder="${I18N.t("publishBook.genrePlaceholder")}" /></label>
+      <label>${I18N.t("publishBook.synopsisLabel")}<textarea name="synopsis" maxlength="2000" placeholder="${I18N.t("publishBook.synopsisPlaceholder")}"></textarea></label>
+      <button type="submit" class="btn btn-primary">${I18N.t("publishBook.createSubmit")}</button>
+      <p class="form-msg" id="publishbook-new-msg"></p>
+    </form>
+    <div style="margin-top:20px;">${worksHtml}</div>
+  `;
+
+  const newBtn = document.getElementById("publishbook-new-btn");
+  const newForm = document.getElementById("publishbook-new-form");
+  if (newBtn && newForm) {
+    newBtn.addEventListener("click", () => {
+      newForm.style.display = newForm.style.display === "none" ? "block" : "none";
+    });
+    newForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("publishbook-new-msg");
+      try {
+        const created = await api("/api/original-works", {
+          method: "POST",
+          auth: true,
+          body: { title: fd.get("title"), genre: fd.get("genre"), synopsis: fd.get("synopsis") },
+        });
+        location.hash = "#/publish-book/" + created.id;
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+}
+
+async function renderPublishBookEditor(id) {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  let work, bpConfig;
+  try {
+    [work, bpConfig] = await Promise.all([api("/api/original-works/" + encodeURIComponent(id), { auth: true }), getPublishBookConfig()]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const editable = work.status === "draft" || work.status === "needs_revision";
+  const chapters = work.chapters && work.chapters.length ? work.chapters : [{ title: "", content: "" }];
+
+  let statusNoteHtml = "";
+  if (work.status === "needs_revision" && work.aiReviewNotes) {
+    statusNoteHtml = `<p class="publishbook-status-note">&#129302; ${escapeHtml(work.aiReviewNotes)}</p>`;
+  } else if (work.status === "team_review") {
+    statusNoteHtml = `<p class="publishbook-status-note">${I18N.t("publishBook.teamReviewNote")}</p>`;
+  } else if (work.status === "approved_pending_legal") {
+    statusNoteHtml = `<p class="publishbook-status-note">&#10024; ${I18N.t("publishBook.approvedNote")}</p>`;
+  } else if (work.status === "rejected" && work.teamDecisionNotes) {
+    statusNoteHtml = `<p class="publishbook-status-note">${escapeHtml(work.teamDecisionNotes)}</p>`;
+  }
+
+  const chaptersHtml = chapters
+    .map(
+      (c, i) => `
+    <div class="publishbook-chapter" data-chapter="${i}">
+      <div class="publishbook-chapter-head">
+        <input type="text" class="publishbook-chapter-title" value="${escapeHtml(c.title || "")}" placeholder="${I18N.t("publishBook.chapterTitlePlaceholder")} ${i + 1}" ${editable ? "" : "disabled"} />
+        ${editable && chapters.length > 1 ? `<button type="button" class="publishbook-chapter-remove" data-remove-chapter="${i}" aria-label="${I18N.t("common.cancel")}">&times;</button>` : ""}
+      </div>
+      <textarea class="publishbook-chapter-content" rows="8" placeholder="${I18N.t("publishBook.chapterContentPlaceholder")}" ${editable ? "" : "disabled"}>${escapeHtml(c.content || "")}</textarea>
+      ${
+        editable
+          ? `<button type="button" class="btn btn-secondary publishbook-ai-btn" data-ai-chapter="${i}">&#129302; ${I18N.t("publishBook.askAi")}</button>
+      <div class="publishbook-ai-panel" id="publishbook-ai-panel-${i}" style="display:none;">
+        <input type="text" class="publishbook-ai-instruction" placeholder="${I18N.t("publishBook.aiInstructionPlaceholder")}" />
+        <button type="button" class="btn btn-primary publishbook-ai-go" data-ai-go="${i}">${I18N.t("publishBook.aiGo")}</button>
+        <p class="form-msg" id="publishbook-ai-msg-${i}"></p>
+        <div class="publishbook-ai-suggestion" id="publishbook-ai-suggestion-${i}" style="display:none;">
+          <p class="publishbook-ai-suggestion-text"></p>
+          <button type="button" class="btn btn-primary publishbook-ai-insert" data-ai-insert="${i}">${I18N.t("publishBook.aiInsert")}</button>
+        </div>
+      </div>`
+          : ""
+      }
+    </div>`
+    )
+    .join("");
+
+  viewEl.innerHTML = `
+    <a href="#/publish-book" class="back-link">&larr; ${I18N.t("publishBook.backToList")}</a>
+    <div class="publishbook-detail-header">
+      <div>
+        ${publishBookStatusBadge(work.status)}
+        ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+      </div>
+    </div>
+    ${statusNoteHtml}
+    <form id="publishbook-form" class="stacked-form">
+      <label>${I18N.t("publishBook.titleLabel")}<input type="text" name="title" required maxlength="200" value="${escapeHtml(work.title || "")}" ${editable ? "" : "disabled"} /></label>
+      <label>${I18N.t("publishBook.genreLabel")}<input type="text" name="genre" maxlength="60" value="${escapeHtml(work.genre || "")}" ${editable ? "" : "disabled"} /></label>
+      <label>${I18N.t("publishBook.synopsisLabel")}<textarea name="synopsis" maxlength="2000" ${editable ? "" : "disabled"}>${escapeHtml(work.synopsis || "")}</textarea></label>
+    </form>
+    <h3 class="publishbook-chapters-heading">${I18N.t("publishBook.chaptersHeading")}</h3>
+    <div id="publishbook-chapters">${chaptersHtml}</div>
+    ${editable ? `<button type="button" class="btn btn-secondary" id="publishbook-add-chapter">+ ${I18N.t("publishBook.addChapter")}</button>` : ""}
+    ${
+      editable
+        ? `<div class="publishbook-actions">
+      <button type="button" class="btn btn-secondary" id="publishbook-save-btn">${I18N.t("publishBook.saveDraft")}</button>
+      <button type="button" class="btn btn-primary" id="publishbook-submit-btn">${I18N.t("publishBook.submitForReview")}</button>
+    </div>
+    <p class="form-msg" id="publishbook-save-msg"></p>`
+        : ""
+    }
+  `;
+
+  function collectChapters() {
+    return Array.from(document.querySelectorAll(".publishbook-chapter")).map((el) => ({
+      title: el.querySelector(".publishbook-chapter-title").value,
+      content: el.querySelector(".publishbook-chapter-content").value,
+    }));
+  }
+
+  async function saveDraft(chaptersOverride) {
+    const fd = new FormData(document.getElementById("publishbook-form"));
+    return api("/api/original-works/" + encodeURIComponent(id), {
+      method: "PATCH",
+      auth: true,
+      body: {
+        title: fd.get("title"),
+        genre: fd.get("genre"),
+        synopsis: fd.get("synopsis"),
+        chapters: chaptersOverride || collectChapters(),
+      },
+    });
+  }
+
+  if (editable) {
+    const addChapterBtn = document.getElementById("publishbook-add-chapter");
+    if (addChapterBtn) {
+      addChapterBtn.addEventListener("click", async () => {
+        try {
+          await saveDraft(collectChapters().concat([{ title: "", content: "" }]));
+          renderPublishBookEditor(id);
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+    }
+
+    document.querySelectorAll("[data-remove-chapter]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const idx = Number(btn.dataset.removeChapter);
+        const remaining = collectChapters().filter((_, i) => i !== idx);
+        try {
+          await saveDraft(remaining);
+          renderPublishBookEditor(id);
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-ai-chapter]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const panel = document.getElementById("publishbook-ai-panel-" + btn.dataset.aiChapter);
+        if (panel) panel.style.display = panel.style.display === "none" ? "block" : "none";
+      });
+    });
+
+    document.querySelectorAll("[data-ai-go]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const i = btn.dataset.aiGo;
+        const chapterEl = document.querySelector('.publishbook-chapter[data-chapter="' + i + '"]');
+        const instruction = chapterEl.querySelector(".publishbook-ai-instruction").value.trim();
+        const currentText = chapterEl.querySelector(".publishbook-chapter-content").value;
+        const msgEl = document.getElementById("publishbook-ai-msg-" + i);
+        if (!instruction) {
+          msgEl.textContent = I18N.t("publishBook.aiInstructionRequired");
+          msgEl.className = "form-msg error";
+          return;
+        }
+        msgEl.textContent = "";
+        btn.disabled = true;
+        try {
+          const { suggestion } = await api("/api/original-works/" + encodeURIComponent(id) + "/ai-assist", {
+            method: "POST",
+            auth: true,
+            body: { instruction, currentText, locale: I18N.lang },
+          });
+          const suggestionBox = document.getElementById("publishbook-ai-suggestion-" + i);
+          suggestionBox.querySelector(".publishbook-ai-suggestion-text").textContent = suggestion;
+          suggestionBox.style.display = "block";
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-ai-insert]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const i = btn.dataset.aiInsert;
+        const chapterEl = document.querySelector('.publishbook-chapter[data-chapter="' + i + '"]');
+        const suggestionText = document.getElementById("publishbook-ai-suggestion-" + i).querySelector(".publishbook-ai-suggestion-text").textContent;
+        const textarea = chapterEl.querySelector(".publishbook-chapter-content");
+        textarea.value = (textarea.value ? textarea.value + "\n\n" : "") + suggestionText;
+        document.getElementById("publishbook-ai-suggestion-" + i).style.display = "none";
+      });
+    });
+
+    const saveBtn = document.getElementById("publishbook-save-btn");
+    if (saveBtn) {
+      saveBtn.addEventListener("click", async () => {
+        const msgEl = document.getElementById("publishbook-save-msg");
+        saveBtn.disabled = true;
+        try {
+          await saveDraft();
+          msgEl.textContent = I18N.t("publishBook.saved");
+          msgEl.className = "form-msg success";
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+    }
+
+    const submitBtn = document.getElementById("publishbook-submit-btn");
+    if (submitBtn) {
+      submitBtn.addEventListener("click", async () => {
+        const msgEl = document.getElementById("publishbook-save-msg");
+        submitBtn.disabled = true;
+        try {
+          await saveDraft();
+          await api("/api/original-works/" + encodeURIComponent(id) + "/submit", {
+            method: "POST",
+            auth: true,
+            body: { locale: I18N.lang },
+          });
+          renderPublishBookEditor(id);
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+          submitBtn.disabled = false;
+        }
+      });
+    }
+  }
 }
 
 // ---------------- Notifications page ("#/notifications", reached from the icon nav) ----------------
@@ -9161,6 +9503,7 @@ function adminTabsMarkup(active) {
     { key: "reports", label: I18N.t("admin.tabReports") },
     { key: "products", label: I18N.t("admin.tabProducts") },
     { key: "users", label: I18N.t("admin.tabUsers") },
+    { key: "books", label: I18N.t("admin.tabBooks") },
   ];
   return `<div class="admin-tabs">${tabs
     .map((t) => `<a href="#/admin/${t.key}" class="admin-tab${active === t.key ? " active" : ""}">${t.label}</a>`)
@@ -9180,7 +9523,70 @@ async function renderAdminPanel(section) {
   `;
   if (section === "users") return renderAdminUsers();
   if (section === "products") return renderAdminProducts();
+  if (section === "books") return renderAdminBookSubmissions();
   return renderAdminReports();
+}
+
+// Task #244 - team review queue for the "Publish a Book" independent-
+// author program. Approving here never makes a book public/for sale (see
+// ORIGINAL_BOOK_PROGRAM_ENABLED in server.js) - it just records that our
+// team liked it, so we can see how the pipeline feels end to end before
+// any legal/monetization terms exist.
+async function renderAdminBookSubmissions() {
+  const content = document.getElementById("admin-content");
+  let works;
+  try {
+    works = await api("/api/admin/original-works?status=team_review", { auth: true });
+  } catch (e) {
+    content.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  content.innerHTML = works.length
+    ? `<div class="intl-admin-list">${works
+        .map(
+          (w) => `
+      <div class="intl-admin-row">
+        <div class="intl-card-head">
+          <span class="intl-role-tag">${escapeHtml(w.genre || I18N.t("publishBook.genreUnset"))}</span>
+        </div>
+        <p class="intl-card-name">${escapeHtml(w.title || I18N.t("publishBook.untitled"))}</p>
+        <p class="intl-card-meta">${I18N.t("admin.bookBy")}: ${escapeHtml(w.authorName)} (${escapeHtml(w.authorEmail)}) &middot; ${fmtDate(w.submittedAt)}</p>
+        ${w.synopsis ? `<p style="font-size:13px;color:#555;">${escapeHtml(w.synopsis)}</p>` : ""}
+        ${w.aiReviewNotes ? `<p style="font-size:13px;color:#555;">&#129302; ${escapeHtml(w.aiReviewNotes)}</p>` : ""}
+        <p class="intl-card-meta">${w.chapters.length} ${I18N.t("publishBook.chaptersHeading")}</p>
+        <a class="btn" href="#/publish-book/${w.id}" target="_blank">${I18N.t("admin.viewTarget")}</a>
+        <div class="form-group">
+          <label>${I18N.t("admin.resolutionNote")}</label>
+          <textarea rows="2" data-book-note="${w.id}"></textarea>
+        </div>
+        <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-primary" data-book-approve="${w.id}">${I18N.t("admin.approve")}</button>
+          <button class="btn" data-book-reject="${w.id}">${I18N.t("admin.reject")}</button>
+        </div>
+      </div>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("admin.booksEmpty")}</div>`;
+
+  async function setBookDecision(id, decision) {
+    const note = document.querySelector(`[data-book-note="${id}"]`);
+    try {
+      await api("/api/admin/original-works/" + id + "/decision", {
+        method: "POST",
+        auth: true,
+        body: { decision, notes: note ? note.value : "" },
+      });
+      renderAdminBookSubmissions();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+  document.querySelectorAll("[data-book-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => setBookDecision(btn.dataset.bookApprove, "approve"));
+  });
+  document.querySelectorAll("[data-book-reject]").forEach((btn) => {
+    btn.addEventListener("click", () => setBookDecision(btn.dataset.bookReject, "reject"));
+  });
 }
 
 async function renderAdminReports() {

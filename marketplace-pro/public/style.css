@@ -226,16 +226,35 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   border-left: 1px solid rgba(0,0,0,0.12); background: var(--bg-surface); padding: 0 12px; font-size: 15px;
 }
 
+/* Never wraps to a second row, on any screen size - Profile/Messages/
+   PUBLISH A BOOK/Book Club/notifications bell all stay on one tidy line.
+   On roomy screens that just means the row never needs to scroll; on
+   narrow phones it scrolls sideways instead of breaking into an
+   uneven second line. */
 .topbar-nav {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 14px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
+.topbar-nav::-webkit-scrollbar { display: none; }
 .nav-link {
+  flex: 0 0 auto;
+  white-space: nowrap;
   color: var(--accent-text-on);
   font-size: 14px;
   font-weight: 600;
+}
+/* The icon-only links (Book Club, notifications bell) are bigger glyphs so
+   they visually fill the leftover space at the end of the row instead of
+   leaving it looking empty next to "PUBLISH A BOOK". */
+#nav-book-club, #nav-notifications {
+  font-size: 24px;
+  line-height: 1;
 }
 .nav-link:hover { color: var(--accent-text-on); text-decoration: underline; }
 .nav-link-btn {
@@ -252,22 +271,14 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   border-radius: 6px;
 }
 .nav-post-btn:hover { color: var(--gold-text-on); background: color-mix(in srgb, var(--gold) 85%, black); }
+.nav-post-dropdown-wrap { position: relative; flex: 0 0 auto; }
+.nav-post-dropdown-wrap .nav-post-btn { border: none; font: inherit; cursor: pointer; }
 
-/* On narrow phones, "Profile", "Messages", "PUBLISH A BOOK" 📖 🔔 no longer
-   fit on one line at the base sizing and the bell would wrap to a second
-   row. Shrink text/padding/gaps here, and keep everything on a single row
-   (scrolling sideways in the rare case it's still too tight) instead of
-   letting it wrap awkwardly. */
+/* On narrow phones, shrink the text/padding/gaps a bit so the row reads as
+   one clean line instead of relying on horizontal scroll as much. */
 @media (max-width: 480px) {
-  .topbar-nav {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    gap: 8px;
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
-  .topbar-nav::-webkit-scrollbar { display: none; }
-  .topbar-nav .nav-link { flex: 0 0 auto; white-space: nowrap; font-size: 12.5px; }
+  .topbar-nav { gap: 8px; }
+  .topbar-nav .nav-link { font-size: 12.5px; }
   .topbar-nav .nav-post-btn { padding: 6px 9px; }
 }
 
@@ -1079,6 +1090,35 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .bookclub-authorpick-thanks { text-align: center; padding: 12px 4px 4px; }
 .bookclub-authorpick-thanks-title { font-size: 16px; font-weight: 800; color: var(--gold); margin: 0 0 8px; }
 .bookclub-authorpick-thanks-desc { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
+/* ---- Publish a Book (task #244 - independent-author pipeline, distinct
+   from selling a used book) ---- */
+.publishbook-intro { background: linear-gradient(135deg, var(--bg-surface-alt), var(--bg-surface)); border: 1px solid var(--gold); border-radius: 12px; padding: 16px 18px; margin: 14px 0 18px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.publishbook-intro-title { font-weight: 800; font-size: 15px; margin: 0; color: var(--gold); }
+.publishbook-intro p { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+.publishbook-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.publishbook-card { position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+.publishbook-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--gold); }
+.publishbook-card-genre { font-size: 12px; font-weight: 700; color: var(--gold); margin: 0; text-transform: uppercase; letter-spacing: 0.3px; }
+.publishbook-status { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.3px; background: var(--bg-page); border: 1px solid var(--border-color); color: var(--text-secondary); }
+.publishbook-status-warn { border-color: #c98a00; color: #c98a00; }
+.publishbook-status-pending { border-color: var(--accent-text); color: var(--accent-text); }
+.publishbook-status-approved { border-color: var(--gold); color: var(--gold); }
+.publishbook-status-rejected { border-color: var(--danger); color: var(--danger); }
+.publishbook-status-note { font-size: 13.5px; color: var(--text-secondary); background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.publishbook-detail-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.publishbook-chapters-heading { margin: 20px 0 8px; font-size: 16px; }
+.publishbook-chapter { border: 1px solid var(--border-color); border-radius: 10px; padding: 12px; margin-bottom: 12px; background: var(--bg-surface); }
+.publishbook-chapter-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.publishbook-chapter-title { flex: 1; font-weight: 700; }
+.publishbook-chapter-remove { background: none; border: none; color: var(--text-secondary); font-size: 20px; line-height: 1; cursor: pointer; padding: 2px 6px; }
+.publishbook-chapter-content { width: 100%; min-height: 140px; resize: vertical; }
+.publishbook-ai-btn { margin-top: 8px; }
+.publishbook-ai-panel { margin-top: 10px; padding: 10px; background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
+.publishbook-ai-instruction { width: 100%; }
+.publishbook-ai-suggestion { margin-top: 8px; padding: 10px; background: var(--bg-surface-alt); border: 1px solid var(--gold); border-radius: 8px; }
+.publishbook-ai-suggestion-text { font-size: 13.5px; white-space: pre-wrap; margin: 0 0 8px; }
+.publishbook-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0 6px; }
 
 /* Live group video call - Jitsi Meet embedded full-screen, no API key
    needed (see POST /api/groups/:slug/video-room in server.js). */

@@ -4598,6 +4598,236 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, companyOut(updated[0]));
   }
 
+  // ---- ORIGINAL WORKS ("Publish a Book" - task #244, Reese Witherspoon-
+  // style independent-author pipeline: write with AI co-writing help ->
+  // submit -> automated AI first-pass review -> human team review. Nothing
+  // in this whole flow ever creates a public/purchasable listing - see
+  // ORIGINAL_BOOK_PROGRAM_ENABLED below - so both authors and our team can
+  // use the real end-to-end flow before any legal/monetization terms exist.
+  // Distinct from POST /api/products (selling a used physical book, C2C
+  // Marketplace) and from the Book Club "Pick of the Month" panel. ----
+  const ORIGINAL_BOOK_PROGRAM_ENABLED = false;
+
+  function originalWorkOut(w) {
+    return {
+      id: w.id,
+      authorId: w.author_id,
+      title: w.title,
+      genre: w.genre,
+      synopsis: w.synopsis,
+      chapters: Array.isArray(w.chapters) ? w.chapters : [],
+      coverImageUrl: w.cover_image_url || null,
+      status: w.status,
+      aiReviewVerdict: w.ai_review_verdict || null,
+      aiReviewNotes: w.ai_review_notes || null,
+      teamDecision: w.team_decision || null,
+      teamDecisionNotes: w.team_decision_notes || null,
+      submittedAt: w.submitted_at || null,
+      aiReviewedAt: w.ai_reviewed_at || null,
+      teamDecisionAt: w.team_decision_at || null,
+      createdAt: w.created_at,
+      updatedAt: w.updated_at,
+    };
+  }
+
+  if (method === "GET" && pathname === "/api/original-works/config") {
+    return sendJson(res, 200, { programEnabled: ORIGINAL_BOOK_PROGRAM_ENABLED });
+  }
+
+  if (method === "GET" && pathname === "/api/original-works/mine") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { author_id: "eq." + enc(me.id), order: "updated_at.desc", select: "*" });
+    return sendJson(res, 200, (rows || []).map(originalWorkOut));
+  }
+
+  if (method === "POST" && pathname === "/api/original-works") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const title = String(body.title || "").trim().slice(0, 200);
+    if (!title) return sendJson(res, 400, { error: "Title is required" });
+    const now = Date.now();
+    const work = {
+      id: crypto.randomBytes(8).toString("hex"),
+      author_id: me.id,
+      title,
+      genre: String(body.genre || "").trim().slice(0, 60),
+      synopsis: String(body.synopsis || "").trim().slice(0, 2000),
+      chapters: [],
+      status: "draft",
+      created_at: now,
+      updated_at: now,
+    };
+    const created = await db.insert("original_works", work);
+    return sendJson(res, 201, originalWorkOut(created));
+  }
+
+  const workMatch = pathname.match(/^\/api\/original-works\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && workMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { id: "eq." + enc(workMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id && !isAdmin(me)) return sendJson(res, 403, { error: "Not authorized" });
+    return sendJson(res, 200, originalWorkOut(w));
+  }
+
+  if (method === "PATCH" && workMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { id: "eq." + enc(workMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (!["draft", "needs_revision"].includes(w.status)) {
+      return sendJson(res, 400, { error: "This book can't be edited while it's under review." });
+    }
+    const body = await readBody(req);
+    const patch = { updated_at: Date.now() };
+    if (body.title !== undefined) patch.title = String(body.title).trim().slice(0, 200);
+    if (body.genre !== undefined) patch.genre = String(body.genre).trim().slice(0, 60);
+    if (body.synopsis !== undefined) patch.synopsis = String(body.synopsis).trim().slice(0, 2000);
+    if (Array.isArray(body.chapters)) {
+      patch.chapters = body.chapters.slice(0, 60).map((c) => ({
+        title: String((c && c.title) || "").trim().slice(0, 150),
+        content: String((c && c.content) || "").slice(0, 20000),
+      }));
+    }
+    const updated = await db.update("original_works", { id: "eq." + enc(w.id) }, patch);
+    return sendJson(res, 200, originalWorkOut(updated[0]));
+  }
+
+  // POST /api/original-works/:id/ai-assist { instruction, currentText, locale }
+  // A co-writing helper for one chapter at a time - the author stays the
+  // author, this just drafts/continues/polishes on request.
+  const aiAssistMatch = pathname.match(/^\/api\/original-works\/([a-zA-Z0-9]+)\/ai-assist$/);
+  if (method === "POST" && aiAssistMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!checkRateLimit("book-ai-assist:" + me.id, 30, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many AI requests. Please try again in a bit." });
+    }
+    const rows = await db.select("original_works", { id: "eq." + enc(aiAssistMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+
+    const body = await readBody(req);
+    const locale = body.locale === "es" ? "es" : "en";
+    const instruction = String(body.instruction || "").trim().slice(0, 500);
+    const currentText = String(body.currentText || "").slice(0, 8000);
+    if (!instruction) return sendJson(res, 400, { error: "Tell the AI what you'd like help with." });
+
+    try {
+      const data = await callClaude({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1200,
+        system:
+          "You are a collaborative fiction/nonfiction co-writing assistant embedded in HieloIce's " +
+          "'Publish a Book' tool, helping an independent author draft or improve one chapter of their " +
+          "own original, unpublished book. Reply " + (locale === "es" ? "in Spanish" : "in English") + ". " +
+          "Write only the requested prose/content itself - no preamble, no meta-commentary, no markdown " +
+          "headers, just text the author can paste directly into their chapter. Match the tone and style " +
+          "already present in their existing text if any is provided. Never reproduce real, copyrighted " +
+          "passages from existing published books - only generate original text.",
+        messages: [
+          {
+            role: "user",
+            content:
+              "Book title: " + (w.title || "(untitled)") + "\nGenre: " + (w.genre || "(unspecified)") +
+              (currentText ? "\n\nCurrent chapter text so far:\n" + currentText : "\n\n(This chapter is currently empty.)") +
+              "\n\nWhat I need help with: " + instruction,
+          },
+        ],
+      });
+      const suggestion = claudeText(data);
+      if (!suggestion) throw new Error("Empty AI response");
+      return sendJson(res, 200, { suggestion });
+    } catch (e) {
+      console.error("Book AI-assist failed:", e && e.message);
+      return sendJson(res, 502, { error: locale === "es" ? "El asistente de IA no está disponible ahora mismo." : "The AI assistant is unavailable right now." });
+    }
+  }
+
+  // POST /api/original-works/:id/submit - runs an automated AI first-pass
+  // review, and if it looks like genuine original writing, queues the book
+  // for our team's human review. Either outcome stays entirely internal -
+  // see ORIGINAL_BOOK_PROGRAM_ENABLED - nothing becomes public here.
+  const submitMatch = pathname.match(/^\/api\/original-works\/([a-zA-Z0-9]+)\/submit$/);
+  if (method === "POST" && submitMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { id: "eq." + enc(submitMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (!["draft", "needs_revision"].includes(w.status)) {
+      return sendJson(res, 400, { error: "This book has already been submitted." });
+    }
+
+    const chapters = Array.isArray(w.chapters) ? w.chapters : [];
+    const totalWords = chapters.reduce(
+      (sum, c) => sum + String((c && c.content) || "").trim().split(/\s+/).filter(Boolean).length,
+      0
+    );
+    if (!w.title || !w.synopsis || chapters.length === 0 || totalWords < 300) {
+      return sendJson(res, 400, { error: "Add a title, synopsis, and at least one chapter (300+ words) before submitting." });
+    }
+
+    const body = await readBody(req);
+    const locale = body.locale === "es" ? "es" : "en";
+    const manuscript = chapters
+      .map((c, i) => "Chapter " + (i + 1) + (c.title ? ": " + c.title : "") + "\n" + (c.content || ""))
+      .join("\n\n")
+      .slice(0, 12000);
+
+    let verdict = "needs_revision";
+    let notes =
+      locale === "es"
+        ? "No se pudo completar la revisión automática. Intenta de nuevo."
+        : "Automated review couldn't complete. Please try again.";
+    try {
+      const data = await callClaude({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 400,
+        system:
+          "You are a first-pass editorial screener for HieloIce's independent-author publishing program. " +
+          "Given a manuscript draft, respond with exactly two lines: the first line is either PASS or " +
+          "NEEDS_REVISION, and the second line is 2-3 sentences of constructive feedback " +
+          (locale === "es" ? "in Spanish" : "in English") + ". PASS means it reads like a genuine, coherent, " +
+          "original piece of writing worth a human editor's time (it does not need to be perfect or " +
+          "finished). NEEDS_REVISION means it's empty/placeholder text, incoherent, extremely short, or " +
+          "appears to be copied verbatim from a well-known published work rather than original writing.",
+        messages: [
+          {
+            role: "user",
+            content: "Title: " + w.title + "\nGenre: " + w.genre + "\nSynopsis: " + w.synopsis + "\n\n" + manuscript,
+          },
+        ],
+      });
+      const text = claudeText(data);
+      const firstLine = (text.split("\n")[0] || "").trim().toUpperCase();
+      verdict = firstLine.startsWith("PASS") ? "pass" : "needs_revision";
+      notes = text.split("\n").slice(1).join(" ").trim() || notes;
+    } catch (e) {
+      console.error("Book AI review failed:", e && e.message);
+    }
+
+    const now = Date.now();
+    const patch = {
+      status: verdict === "pass" ? "team_review" : "needs_revision",
+      ai_review_verdict: verdict,
+      ai_review_notes: notes,
+      submitted_at: now,
+      ai_reviewed_at: now,
+      updated_at: now,
+    };
+    const updated = await db.update("original_works", { id: "eq." + enc(w.id) }, patch);
+    return sendJson(res, 200, originalWorkOut(updated[0]));
+  }
+
   // ---- ADS (advertiser carousel) ----
   function adOut(a) {
     const { image_url, link_url, advertiser_name, sort_order, created_at, ...rest } = a;
@@ -4879,6 +5109,54 @@ async function handleApi(req, res, pathname, query) {
       const updated = await db.update("mkt_reports", { id: "eq." + enc(adminReportMatch[1]) }, patch);
       if (!updated || !updated[0]) return sendJson(res, 404, { error: "Report not found" });
       return sendJson(res, 200, { ok: true });
+    }
+
+    // GET /api/admin/original-works?status=team_review (defaults to team_review)
+    if (method === "GET" && pathname === "/api/admin/original-works") {
+      const params = { select: "*", order: "submitted_at.desc", limit: "50" };
+      params.status = "eq." + enc(String(query.status || "team_review"));
+      const rows = await db.select("original_works", params);
+      const authorIds = [...new Set((rows || []).map((w) => w.author_id))];
+      let authorMap = {};
+      if (authorIds.length) {
+        const authors = await db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,email" });
+        (authors || []).forEach((a) => {
+          authorMap[a.id] = { name: a.name, email: a.email };
+        });
+      }
+      return sendJson(
+        res,
+        200,
+        (rows || []).map((w) => ({
+          ...originalWorkOut(w),
+          authorName: (authorMap[w.author_id] || {}).name || "Unknown",
+          authorEmail: (authorMap[w.author_id] || {}).email || "",
+        }))
+      );
+    }
+
+    // POST /api/admin/original-works/:id/decision { decision: 'approve'|'reject', notes? }
+    // "approve" never makes the book public or purchasable - see
+    // ORIGINAL_BOOK_PROGRAM_ENABLED above - it only tells the author the
+    // team liked it, and moves status to approved_pending_legal.
+    const adminWorkDecisionMatch = pathname.match(/^\/api\/admin\/original-works\/([a-zA-Z0-9]+)\/decision$/);
+    if (method === "POST" && adminWorkDecisionMatch) {
+      const body = await readBody(req);
+      if (!["approve", "reject"].includes(body.decision)) return sendJson(res, 400, { error: "Invalid decision" });
+      const rows = await db.select("original_works", { id: "eq." + enc(adminWorkDecisionMatch[1]), select: "*" });
+      const w = rows && rows[0];
+      if (!w) return sendJson(res, 404, { error: "Not found" });
+      const now = Date.now();
+      const patch = {
+        status: body.decision === "approve" ? "approved_pending_legal" : "rejected",
+        team_decision: body.decision,
+        team_decision_notes: String(body.notes || "").slice(0, 1000),
+        team_decision_by: me.id,
+        team_decision_at: now,
+        updated_at: now,
+      };
+      const updated = await db.update("original_works", { id: "eq." + enc(w.id) }, patch);
+      return sendJson(res, 200, originalWorkOut(updated[0]));
     }
 
     return sendJson(res, 404, { error: "Route not found" });
