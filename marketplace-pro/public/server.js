@@ -3168,6 +3168,29 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { videoRoomName: roomName });
   }
 
+  // POST /api/groups/:slug/author-pick - task #242. The full submission
+  // screen is real and navigable on the frontend (per Carlos's request:
+  // "visual y navegable pero sin poder accionar" - let people click through
+  // and get familiar with it) but this endpoint always answers with a
+  // friendly "not live yet" response while AUTHOR_PICK_PROGRAM_ENABLED is
+  // false, and never writes anything to the database - nobody can
+  // accidentally create a real submission before the legal terms exist.
+  // Flip the flag above once that's ready; the rest of this handler already
+  // does the real write.
+  const authorPickMatch = pathname.match(/^\/api\/groups\/([a-zA-Z0-9-]+)\/author-pick$/);
+  if (method === "POST" && authorPickMatch) {
+    if (!AUTHOR_PICK_PROGRAM_ENABLED) {
+      return sendJson(res, 200, { ok: false, comingSoon: true });
+    }
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_groups", { slug: "eq." + enc(authorPickMatch[1]), select: "*" });
+    const g = rows && rows[0];
+    if (!g) return sendJson(res, 404, { error: "Group not found" });
+    await db.update("mkt_groups", { id: "eq." + enc(g.id) }, { author_pick_status: "submitted", author_pick_agreed_at: Date.now() });
+    return sendJson(res, 200, { ok: true });
+  }
+
   const groupMatch = pathname.match(/^\/api\/groups\/([a-zA-Z0-9-]+)$/);
   if (method === "GET" && groupMatch) {
     const rows = await db.select("mkt_groups", { slug: "eq." + enc(groupMatch[1]), select: "*" });

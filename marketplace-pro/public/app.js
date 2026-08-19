@@ -3145,6 +3145,67 @@ function openBookClubVideoOverlay(roomName) {
   document.getElementById("bookclub-video-close").addEventListener("click", () => overlay.remove());
 }
 
+// Task #242 - navigable-but-inert "Pick of the Month" submission preview.
+// Opens a real modal with a real form; submitting calls the real endpoint,
+// which (while AUTHOR_PICK_PROGRAM_ENABLED is false) always answers with
+// { ok:false, comingSoon:true } and never touches the database. We treat
+// that response as success-of-the-preview, not an error, so the flow feels
+// complete end to end.
+function openAuthorPickModal(slug, group) {
+  const overlay = document.createElement("div");
+  overlay.className = "bookclub-authorpick-modal-overlay";
+  overlay.id = "bookclub-authorpick-modal-overlay";
+  overlay.innerHTML = `
+    <div class="bookclub-authorpick-modal">
+      <button type="button" class="bookclub-authorpick-modal-close" id="bookclub-authorpick-modal-close" aria-label="${I18N.t("bookClub.authorPickClose")}">&times;</button>
+      <h3 class="bookclub-authorpick-modal-title">&#127942; ${I18N.t("bookClub.authorPickModalTitle")}</h3>
+      <p class="bookclub-authorpick-modal-intro">${I18N.t("bookClub.authorPickModalIntro")}</p>
+      <form id="bookclub-authorpick-form" class="stacked-form">
+        <label>${I18N.t("bookClub.authorPickBookLabel")}
+          <input type="text" name="bookTitle" required maxlength="200" value="${escapeHtml(group.bookTitle || "")}" />
+        </label>
+        <label>${I18N.t("bookClub.authorPickPitchLabel")}
+          <textarea name="pitch" maxlength="2000" placeholder="${I18N.t("bookClub.authorPickPitchPlaceholder")}"></textarea>
+        </label>
+        <button type="submit" class="btn btn-primary" id="bookclub-authorpick-form-submit">${I18N.t("bookClub.authorPickModalSubmit")}</button>
+        <p class="form-msg" id="bookclub-authorpick-form-msg"></p>
+      </form>
+      <div class="bookclub-authorpick-thanks" id="bookclub-authorpick-thanks" style="display:none;">
+        <p class="bookclub-authorpick-thanks-title">&#10024; ${I18N.t("bookClub.authorPickThanksTitle")}</p>
+        <p class="bookclub-authorpick-thanks-desc">${I18N.t("bookClub.authorPickThanksDesc")}</p>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  document.getElementById("bookclub-authorpick-modal-close").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+
+  const form = document.getElementById("bookclub-authorpick-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!state.token) {
+      location.hash = "#/login";
+      return;
+    }
+    const submitBtn = document.getElementById("bookclub-authorpick-form-submit");
+    const msgEl = document.getElementById("bookclub-authorpick-form-msg");
+    submitBtn.disabled = true;
+    try {
+      await api("/api/groups/" + encodeURIComponent(slug) + "/author-pick", { method: "POST", auth: true });
+      form.style.display = "none";
+      document.getElementById("bookclub-authorpick-thanks").style.display = "";
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+      submitBtn.disabled = false;
+    }
+  });
+}
+
 async function renderBookClubDetail(slug) {
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
   let group, posts, bcConfig;
@@ -3180,21 +3241,23 @@ async function renderBookClubDetail(slug) {
         .join("")
     : `<div class="empty-state">${I18N.t("groups.noPosts")}</div>`;
 
-  // Task #242 - the "Pick of the Month" panel is always rendered (per
-  // Carlos's request to "have the space ready") but only actionable once
-  // AUTHOR_PICK_PROGRAM_ENABLED flips true on the server; until then it
-  // shows a clear "coming soon" state instead of a working submit button,
-  // so nobody can accidentally trigger a program with no real legal terms
-  // behind it yet.
+  // Task #242 - the "Pick of the Month" panel is always rendered AND its
+  // button is always real/clickable (per Carlos: "dejalo visual y navegable
+  // pero sin poder accionar" - let people click all the way through the
+  // flow so they can get familiar with it and he can react to the UX), but
+  // nothing is actually submitted while AUTHOR_PICK_PROGRAM_ENABLED is off:
+  // the modal opened below is clearly labeled as a preview, and its submit
+  // handler always ends in the friendly "thanks for trying it, nothing was
+  // sent" state instead of a real confirmation, because the backend never
+  // writes to the database until that flag is flipped.
   const authorPickHtml = `
-    <div class="bookclub-authorpick ${bcConfig.authorPickEnabled ? "" : "locked"}">
-      <p class="bookclub-authorpick-title">&#127942; ${I18N.t("bookClub.authorPickTitle")}</p>
+    <div class="bookclub-authorpick">
+      <div class="bookclub-authorpick-headrow">
+        <p class="bookclub-authorpick-title">&#127942; ${I18N.t("bookClub.authorPickTitle")}</p>
+        ${!bcConfig.authorPickEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+      </div>
       <p class="bookclub-authorpick-desc">${I18N.t("bookClub.authorPickDesc")}</p>
-      ${
-        bcConfig.authorPickEnabled
-          ? `<button class="btn btn-primary" id="bookclub-authorpick-btn">${I18N.t("bookClub.authorPickSubmit")}</button>`
-          : `<span class="bookclub-authorpick-soon">${I18N.t("bookClub.authorPickComingSoon")}</span>`
-      }
+      <button type="button" class="btn btn-primary" id="bookclub-authorpick-btn">${I18N.t("bookClub.authorPickSubmit")}</button>
     </div>
   `;
 
@@ -3248,6 +3311,17 @@ async function renderBookClubDetail(slug) {
       } finally {
         videoBtn.disabled = false;
       }
+    });
+  }
+
+  const authorPickBtn = document.getElementById("bookclub-authorpick-btn");
+  if (authorPickBtn) {
+    authorPickBtn.addEventListener("click", () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      openAuthorPickModal(slug, group);
     });
   }
 
