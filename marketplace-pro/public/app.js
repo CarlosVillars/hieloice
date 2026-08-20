@@ -3473,6 +3473,7 @@ async function renderPublishBookHome() {
     { emoji: "&#129302;", title: I18N.t("publishBook.howStep2Title"), body: I18N.t("publishBook.howStep2Body") },
     { emoji: "&#128101;", title: I18N.t("publishBook.howStep3Title"), body: I18N.t("publishBook.howStep3Body") },
     { emoji: "&#127942;", title: I18N.t("publishBook.howStep4Title"), body: I18N.t("publishBook.howStep4Body") },
+    { emoji: "&#128176;", title: I18N.t("publishBook.howStep5Title"), body: I18N.t("publishBook.howStep5Body") },
   ];
 
   viewEl.innerHTML = `
@@ -3973,7 +3974,8 @@ function renderPhotosGalleryTab(photos, isMe) {
       reader.readAsDataURL(file);
     });
     el.querySelectorAll(".photo-remove-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
         if (!confirm(I18N.t("common.delete") + "?")) return;
         try {
           await api("/api/photos/" + btn.dataset.id, { method: "DELETE", auth: true });
@@ -3982,6 +3984,171 @@ function renderPhotosGalleryTab(photos, isMe) {
           alert(err.message);
         }
       });
+    });
+  }
+
+  // Tap a photo to open it full-size with like/comment - see
+  // openPhotoLightbox() below. Excludes the "+" add tile and the remove (x)
+  // button, which have their own handlers above.
+  el.querySelectorAll(".photo-gallery-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      const p = photos.find((x) => String(x.id) === item.dataset.id);
+      if (p) openPhotoLightbox(p);
+    });
+  });
+}
+
+// ---------------- Photo lightbox: view full-size, like, comment ----------------
+// Mirrors the Moments comments-sheet pattern above (openMomentComments/
+// drawMomentComments) but for a single profile-gallery photo, whose engagement
+// lives in mkt_photo_likes/mkt_photo_comments on the server (separate tables
+// from moments - see attachPhotoEngagement() in server.js).
+let photoLightboxState = null;
+
+function openPhotoLightbox(photo) {
+  photoLightboxState = {
+    photo: { ...photo },
+    comments: [],
+    commentsLoading: true,
+    replyTo: null,
+  };
+  const overlay = document.createElement("div");
+  overlay.className = "photo-lightbox-overlay";
+  overlay.id = "photo-lightbox-overlay";
+  document.body.appendChild(overlay);
+  document.body.style.overflow = "hidden";
+  drawPhotoLightbox();
+  api("/api/photos/" + photo.id + "/comments")
+    .then((rows) => {
+      if (!photoLightboxState || photoLightboxState.photo.id !== photo.id) return;
+      photoLightboxState.comments = rows;
+      photoLightboxState.commentsLoading = false;
+      drawPhotoLightbox();
+    })
+    .catch(() => {
+      if (photoLightboxState) {
+        photoLightboxState.commentsLoading = false;
+        drawPhotoLightbox();
+      }
+    });
+}
+
+function closePhotoLightbox() {
+  const overlay = document.getElementById("photo-lightbox-overlay");
+  if (overlay) overlay.remove();
+  photoLightboxState = null;
+  document.body.style.overflow = "";
+}
+
+function drawPhotoLightbox() {
+  const overlay = document.getElementById("photo-lightbox-overlay");
+  if (!overlay || !photoLightboxState) return;
+  const { photo, comments, commentsLoading, replyTo } = photoLightboxState;
+  const topLevel = comments.filter((c) => !c.parentCommentId);
+  const repliesOf = (id) => comments.filter((c) => c.parentCommentId === id);
+
+  const commentRowHtml = (c, isReply) => `
+    <div class="photo-comment-row ${isReply ? "is-reply" : ""}">
+      ${c.userPhoto ? `<img class="photo-comment-avatar" src="${c.userPhoto}" />` : `<div class="photo-comment-avatar photo-comment-avatar-placeholder">${initials(c.userName || "")}</div>`}
+      <div class="photo-comment-body">
+        <div class="photo-comment-meta"><span class="photo-comment-name">${escapeHtml(c.userName || "")}</span><span class="photo-comment-age">${timeAgoStr(c.createdAt)}</span></div>
+        <div class="photo-comment-text">${escapeHtml(c.text)}</div>
+        ${!isReply ? `<button class="photo-comment-reply-btn" data-reply-to="${c.id}" data-reply-name="${escapeHtml(c.userName || "")}">${I18N.t("moments.commentReply") || "Reply"}</button>` : ""}
+      </div>
+    </div>`;
+
+  const listHtml = topLevel.length
+    ? topLevel.map((c) => commentRowHtml(c, false) + repliesOf(c.id).map((r) => commentRowHtml(r, true)).join("")).join("")
+    : commentsLoading
+    ? `<div class="moment-comments-empty">${I18N.t("common.loading")}</div>`
+    : `<div class="moment-comments-empty">${I18N.t("moments.commentsEmpty") || "No comments yet."}</div>`;
+
+  overlay.innerHTML = `
+    <div class="photo-lightbox-backdrop" id="photo-lightbox-backdrop"></div>
+    <div class="photo-lightbox-panel">
+      <button class="photo-lightbox-close" id="photo-lightbox-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      <div class="photo-lightbox-image-wrap"><img class="photo-lightbox-image" src="${photo.url}" /></div>
+      <div class="photo-lightbox-actions">
+        <button type="button" class="photo-lightbox-like-btn ${photo.likedByMe ? "active" : ""}" id="photo-lightbox-like-btn">${photo.likedByMe ? "&#10084;&#65039;" : "&#129293;"} <span id="photo-lightbox-like-count">${photo.likesCount || 0}</span></button>
+        <span class="photo-lightbox-comment-count">&#128172; ${photo.commentsCount || 0}</span>
+      </div>
+      <div class="photo-lightbox-comments-list">${listHtml}</div>
+      ${
+        replyTo
+          ? `<div class="moment-comment-replying-chip">${(I18N.t("moments.replyingTo") || "Replying to")} @${escapeHtml(replyTo.name)} <button id="photo-comment-cancel-reply">&times;</button></div>`
+          : ""
+      }
+      <form class="moment-comments-input-row" id="photo-comments-form">
+        <input type="text" id="photo-comments-input" maxlength="500" placeholder="${I18N.t("moments.commentPlaceholder") || "Add a comment..."}" ${state.token ? "" : "disabled"} />
+        <button type="submit" ${state.token ? "" : "disabled"}>${I18N.t("messages.send")}</button>
+      </form>
+    </div>`;
+
+  document.getElementById("photo-lightbox-backdrop").addEventListener("click", closePhotoLightbox);
+  document.getElementById("photo-lightbox-close").addEventListener("click", closePhotoLightbox);
+
+  const likeBtn = document.getElementById("photo-lightbox-like-btn");
+  likeBtn.addEventListener("click", async () => {
+    if (!state.token) {
+      location.hash = "#/login";
+      return;
+    }
+    const wasLiked = photoLightboxState.photo.likedByMe;
+    photoLightboxState.photo.likedByMe = !wasLiked;
+    photoLightboxState.photo.likesCount = (photoLightboxState.photo.likesCount || 0) + (wasLiked ? -1 : 1);
+    drawPhotoLightbox();
+    try {
+      await api("/api/photos/" + photo.id + "/like", { method: wasLiked ? "DELETE" : "POST", auth: true });
+    } catch (err) {
+      photoLightboxState.photo.likedByMe = wasLiked;
+      photoLightboxState.photo.likesCount = (photoLightboxState.photo.likesCount || 0) + (wasLiked ? 1 : -1);
+      drawPhotoLightbox();
+    }
+  });
+
+  overlay.querySelectorAll(".photo-comment-reply-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      photoLightboxState.replyTo = { id: btn.dataset.replyTo, name: btn.dataset.replyName };
+      drawPhotoLightbox();
+      const input = document.getElementById("photo-comments-input");
+      if (input) input.focus();
+    });
+  });
+  const cancelReplyBtn = document.getElementById("photo-comment-cancel-reply");
+  if (cancelReplyBtn) {
+    cancelReplyBtn.addEventListener("click", () => {
+      photoLightboxState.replyTo = null;
+      drawPhotoLightbox();
+    });
+  }
+  const form = document.getElementById("photo-comments-form");
+  if (form) {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      const input = document.getElementById("photo-comments-input");
+      const text = (input.value || "").trim();
+      if (!text) return;
+      input.disabled = true;
+      try {
+        const created = await api("/api/photos/" + photo.id + "/comments", {
+          method: "POST",
+          auth: true,
+          body: { text, parentCommentId: photoLightboxState.replyTo ? photoLightboxState.replyTo.id : undefined },
+        });
+        photoLightboxState.comments.push(created);
+        photoLightboxState.photo.commentsCount = (photoLightboxState.photo.commentsCount || 0) + 1;
+        photoLightboxState.replyTo = null;
+        drawPhotoLightbox();
+        const freshInput = document.getElementById("photo-comments-input");
+        if (freshInput) freshInput.focus();
+      } catch (err) {
+        input.disabled = false;
+        alert(err.message);
+      }
     });
   }
 }
@@ -5607,6 +5774,13 @@ function openCreateWizard(target) {
     // WIZARD_SOUND_PRESETS) and whether the mic track is kept alongside it
     // when mixing into a recorded video. Reset the same way as brightness.
     soundPreset: "none", soundKeepMic: true,
+    // Task #243 - real royalty-free/Creative-Commons track picked from the
+    // Jamendo library (mutually exclusive with soundPreset above; picking
+    // one clears the other). _jamendoBuffer is the pre-decoded AudioBuffer
+    // for the selected track, fetched/decoded at selection time (see
+    // wizardSelectJamendoTrack()) so there's zero delay when recording
+    // actually starts. Reset the same way as brightness/soundPreset.
+    jamendoTrack: null, _jamendoBuffer: null,
     // AI auto-clip (task #160): the trim window the creator confirmed, if
     // any - both null means "publish the full video". Set from a
     // POST /api/ai/suggest-clip suggestion in step 3; see wireWizardAiClip().
@@ -5887,11 +6061,113 @@ function wizardPreviewSoundPreset(presetId) {
   } catch (e) {}
 }
 
+// Shared by the topbar pill (both its initial render markup below and the
+// live update after a pick) and by wizardOpenSoundPicker() - a Jamendo track
+// takes priority over a generated preset since picking one always clears
+// the other (see wizardSelectJamendoTrack()).
+function wizardSoundPillLabel() {
+  if (createWizard.jamendoTrack) return escapeHtml(createWizard.jamendoTrack.name);
+  if (createWizard.soundPreset && createWizard.soundPreset !== "none") return I18N.t("camera.soundPicker." + createWizard.soundPreset);
+  return I18N.t("create.addSound");
+}
+
 function updateWizardSoundPillLabel() {
   const pill = document.getElementById("wizard-fs-sound-pill");
   if (!pill) return;
-  const label = createWizard.soundPreset && createWizard.soundPreset !== "none" ? I18N.t("camera.soundPicker." + createWizard.soundPreset) : I18N.t("create.addSound");
-  pill.innerHTML = "&#9835; " + label;
+  pill.innerHTML = "&#9835; " + wizardSoundPillLabel();
+}
+
+// Task #243 - short (~6s) speaker preview of a Jamendo track through the
+// device's own output, same idea as wizardPreviewSoundPreset() but for a
+// real audio file instead of a generated tone. Not mixed into any recording.
+let wizardJamendoPreviewAudio = null;
+function wizardPreviewJamendoTrack(track) {
+  if (wizardJamendoPreviewAudio) {
+    wizardJamendoPreviewAudio.pause();
+    wizardJamendoPreviewAudio = null;
+  }
+  if (!track || !track.audioUrl) return;
+  try {
+    const audio = new Audio(track.audioUrl);
+    audio.volume = 0.7;
+    audio.play().catch(() => {});
+    wizardJamendoPreviewAudio = audio;
+    setTimeout(() => {
+      if (wizardJamendoPreviewAudio === audio) {
+        audio.pause();
+        wizardJamendoPreviewAudio = null;
+      }
+    }, 6000);
+  } catch (e) {}
+}
+
+async function wizardSearchJamendo(q) {
+  try {
+    return await api("/api/music/search" + (q ? "?q=" + encodeURIComponent(q) : ""));
+  } catch (e) {
+    return { configured: false, tracks: [] };
+  }
+}
+
+// Picking a Jamendo track and picking a generated preset are mutually
+// exclusive (see the "none" reset below) - selecting one clears the other.
+// The track's audio is fetched + decoded right away into an AudioBuffer
+// (createWizard._jamendoBuffer) so buildWizardRecordingStream() has zero
+// delay mixing it in once the creator actually starts recording.
+async function wizardSelectJamendoTrack(track, panel) {
+  createWizard.jamendoTrack = track;
+  createWizard.soundPreset = "none";
+  createWizard._jamendoBuffer = null;
+  updateWizardSoundPillLabel();
+  if (panel) {
+    panel.querySelectorAll(".wizard-sound-preset-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === "none"));
+    panel.querySelectorAll(".wizard-jamendo-track-btn").forEach((b) => b.classList.toggle("active", b.dataset.trackId === String(track.id)));
+  }
+  wizardPreviewJamendoTrack(track);
+  try {
+    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtxClass) return;
+    const resp = await fetch(track.audioUrl);
+    const arrBuf = await resp.arrayBuffer();
+    const ctx = new AudioCtxClass();
+    const buffer = await ctx.decodeAudioData(arrBuf);
+    ctx.close().catch(() => {});
+    if (createWizard.jamendoTrack && createWizard.jamendoTrack.id === track.id) {
+      createWizard._jamendoBuffer = buffer;
+    }
+  } catch (e) {
+    // Non-fatal: if the pre-fetch/decode fails (offline, CORS hiccup, etc.)
+    // the creator can still record - buildWizardRecordingStream() simply
+    // won't have music to mix in, same as if none had been picked.
+  }
+}
+
+function wizardRenderJamendoResults(panel, tracks, configured) {
+  const listEl = panel.querySelector("#wizard-jamendo-results");
+  if (!listEl) return;
+  if (!configured) {
+    listEl.innerHTML = `<p class="wizard-jamendo-empty">${I18N.t("camera.soundPicker.jamendoNotConfigured")}</p>`;
+    return;
+  }
+  if (!tracks.length) {
+    listEl.innerHTML = `<p class="wizard-jamendo-empty">${I18N.t("camera.soundPicker.jamendoNoResults")}</p>`;
+    return;
+  }
+  listEl.innerHTML = tracks
+    .map(
+      (t) => `
+    <button type="button" class="wizard-jamendo-track-btn ${createWizard.jamendoTrack && createWizard.jamendoTrack.id === t.id ? "active" : ""}" data-track-id="${t.id}">
+      ${t.image ? `<img class="wizard-jamendo-track-art" src="${t.image}" />` : `<span class="wizard-jamendo-track-art wizard-jamendo-track-art-empty">&#9835;</span>`}
+      <span class="wizard-jamendo-track-info"><span class="wizard-jamendo-track-name">${escapeHtml(t.name)}</span><span class="wizard-jamendo-track-artist">${escapeHtml(t.artist)}</span></span>
+    </button>`
+    )
+    .join("");
+  listEl.querySelectorAll(".wizard-jamendo-track-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const track = tracks.find((t) => String(t.id) === btn.dataset.trackId);
+      if (track) wizardSelectJamendoTrack(track, panel);
+    });
+  });
 }
 
 function wizardOpenSoundPicker() {
@@ -5909,9 +6185,15 @@ function wizardOpenSoundPicker() {
     <p class="wizard-sound-picker-title">${I18N.t("camera.soundPicker.title")}</p>
     <div class="wizard-sound-picker-list">
       ${WIZARD_SOUND_PRESETS.map(
-        (p) => `<button type="button" class="wizard-sound-preset-btn ${createWizard.soundPreset === p ? "active" : ""}" data-preset="${p}">${I18N.t("camera.soundPicker." + p)}</button>`
+        (p) => `<button type="button" class="wizard-sound-preset-btn ${createWizard.soundPreset === p && !createWizard.jamendoTrack ? "active" : ""}" data-preset="${p}">${I18N.t("camera.soundPicker." + p)}</button>`
       ).join("")}
     </div>
+    <p class="wizard-jamendo-title">&#127925; ${I18N.t("camera.soundPicker.jamendoTitle")}</p>
+    <form class="wizard-jamendo-search-row" id="wizard-jamendo-search-form">
+      <input type="text" id="wizard-jamendo-search-input" placeholder="${I18N.t("camera.soundPicker.jamendoSearchPlaceholder")}" />
+      <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+    </form>
+    <div class="wizard-jamendo-results" id="wizard-jamendo-results"><p class="wizard-jamendo-empty">${I18N.t("common.loading")}</p></div>
     <label class="wizard-sound-mic-toggle">
       <input type="checkbox" id="wizard-sound-keep-mic" ${createWizard.soundKeepMic ? "checked" : ""} />
       ${I18N.t("camera.soundPicker.keepMic")}
@@ -5922,7 +6204,14 @@ function wizardOpenSoundPicker() {
   panel.querySelectorAll(".wizard-sound-preset-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       createWizard.soundPreset = btn.dataset.preset;
+      createWizard.jamendoTrack = null;
+      createWizard._jamendoBuffer = null;
+      if (wizardJamendoPreviewAudio) {
+        wizardJamendoPreviewAudio.pause();
+        wizardJamendoPreviewAudio = null;
+      }
       panel.querySelectorAll(".wizard-sound-preset-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === createWizard.soundPreset));
+      panel.querySelectorAll(".wizard-jamendo-track-btn").forEach((b) => b.classList.remove("active"));
       updateWizardSoundPillLabel();
       wizardPreviewSoundPreset(createWizard.soundPreset);
     });
@@ -5934,7 +6223,27 @@ function wizardOpenSoundPicker() {
     });
   }
   const closeBtn = document.getElementById("wizard-sound-picker-close");
-  if (closeBtn) closeBtn.addEventListener("click", () => panel.remove());
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => {
+      if (wizardJamendoPreviewAudio) {
+        wizardJamendoPreviewAudio.pause();
+        wizardJamendoPreviewAudio = null;
+      }
+      panel.remove();
+    });
+  }
+  wizardSearchJamendo("").then((data) => wizardRenderJamendoResults(panel, data.tracks || [], data.configured));
+  const searchForm = document.getElementById("wizard-jamendo-search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const q = document.getElementById("wizard-jamendo-search-input").value.trim();
+      const listEl = panel.querySelector("#wizard-jamendo-results");
+      if (listEl) listEl.innerHTML = `<p class="wizard-jamendo-empty">${I18N.t("common.loading")}</p>`;
+      const data = await wizardSearchJamendo(q);
+      wizardRenderJamendoResults(panel, data.tracks || [], data.configured);
+    });
+  }
 }
 
 // Builds the MediaStream actually handed to `new MediaRecorder(...)` when a
@@ -5951,7 +6260,9 @@ function wizardOpenSoundPicker() {
 function buildWizardRecordingStream() {
   const camStream = createWizard.stream;
   if (!camStream) return camStream;
-  if (!createWizard.soundPreset || createWizard.soundPreset === "none") return camStream;
+  const usingJamendo = createWizard.jamendoTrack && createWizard._jamendoBuffer;
+  const usingPreset = createWizard.soundPreset && createWizard.soundPreset !== "none";
+  if (!usingJamendo && !usingPreset) return camStream;
   const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtxClass) return camStream;
   try {
@@ -5967,7 +6278,24 @@ function buildWizardRecordingStream() {
     const musicGain = audioCtx.createGain();
     musicGain.gain.value = 0.35;
     musicGain.connect(dest);
-    const stopMusic = playWizardSoundPreset(audioCtx, createWizard.soundPreset, musicGain);
+    let stopMusic;
+    if (usingJamendo) {
+      // Task #243 - real royalty-free/CC track from Jamendo, pre-decoded by
+      // wizardSelectJamendoTrack(). Looped for the length of the recording;
+      // the source node is created fresh here (a decoded AudioBuffer can be
+      // reused, but a given AudioBufferSourceNode can only be started once).
+      const source = audioCtx.createBufferSource();
+      source.buffer = createWizard._jamendoBuffer;
+      source.loop = true;
+      source.connect(musicGain);
+      source.start();
+      stopMusic = () => {
+        try { source.stop(); } catch (e) {}
+        try { source.disconnect(); } catch (e) {}
+      };
+    } else {
+      stopMusic = playWizardSoundPreset(audioCtx, createWizard.soundPreset, musicGain);
+    }
     createWizard._soundAudioCtx = audioCtx;
     createWizard._soundStopFn = stopMusic;
     createWizard._soundMusicGain = musicGain;
@@ -6559,9 +6887,7 @@ function drawCreateWizard() {
         <div class="wizard-fs-grid ${createWizard.gridOn ? "show" : ""}" id="wizard-fs-grid" aria-hidden="true"></div>
         <div class="wizard-fs-topbar">
           <button class="wizard-fs-icon-btn" id="wizard-fs-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
-          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${
-            createWizard.soundPreset && createWizard.soundPreset !== "none" ? I18N.t("camera.soundPicker." + createWizard.soundPreset) : I18N.t("create.addSound")
-          }</button>
+          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${wizardSoundPillLabel()}</button>
           <button class="wizard-fs-icon-btn" id="wizard-fs-effects-btn" title="${I18N.t("create.rail_effects")}">&#10024;</button>
         </div>
         <div class="wizard-fs-rec-badge" id="wizard-fs-rec-badge" style="display:none;"><span class="wizard-fs-rec-dot"></span><span id="wizard-fs-rec-time">0:00</span></div>
@@ -6860,7 +7186,14 @@ function drawCreateWizard() {
         .map((h) => (h.startsWith("#") ? h : "#" + h))
         .join(" ");
       const captionText = captionEl.value.trim();
-      const fullCaption = hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText;
+      // Task #243 - a Jamendo track always came from a real Creative-Commons
+      // license, and most CC licenses require attribution. Rather than make
+      // the creator remember to credit it, we append the credit line
+      // automatically so it's never missed.
+      const musicCredit = createWizard.jamendoTrack
+        ? "\n\u{1F3B5} " + createWizard.jamendoTrack.name + " — " + createWizard.jamendoTrack.artist + " (Jamendo, CC)"
+        : "";
+      const fullCaption = (hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText) + musicCredit;
       createWizard.captionDraft = captionText;
       createWizard.hashtagsDraft = hashtagsRaw;
 
