@@ -3057,10 +3057,33 @@ async function handleApi(req, res, pathname, query) {
     );
   }
 
+  // Task #240/#242 - Book Club is a specialized flavor of the existing
+  // Communities groups system (not a parallel table): is_book_club just
+  // marks a group so the frontend can route it into the Book Club UI, and
+  // video_room_name/book_title/book_product_id/author_pick_* are nullable
+  // extras only book-club groups use. Regular Communities groups are
+  // unaffected (is_book_club defaults false).
   function groupOut(g) {
-    const { created_by, created_at, ...rest } = g;
-    return { ...rest, createdBy: created_by, createdAt: created_at };
+    const { created_by, created_at, is_book_club, video_room_name, book_title, book_product_id, author_pick_status, author_pick_agreed_at, ...rest } = g;
+    return {
+      ...rest,
+      createdBy: created_by,
+      createdAt: created_at,
+      isBookClub: !!is_book_club,
+      videoRoomName: video_room_name || null,
+      bookTitle: book_title || null,
+      bookProductId: book_product_id || null,
+      authorPickStatus: author_pick_status || "not_available",
+      authorPickAgreedAt: author_pick_agreed_at || null,
+    };
   }
+
+  // Task #242 - flip this to true (and wire up a real terms-of-participation
+  // agreement) once Carlos has finalized the legal side of the "Pick of the
+  // Month" author-rights program. Until then the UI for it stays visible
+  // (so the space is ready) but shows a "coming soon" locked state instead
+  // of a working submit action - see GET /api/book-club/config below.
+  const AUTHOR_PICK_PROGRAM_ENABLED = false;
 
   function groupPostOut(p) {
     const { group_id, author_id, post_type, created_at, ...rest } = p;
@@ -3077,6 +3100,7 @@ async function handleApi(req, res, pathname, query) {
     let slug = slugify(body.name);
     const existing = await db.select("mkt_groups", { slug: "eq." + enc(slug), select: "id" });
     if (existing && existing[0]) slug = slug + "-" + crypto.randomBytes(3).toString("hex");
+    const isBookClub = body.isBookClub === true || body.isBookClub === "true";
     const group = {
       id: crypto.randomBytes(8).toString("hex"),
       slug,
@@ -3086,19 +3110,85 @@ async function handleApi(req, res, pathname, query) {
       description: String(body.description || "").slice(0, 1000),
       created_by: me.id,
       created_at: Date.now(),
+      is_book_club: isBookClub,
+      // Task #240 - book title is the whole point of a book-club group (what
+      // you're discussing); bookProductId optionally links it to one of the
+      // seller's own mkt_products listings so readers can jump straight to
+      // buying the copy being discussed. Both are ignored for a plain
+      // Communities group (isBookClub false).
+      book_title: isBookClub ? String(body.bookTitle || "").trim().slice(0, 200) || null : null,
+      book_product_id: isBookClub && body.bookProductId ? String(body.bookProductId) : null,
     };
     await db.insert("mkt_groups", group);
     return sendJson(res, 201, groupOut(group));
   }
 
   if (method === "GET" && pathname === "/api/groups") {
-    const { category, city, q } = query;
+    const { category, city, q, bookClub } = query;
     const params = { select: "*", order: "created_at.desc" };
     if (category) params.category = "eq." + enc(category);
     if (city) params.city = "ilike.*" + enc(city) + "*";
     if (q) params.name = "ilike.*" + enc(q) + "*";
+    // Task #240 - Book Club and Communities are the same underlying table,
+    // split purely by this flag so the two sections never bleed into each
+    // other's listings.
+    if (bookClub === "true") params.is_book_club = "eq.true";
+    else if (bookClub === "false") params.is_book_club = "eq.false";
     const groups = await db.select("mkt_groups", params);
     return sendJson(res, 200, groups.map(groupOut));
+  }
+
+  // GET /api/book-club/config - lets the frontend know whether the "Pick of
+  // the Month" author-rights program (task #242) is live yet. See
+  // AUTHOR_PICK_PROGRAM_ENABLED above for how this gets turned on.
+  if (method === "GET" && pathname === "/api/book-club/config") {
+    return sendJson(res, 200, { authorPickEnabled: AUTHOR_PICK_PROGRAM_ENABLED });
+  }
+
+  // POST /api/groups/:slug/video-room - lazily creates (once) and returns a
+  // Jitsi Meet room name for this group's video call. Jitsi's public
+  // meet.jit.si server needs no API key/account and is free to embed, so
+  // this works today without waiting on Carlos to set up a paid provider
+  // (Daily.co/Twilio/Agora) - see PROJECT.md for the trade-off if a more
+  // branded/controlled experience is wanted later. The room name is
+  // randomized once and reused by everyone in the group, not regenerated
+  // per-call, so members always land in the same room.
+  const groupVideoRoomMatch = pathname.match(/^\/api\/groups\/([a-zA-Z0-9-]+)\/video-room$/);
+  if (method === "POST" && groupVideoRoomMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_groups", { slug: "eq." + enc(groupVideoRoomMatch[1]), select: "*" });
+    const g = rows && rows[0];
+    if (!g) return sendJson(res, 404, { error: "Group not found" });
+    let roomName = g.video_room_name;
+    if (!roomName) {
+      roomName = "hieloice-" + g.slug + "-" + crypto.randomBytes(4).toString("hex");
+      await db.update("mkt_groups", { id: "eq." + enc(g.id) }, { video_room_name: roomName });
+    }
+    return sendJson(res, 200, { videoRoomName: roomName });
+  }
+
+  // POST /api/groups/:slug/author-pick - task #242. The full submission
+  // screen is real and navigable on the frontend (per Carlos's request:
+  // "visual y navegable pero sin poder accionar" - let people click through
+  // and get familiar with it) but this endpoint always answers with a
+  // friendly "not live yet" response while AUTHOR_PICK_PROGRAM_ENABLED is
+  // false, and never writes anything to the database - nobody can
+  // accidentally create a real submission before the legal terms exist.
+  // Flip the flag above once that's ready; the rest of this handler already
+  // does the real write.
+  const authorPickMatch = pathname.match(/^\/api\/groups\/([a-zA-Z0-9-]+)\/author-pick$/);
+  if (method === "POST" && authorPickMatch) {
+    if (!AUTHOR_PICK_PROGRAM_ENABLED) {
+      return sendJson(res, 200, { ok: false, comingSoon: true });
+    }
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_groups", { slug: "eq." + enc(authorPickMatch[1]), select: "*" });
+    const g = rows && rows[0];
+    if (!g) return sendJson(res, 404, { error: "Group not found" });
+    await db.update("mkt_groups", { id: "eq." + enc(g.id) }, { author_pick_status: "submitted", author_pick_agreed_at: Date.now() });
+    return sendJson(res, 200, { ok: true });
   }
 
   const groupMatch = pathname.match(/^\/api\/groups\/([a-zA-Z0-9-]+)$/);
@@ -4508,6 +4598,265 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, companyOut(updated[0]));
   }
 
+  // ---- ORIGINAL WORKS ("Publish a Book" - task #244, Reese Witherspoon-
+  // style independent-author pipeline: write with AI co-writing help ->
+  // submit -> automated AI first-pass review -> human team review. Nothing
+  // in this whole flow ever creates a public/purchasable listing - see
+  // ORIGINAL_BOOK_PROGRAM_ENABLED below - so both authors and our team can
+  // use the real end-to-end flow before any legal/monetization terms exist.
+  // Distinct from POST /api/products (selling a used physical book, C2C
+  // Marketplace) and from the Book Club "Pick of the Month" panel. ----
+  const ORIGINAL_BOOK_PROGRAM_ENABLED = false;
+
+  function originalWorkOut(w) {
+    return {
+      id: w.id,
+      authorId: w.author_id,
+      title: w.title,
+      genre: w.genre,
+      synopsis: w.synopsis,
+      chapters: Array.isArray(w.chapters) ? w.chapters : [],
+      coverImageUrl: w.cover_image_url || null,
+      status: w.status,
+      aiReviewVerdict: w.ai_review_verdict || null,
+      aiReviewNotes: w.ai_review_notes || null,
+      teamDecision: w.team_decision || null,
+      teamDecisionNotes: w.team_decision_notes || null,
+      submittedAt: w.submitted_at || null,
+      aiReviewedAt: w.ai_reviewed_at || null,
+      teamDecisionAt: w.team_decision_at || null,
+      createdAt: w.created_at,
+      updatedAt: w.updated_at,
+    };
+  }
+
+  if (method === "GET" && pathname === "/api/original-works/config") {
+    return sendJson(res, 200, { programEnabled: ORIGINAL_BOOK_PROGRAM_ENABLED });
+  }
+
+  if (method === "GET" && pathname === "/api/original-works/mine") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { author_id: "eq." + enc(me.id), order: "updated_at.desc", select: "*" });
+    return sendJson(res, 200, (rows || []).map(originalWorkOut));
+  }
+
+  if (method === "POST" && pathname === "/api/original-works") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const title = String(body.title || "").trim().slice(0, 200);
+    if (!title) return sendJson(res, 400, { error: "Title is required" });
+    const now = Date.now();
+    const work = {
+      id: crypto.randomBytes(8).toString("hex"),
+      author_id: me.id,
+      title,
+      genre: String(body.genre || "").trim().slice(0, 60),
+      synopsis: String(body.synopsis || "").trim().slice(0, 2000),
+      chapters: [],
+      status: "draft",
+      created_at: now,
+      updated_at: now,
+    };
+    const created = await db.insert("original_works", work);
+    return sendJson(res, 201, originalWorkOut(created));
+  }
+
+  const workMatch = pathname.match(/^\/api\/original-works\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && workMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { id: "eq." + enc(workMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id && !isAdmin(me)) return sendJson(res, 403, { error: "Not authorized" });
+    return sendJson(res, 200, originalWorkOut(w));
+  }
+
+  if (method === "PATCH" && workMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { id: "eq." + enc(workMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (!["draft", "needs_revision"].includes(w.status)) {
+      return sendJson(res, 400, { error: "This book can't be edited while it's under review." });
+    }
+    const body = await readBody(req);
+    const patch = { updated_at: Date.now() };
+    if (body.title !== undefined) patch.title = String(body.title).trim().slice(0, 200);
+    if (body.genre !== undefined) patch.genre = String(body.genre).trim().slice(0, 60);
+    if (body.synopsis !== undefined) patch.synopsis = String(body.synopsis).trim().slice(0, 2000);
+    if (Array.isArray(body.chapters)) {
+      patch.chapters = body.chapters.slice(0, 60).map((c) => ({
+        title: String((c && c.title) || "").trim().slice(0, 150),
+        content: String((c && c.content) || "").slice(0, 20000),
+      }));
+    }
+    const updated = await db.update("original_works", { id: "eq." + enc(w.id) }, patch);
+    return sendJson(res, 200, originalWorkOut(updated[0]));
+  }
+
+  // POST /api/original-works/:id/ai-assist { instruction, currentText, locale }
+  // A co-writing helper for one chapter at a time - the author stays the
+  // author, this just drafts/continues/polishes on request.
+  const aiAssistMatch = pathname.match(/^\/api\/original-works\/([a-zA-Z0-9]+)\/ai-assist$/);
+  if (method === "POST" && aiAssistMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!checkRateLimit("book-ai-assist:" + me.id, 30, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many AI requests. Please try again in a bit." });
+    }
+    const rows = await db.select("original_works", { id: "eq." + enc(aiAssistMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+
+    const body = await readBody(req);
+    const locale = body.locale === "es" ? "es" : "en";
+    const instruction = String(body.instruction || "").trim().slice(0, 500);
+    const currentText = String(body.currentText || "").slice(0, 8000);
+    if (!instruction) return sendJson(res, 400, { error: "Tell the AI what you'd like help with." });
+
+    try {
+      const data = await callClaude({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1200,
+        system:
+          "You are a collaborative fiction/nonfiction co-writing assistant embedded in HieloIce's " +
+          "'Publish a Book' tool, helping an independent author draft or improve one chapter of their " +
+          "own original, unpublished book. Reply " + (locale === "es" ? "in Spanish" : "in English") + ". " +
+          "Write only the requested prose/content itself - no preamble, no meta-commentary, no markdown " +
+          "headers, just text the author can paste directly into their chapter. Match the tone and style " +
+          "already present in their existing text if any is provided. Never reproduce real, copyrighted " +
+          "passages from existing published books - only generate original text.",
+        messages: [
+          {
+            role: "user",
+            content:
+              "Book title: " + (w.title || "(untitled)") + "\nGenre: " + (w.genre || "(unspecified)") +
+              (currentText ? "\n\nCurrent chapter text so far:\n" + currentText : "\n\n(This chapter is currently empty.)") +
+              "\n\nWhat I need help with: " + instruction,
+          },
+        ],
+      });
+      const suggestion = claudeText(data);
+      if (!suggestion) throw new Error("Empty AI response");
+      return sendJson(res, 200, { suggestion });
+    } catch (e) {
+      console.error("Book AI-assist failed:", e && e.message);
+      return sendJson(res, 502, { error: locale === "es" ? "El asistente de IA no está disponible ahora mismo." : "The AI assistant is unavailable right now." });
+    }
+  }
+
+  // POST /api/original-works/:id/submit - runs an automated AI first-pass
+  // review, and if it looks like genuine original writing, queues the book
+  // for our team's human review. Either outcome stays entirely internal -
+  // see ORIGINAL_BOOK_PROGRAM_ENABLED - nothing becomes public here.
+  const submitMatch = pathname.match(/^\/api\/original-works\/([a-zA-Z0-9]+)\/submit$/);
+  if (method === "POST" && submitMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { id: "eq." + enc(submitMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (!["draft", "needs_revision"].includes(w.status)) {
+      return sendJson(res, 400, { error: "This book has already been submitted." });
+    }
+
+    const chapters = Array.isArray(w.chapters) ? w.chapters : [];
+    const totalWords = chapters.reduce(
+      (sum, c) => sum + String((c && c.content) || "").trim().split(/\s+/).filter(Boolean).length,
+      0
+    );
+    if (!w.title || !w.synopsis || chapters.length === 0 || totalWords < 300) {
+      return sendJson(res, 400, { error: "Add a title, synopsis, and at least one chapter (300+ words) before submitting." });
+    }
+
+    const body = await readBody(req);
+    const locale = body.locale === "es" ? "es" : "en";
+    const manuscript = chapters
+      .map((c, i) => "Chapter " + (i + 1) + (c.title ? ": " + c.title : "") + "\n" + (c.content || ""))
+      .join("\n\n")
+      .slice(0, 12000);
+
+    let verdict = "needs_revision";
+    let notes =
+      locale === "es"
+        ? "No se pudo completar la revisión automática. Intenta de nuevo."
+        : "Automated review couldn't complete. Please try again.";
+    try {
+      const data = await callClaude({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 400,
+        system:
+          "You are a first-pass editorial screener for HieloIce's independent-author publishing program. " +
+          "Given a manuscript draft, respond with exactly two lines: the first line is either PASS or " +
+          "NEEDS_REVISION, and the second line is 2-3 sentences of constructive feedback " +
+          (locale === "es" ? "in Spanish" : "in English") + ". PASS means it reads like a genuine, coherent, " +
+          "original piece of writing worth a human editor's time (it does not need to be perfect or " +
+          "finished). NEEDS_REVISION means it's empty/placeholder text, incoherent, extremely short, or " +
+          "appears to be copied verbatim from a well-known published work rather than original writing.",
+        messages: [
+          {
+            role: "user",
+            content: "Title: " + w.title + "\nGenre: " + w.genre + "\nSynopsis: " + w.synopsis + "\n\n" + manuscript,
+          },
+        ],
+      });
+      const text = claudeText(data);
+      const firstLine = (text.split("\n")[0] || "").trim().toUpperCase();
+      verdict = firstLine.startsWith("PASS") ? "pass" : "needs_revision";
+      notes = text.split("\n").slice(1).join(" ").trim() || notes;
+    } catch (e) {
+      console.error("Book AI review failed:", e && e.message);
+    }
+
+    const now = Date.now();
+    const patch = {
+      status: verdict === "pass" ? "team_review" : "needs_revision",
+      ai_review_verdict: verdict,
+      ai_review_notes: notes,
+      submitted_at: now,
+      ai_reviewed_at: now,
+      updated_at: now,
+    };
+    const updated = await db.update("original_works", { id: "eq." + enc(w.id) }, patch);
+    return sendJson(res, 200, originalWorkOut(updated[0]));
+  }
+
+  // POST /api/original-works/:id/publish - the genuine final "make it
+  // public and for sale" action, only reachable after our team approved
+  // the book (status === approved_pending_legal). The whole rest of the
+  // journey up to this point is real (writing, AI co-writing, AI review,
+  // team review) - per Carlos: "necesito todo el recorrido... pero al
+  // momento final... que no se pueda accionar" - so this exact click is
+  // the one that stays inert while ORIGINAL_BOOK_PROGRAM_ENABLED is false:
+  // it always answers with a friendly "not yet" and never flips the status
+  // to published or creates any public/purchasable listing. Flip the flag
+  // above once the author program's legal/monetization terms are final;
+  // the real publish logic already below is ready to go.
+  const publishMatch = pathname.match(/^\/api\/original-works\/([a-zA-Z0-9]+)\/publish$/);
+  if (method === "POST" && publishMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("original_works", { id: "eq." + enc(publishMatch[1]), select: "*" });
+    const w = rows && rows[0];
+    if (!w) return sendJson(res, 404, { error: "Not found" });
+    if (w.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (w.status !== "approved_pending_legal") {
+      return sendJson(res, 400, { error: "This book isn't approved for publishing yet." });
+    }
+    if (!ORIGINAL_BOOK_PROGRAM_ENABLED) {
+      return sendJson(res, 200, { ok: false, comingSoon: true });
+    }
+    const updated = await db.update("original_works", { id: "eq." + enc(w.id) }, { status: "published", updated_at: Date.now() });
+    return sendJson(res, 200, { ok: true, work: originalWorkOut(updated[0]) });
+  }
+
   // ---- ADS (advertiser carousel) ----
   function adOut(a) {
     const { image_url, link_url, advertiser_name, sort_order, created_at, ...rest } = a;
@@ -4789,6 +5138,54 @@ async function handleApi(req, res, pathname, query) {
       const updated = await db.update("mkt_reports", { id: "eq." + enc(adminReportMatch[1]) }, patch);
       if (!updated || !updated[0]) return sendJson(res, 404, { error: "Report not found" });
       return sendJson(res, 200, { ok: true });
+    }
+
+    // GET /api/admin/original-works?status=team_review (defaults to team_review)
+    if (method === "GET" && pathname === "/api/admin/original-works") {
+      const params = { select: "*", order: "submitted_at.desc", limit: "50" };
+      params.status = "eq." + enc(String(query.status || "team_review"));
+      const rows = await db.select("original_works", params);
+      const authorIds = [...new Set((rows || []).map((w) => w.author_id))];
+      let authorMap = {};
+      if (authorIds.length) {
+        const authors = await db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,email" });
+        (authors || []).forEach((a) => {
+          authorMap[a.id] = { name: a.name, email: a.email };
+        });
+      }
+      return sendJson(
+        res,
+        200,
+        (rows || []).map((w) => ({
+          ...originalWorkOut(w),
+          authorName: (authorMap[w.author_id] || {}).name || "Unknown",
+          authorEmail: (authorMap[w.author_id] || {}).email || "",
+        }))
+      );
+    }
+
+    // POST /api/admin/original-works/:id/decision { decision: 'approve'|'reject', notes? }
+    // "approve" never makes the book public or purchasable - see
+    // ORIGINAL_BOOK_PROGRAM_ENABLED above - it only tells the author the
+    // team liked it, and moves status to approved_pending_legal.
+    const adminWorkDecisionMatch = pathname.match(/^\/api\/admin\/original-works\/([a-zA-Z0-9]+)\/decision$/);
+    if (method === "POST" && adminWorkDecisionMatch) {
+      const body = await readBody(req);
+      if (!["approve", "reject"].includes(body.decision)) return sendJson(res, 400, { error: "Invalid decision" });
+      const rows = await db.select("original_works", { id: "eq." + enc(adminWorkDecisionMatch[1]), select: "*" });
+      const w = rows && rows[0];
+      if (!w) return sendJson(res, 404, { error: "Not found" });
+      const now = Date.now();
+      const patch = {
+        status: body.decision === "approve" ? "approved_pending_legal" : "rejected",
+        team_decision: body.decision,
+        team_decision_notes: String(body.notes || "").slice(0, 1000),
+        team_decision_by: me.id,
+        team_decision_at: now,
+        updated_at: now,
+      };
+      const updated = await db.update("original_works", { id: "eq." + enc(w.id) }, patch);
+      return sendJson(res, 200, originalWorkOut(updated[0]));
     }
 
     return sendJson(res, 404, { error: "Route not found" });
