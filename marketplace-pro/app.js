@@ -249,6 +249,12 @@ function setAuth(token, user) {
   applyUserTheme(state.user);
   updateNavUI();
   pollUnread();
+  // Task #234 - the chat WebSocket is app-wide (live typing/presence/message
+  // delivery need to work even when #/messages isn't the open route), so it
+  // opens/closes on login/logout rather than only when a thread is open.
+  // See connectChatSocket()/disconnectChatSocket() further down.
+  if (token) connectChatSocket();
+  else disconnectChatSocket();
 }
 
 async function refreshMe() {
@@ -282,6 +288,7 @@ function updateNavUI() {
   setDisplay("nav-logout", loggedIn ? "inline" : "none");
   setDisplay("nav-profile", loggedIn ? "inline" : "none");
   setDisplay("nav-messages", loggedIn ? "inline" : "none");
+  setDisplay("nav-notifications", loggedIn ? "inline" : "none");
   const navAdmin = document.getElementById("nav-admin");
   if (navAdmin) {
     const canAdmin = loggedIn && state.user && (state.user.role === "admin" || state.user.isOwner);
@@ -290,15 +297,15 @@ function updateNavUI() {
   // The bottom/top icon bar stays visible for guests too (not just logged-in
   // users) so a first-time visitor can still find Marketplace, International
   // and Communities - those live inside the Marketplace dropdown. Only the
-  // items that require an account (Friends, Moments/Clips, Create,
-  // Notifications) are hidden until the person logs in.
+  // items that require an account (Friends, Moments/Clips, Create) are
+  // hidden until the person logs in. Notifications moved into the top
+  // Profile/Messages row (task #237) and is hidden/shown there instead.
   const iconNav = document.getElementById("icon-nav");
   if (iconNav) iconNav.style.display = "flex";
   setDisplay("icon-nav-friends", loggedIn ? "flex" : "none");
   setDisplay("icon-nav-clips", loggedIn ? "flex" : "none");
   const createWrap = document.getElementById("icon-nav-create");
   if (createWrap) createWrap.style.display = loggedIn ? "flex" : "none";
-  setDisplay("icon-nav-notifications", loggedIn ? "flex" : "none");
   if (!loggedIn) {
     setUnreadBadge(0);
     setIconNavBadge(0);
@@ -371,7 +378,21 @@ function applyStaticI18n() {
   updateGlobalSearchPlaceholder();
   setText("nav-messages", I18N.t("nav.messages"));
   setText("nav-profile", I18N.t("nav.profile"));
+  const navNotifEl = document.getElementById("nav-notifications");
+  if (navNotifEl) {
+    const notifLabel = I18N.t("iconnav.notifications");
+    navNotifEl.title = notifLabel;
+    navNotifEl.setAttribute("aria-label", notifLabel);
+  }
   setText("nav-post", I18N.t("nav.postAd"));
+  setText("nav-post-original-label", I18N.t("nav.publishOriginal"));
+  setText("nav-post-used-label", I18N.t("nav.sellUsed"));
+  const navBookClubEl = document.getElementById("nav-book-club");
+  if (navBookClubEl) {
+    const bookClubLabel = I18N.t("iconnav.bookClub");
+    navBookClubEl.title = bookClubLabel;
+    navBookClubEl.setAttribute("aria-label", bookClubLabel);
+  }
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
   setText("nav-logout", I18N.t("nav.logout"));
@@ -383,7 +404,6 @@ function applyStaticI18n() {
   setText("icon-nav-friends-label", I18N.t("iconnav.friends"));
   setText("icon-nav-clips-label", I18N.t("iconnav.clips"));
   setText("icon-nav-marketplace-label", I18N.t("iconnav.marketplace"));
-  setText("icon-nav-notifications-label", I18N.t("iconnav.notifications"));
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
@@ -393,8 +413,10 @@ function applyStaticI18n() {
   setText("icon-nav-create-upload-moment-label", I18N.t("iconnav.createUploadMoment"));
   setText("icon-nav-create-upload-picture-label", I18N.t("iconnav.createUploadPicture"));
   setText("icon-nav-create-loop-label", I18N.t("iconnav.createLoop"));
+  setText("icon-nav-create-video-label", I18N.t("iconnav.createVideo"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
+  setText("icon-nav-videos-label", I18N.t("iconnav.dropdownVideos"));
   setText("icon-nav-dropdown-soon-label", I18N.t("iconnav.comingSoon"));
   setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
   setText("icon-nav-books-recommend-label", I18N.t("iconnav.booksRecommend"));
@@ -496,7 +518,9 @@ function updateGlobalSearchPlaceholder() {
   const dropdown = document.getElementById("icon-nav-marketplace-dropdown");
   const createBtn = document.getElementById("icon-nav-create");
   const createDropdown = document.getElementById("icon-nav-create-dropdown");
-  const allDropdowns = [dropdown, createDropdown];
+  const postBtn = document.getElementById("nav-post");
+  const postDropdown = document.getElementById("nav-post-dropdown");
+  const allDropdowns = [dropdown, createDropdown, postDropdown];
   function closeAllDropdowns(except) {
     allDropdowns.forEach((d) => {
       if (d && d !== except) d.style.display = "none";
@@ -608,6 +632,23 @@ function updateGlobalSearchPlaceholder() {
         openCreateWizard("loop");
       });
     }
+    // "Upload video" (task #231) opens the same wizard with target:"video" -
+    // the long-form Videos hub - and jumps straight to the gallery file
+    // picker pre-filtered to video files, same idiom as "Upload a Moment"
+    // above, since a 20-minute hold-to-record capture isn't a realistic UX.
+    const videoLink = document.getElementById("icon-nav-create-video");
+    if (videoLink) {
+      videoLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard("video");
+        const fileInput = document.getElementById("wizard-file-media");
+        if (fileInput) {
+          fileInput.accept = "video/*";
+          fileInput.click();
+        }
+      });
+    }
     const productLink = document.getElementById("icon-nav-create-product");
     if (productLink) {
       productLink.addEventListener("click", () => {
@@ -615,11 +656,44 @@ function updateGlobalSearchPlaceholder() {
       });
     }
   }
+  // "PUBLISH A BOOK" (task #244) - no longer navigates straight to the
+  // used-book listing form. It opens a small menu so people can pick
+  // between publishing their own original/unpublished work (new AI-assisted
+  // flow) or selling a used physical book (the original #/post form).
+  if (postBtn && postDropdown) {
+    postBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = postDropdown.style.display !== "block";
+      closeAllDropdowns();
+      if (willOpen) {
+        // The dropdown lives inside .topbar-nav, which now scrolls
+        // horizontally (task: "never wraps to a second row"). Setting
+        // overflow-x on an element also forces its overflow-y to behave as
+        // "auto" per the CSS spec, which silently clips any absolutely-
+        // positioned child that pokes out below the row - so the menu was
+        // opening (display:block) but invisible. Anchoring it with
+        // position:fixed at click time, computed from the button's real
+        // screen position, escapes that clipping entirely.
+        const rect = postBtn.getBoundingClientRect();
+        postDropdown.style.top = rect.bottom + 6 + "px";
+        postDropdown.style.left = rect.left + "px";
+      }
+      postDropdown.style.display = willOpen ? "block" : "none";
+    });
+    postDropdown.addEventListener("click", (e) => e.stopPropagation());
+    ["original", "used"].forEach((key) => {
+      const link = document.getElementById("nav-post-" + key);
+      if (link) link.addEventListener("click", () => { postDropdown.style.display = "none"; });
+    });
+  }
   document.addEventListener("click", () => closeAllDropdowns());
 })();
 
 function setIconNavBadge(count) {
-  const badge = document.getElementById("icon-nav-badge");
+  // Task #237 - the bell moved out of the bottom icon bar into the top
+  // Profile/Messages/Notifications row, so this now writes to
+  // nav-notifications-badge instead of the old icon-nav-badge element.
+  const badge = document.getElementById("nav-notifications-badge");
   if (!badge) return;
   if (count > 0) {
     badge.textContent = count > 9 ? "9+" : String(count);
@@ -655,8 +729,14 @@ async function router() {
     if (parts[0] === "marketplace") return renderMarketplaceHome();
     if (parts[0] === "friends") return renderFriendsPage();
     if (parts[0] === "clips") return renderClips();
+    if (parts[0] === "videos" && parts[1]) return renderVideoWatch(parts[1]);
+    if (parts[0] === "videos") return renderVideosFeed();
     if (parts[0] === "groups" && parts[1]) return renderGroupDetail(parts[1]);
     if (parts[0] === "groups") return renderGroupsHome();
+    if (parts[0] === "book-club" && parts[1]) return renderBookClubDetail(parts[1]);
+    if (parts[0] === "book-club") return renderBookClubHome();
+    if (parts[0] === "publish-book" && parts[1]) return renderPublishBookEditor(parts[1]);
+    if (parts[0] === "publish-book") return renderPublishBookHome();
     if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
@@ -1057,6 +1137,53 @@ async function loadHomeFeed() {
   }
 }
 
+// ---- AI auto-clip (task #160) trim-window playback helper ------------------
+// A Moment video may carry a trim_start_sec/trim_end_sec window (set by the
+// creator from an AI suggestion in the create wizard - see wireWizardAiClip()
+// below). This is metadata only, never a physically cut file (MVP - no
+// server-side re-encoding), so every place a Moment video plays has to
+// enforce it itself: start playback at the trim start, and loop back there
+// once playback reaches the trim end, instead of ever showing the raw full
+// clip. Shared by the Home feed cards, the full-screen Moments viewer, and
+// the Shorts/Clips swipe feed so the behavior is identical everywhere.
+function momentTrimWindow(m) {
+  if (!m || m.trimStartSec === undefined || m.trimStartSec === null || m.trimEndSec === undefined || m.trimEndSec === null) return null;
+  const start = Number(m.trimStartSec);
+  const end = Number(m.trimEndSec);
+  if (!isFinite(start) || !isFinite(end) || !(end > start)) return null;
+  return { start, end };
+}
+
+// Wires `videoEl` to respect m's trim window, if any. No-op (returns null)
+// for moments without one, so callers can wire this unconditionally without
+// branching. `onLoop` (optional) fires each time playback loops back to the
+// start - callers use it to keep other UI (e.g. a progress bar) in sync.
+function wireMomentTrimLoop(videoEl, m, onLoop) {
+  const trim = momentTrimWindow(m);
+  if (!videoEl || !trim) return null;
+  const seekToStart = () => {
+    try {
+      videoEl.currentTime = trim.start;
+    } catch (e) {}
+  };
+  if (videoEl.readyState >= 1) seekToStart();
+  else videoEl.addEventListener("loadedmetadata", seekToStart, { once: true });
+  videoEl.addEventListener("timeupdate", () => {
+    if (videoEl.currentTime >= trim.end) {
+      seekToStart();
+      if (onLoop) onLoop();
+    }
+  });
+  return trim;
+}
+
+function formatClipTime(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
 // ---- Friends' moments rendered as inline, playable feed cards on Home -----
 // (in addition to the circle bar above). Each card carries the full Reels-
 // style action rail (like/comment/share/repost/save); tapping the media
@@ -1080,6 +1207,24 @@ function buildHomeFeedItems(groups) {
   return items;
 }
 
+// Task #204 - renders the text/sticker overlays a creator dragged onto a
+// VIDEO capture (see createWizard.overlays / server.js's mkt_moments.overlay_json)
+// as a plain absolutely-positioned HTML layer on top of the <video> element,
+// at every place a video with overlays is actually played back. Photos never
+// call this - their overlays are baked straight into the JPEG pixels at
+// publish time instead (see bakeWizardOverlays()), so there's nothing left
+// to render as a separate layer for them.
+function renderMediaOverlayLayer(overlays) {
+  if (!overlays || !overlays.length) return "";
+  return `<div class="media-overlay-layer">${overlays
+    .map((ov) => {
+      const sizeClass = "size-" + (ov.size || "md");
+      const colorStyle = ov.type === "text" ? `color:${ov.color || "#FFD84D"};` : "";
+      return `<div class="media-overlay-item ${ov.type === "sticker" ? "sticker" : "text"} ${sizeClass}" style="left:${ov.xPct}%;top:${ov.yPct}%;${colorStyle}">${escapeHtml(ov.value || "")}</div>`;
+    })
+    .join("")}</div>`;
+}
+
 function feedMomentCardHtml(m) {
   return `
     <div class="feed-moment-card" data-moment-id="${m.id}">
@@ -1097,7 +1242,7 @@ function feedMomentCardHtml(m) {
       <div class="feed-moment-media-wrap">
         ${
           m.mediaType === "video"
-            ? `<video class="feed-moment-media" src="${m.mediaUrl}" muted loop playsinline autoplay></video>`
+            ? `<video class="feed-moment-media" src="${m.mediaUrl}" muted loop playsinline autoplay></video>${renderMediaOverlayLayer(m.overlays)}`
             : `<img class="feed-moment-media" src="${m.mediaUrl}" />`
         }
         <div class="feed-moment-actions">
@@ -1140,6 +1285,12 @@ function renderHomeFeedPosts(groups) {
   }
   el.style.display = "flex";
   el.innerHTML = items.map(feedMomentCardHtml).join("");
+  items.forEach((m) => {
+    if (m.mediaType !== "video") return;
+    const card = el.querySelector('[data-moment-id="' + m.id + '"]');
+    const vid = card && card.querySelector(".feed-moment-media");
+    wireMomentTrimLoop(vid, m);
+  });
   wireHomeFeedPostsDelegation();
 }
 
@@ -1446,7 +1597,19 @@ async function renderProductDetail(id) {
         }
       </div>
     </div>
+    <div id="product-related-videos"></div>
   `;
+
+  // "Related videos" (task #231) - fetched separately after the main
+  // product paint so a slow/failed videos lookup never blocks or breaks the
+  // product page itself; the container simply stays empty (no section
+  // rendered at all) if there are none, per the feature's own spec.
+  api("/api/videos/by-product/" + id)
+    .then((videos) => {
+      const el = document.getElementById("product-related-videos");
+      if (el && videos && videos.length) el.innerHTML = relatedVideosStripHtml(videos);
+    })
+    .catch(() => {});
 
   document.querySelectorAll(".gallery-thumbs img").forEach((img) => {
     img.addEventListener("click", () => {
@@ -2915,6 +3078,799 @@ async function renderGroupDetail(slug) {
   });
 }
 
+// ---------------- Book Club ("#/book-club", "#/book-club/:slug") ----------------
+// Task #240 - reuses the exact same mkt_groups/mkt_group_posts backend as
+// Communities (see groupOut()/POST/GET /api/groups in server.js), just
+// filtered to isBookClub groups and with book-specific extras: a required
+// book title, an optional link to the seller's own listing, a free group
+// video call (Jitsi Meet, no account/API key needed - see POST
+// /api/groups/:slug/video-room), and a "Pick of the Month" author-rights
+// panel that stays visible but locked until Carlos finishes the legal
+// agreement (task #242, AUTHOR_PICK_PROGRAM_ENABLED in server.js).
+
+let bookClubConfigCache = null;
+async function getBookClubConfig() {
+  if (bookClubConfigCache) return bookClubConfigCache;
+  try {
+    bookClubConfigCache = await api("/api/book-club/config");
+  } catch (e) {
+    bookClubConfigCache = { authorPickEnabled: false };
+  }
+  return bookClubConfigCache;
+}
+
+async function renderBookClubHome() {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const groups = await api("/api/groups?bookClub=true");
+
+  const listHtml = groups.length
+    ? `<div class="groups-grid bookclub-grid">${groups
+        .map(
+          (g) => `
+      <a class="group-card bookclub-card" href="#/book-club/${g.slug}">
+        <p class="bookclub-card-book">&#128214; ${escapeHtml(g.bookTitle || "")}</p>
+        <p class="group-card-name">${escapeHtml(g.name)}</p>
+        <p class="group-card-meta">${[g.city].filter(Boolean).map(escapeHtml).join(" · ")}</p>
+        ${g.description ? `<p class="group-card-desc">${escapeHtml(g.description)}</p>` : ""}
+      </a>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("bookClub.empty")}</div>`;
+
+  viewEl.innerHTML = `
+    <div class="groups-header">
+      <h2 class="section-heading">${I18N.t("bookClub.heading")}</h2>
+      ${state.token ? `<button class="btn btn-primary" id="bookclub-create-btn">${I18N.t("bookClub.create")}</button>` : ""}
+    </div>
+    <p class="groups-subtitle">${I18N.t("bookClub.subtitle")}</p>
+    <div id="bookclub-create-form" style="display:none;"></div>
+    ${listHtml}
+  `;
+
+  const createBtn = document.getElementById("bookclub-create-btn");
+  if (createBtn) {
+    createBtn.addEventListener("click", () => {
+      const formWrap = document.getElementById("bookclub-create-form");
+      if (formWrap.style.display !== "none") {
+        formWrap.style.display = "none";
+        return;
+      }
+      formWrap.style.display = "block";
+      formWrap.innerHTML = `
+        <form id="bookclub-create-form-el" class="stacked-form">
+          <label>${I18N.t("bookClub.bookTitle")}<input type="text" name="bookTitle" required maxlength="200" placeholder="${I18N.t("bookClub.bookTitlePlaceholder")}" /></label>
+          <label>${I18N.t("groups.name")}<input type="text" name="name" required maxlength="100" placeholder="${I18N.t("bookClub.namePlaceholder")}" /></label>
+          <label>${I18N.t("groups.city")}<input type="text" name="city" maxlength="80" placeholder="${I18N.t("bookClub.cityPlaceholder")}" /></label>
+          <label>${I18N.t("groups.description")}<textarea name="description" maxlength="1000"></textarea></label>
+          <button type="submit" class="btn btn-primary">${I18N.t("bookClub.createSubmit")}</button>
+          <p class="form-msg" id="bookclub-create-msg"></p>
+        </form>
+      `;
+      document.getElementById("bookclub-create-form-el").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const msgEl = document.getElementById("bookclub-create-msg");
+        try {
+          const g = await api("/api/groups", {
+            method: "POST",
+            auth: true,
+            body: {
+              isBookClub: true,
+              bookTitle: fd.get("bookTitle"),
+              name: fd.get("name"),
+              city: fd.get("city"),
+              description: fd.get("description"),
+            },
+          });
+          location.hash = "#/book-club/" + g.slug;
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+        }
+      });
+    });
+  }
+}
+
+function openBookClubVideoOverlay(roomName) {
+  const overlay = document.createElement("div");
+  overlay.className = "bookclub-video-overlay";
+  overlay.innerHTML = `
+    <div class="bookclub-video-topbar">
+      <span>${I18N.t("bookClub.videoCallLive")}</span>
+      <button class="bookclub-video-close" id="bookclub-video-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+    </div>
+    <iframe class="bookclub-video-frame" src="https://meet.jit.si/${encodeURIComponent(roomName)}#config.prejoinPageEnabled=true" allow="camera; microphone; fullscreen; display-capture; autoplay"></iframe>
+  `;
+  document.body.appendChild(overlay);
+  document.getElementById("bookclub-video-close").addEventListener("click", () => overlay.remove());
+}
+
+// Task #242 - navigable-but-inert "Pick of the Month" submission preview.
+// Opens a real modal with a real form; submitting calls the real endpoint,
+// which (while AUTHOR_PICK_PROGRAM_ENABLED is false) always answers with
+// { ok:false, comingSoon:true } and never touches the database. We treat
+// that response as success-of-the-preview, not an error, so the flow feels
+// complete end to end.
+function openAuthorPickModal(slug, group) {
+  const overlay = document.createElement("div");
+  overlay.className = "bookclub-authorpick-modal-overlay";
+  overlay.id = "bookclub-authorpick-modal-overlay";
+  overlay.innerHTML = `
+    <div class="bookclub-authorpick-modal">
+      <button type="button" class="bookclub-authorpick-modal-close" id="bookclub-authorpick-modal-close" aria-label="${I18N.t("bookClub.authorPickClose")}">&times;</button>
+      <h3 class="bookclub-authorpick-modal-title">&#127942; ${I18N.t("bookClub.authorPickModalTitle")}</h3>
+      <p class="bookclub-authorpick-modal-intro">${I18N.t("bookClub.authorPickModalIntro")}</p>
+      <form id="bookclub-authorpick-form" class="stacked-form">
+        <label>${I18N.t("bookClub.authorPickBookLabel")}
+          <input type="text" name="bookTitle" required maxlength="200" value="${escapeHtml(group.bookTitle || "")}" />
+        </label>
+        <label>${I18N.t("bookClub.authorPickPitchLabel")}
+          <textarea name="pitch" maxlength="2000" placeholder="${I18N.t("bookClub.authorPickPitchPlaceholder")}"></textarea>
+        </label>
+        <button type="submit" class="btn btn-primary" id="bookclub-authorpick-form-submit">${I18N.t("bookClub.authorPickModalSubmit")}</button>
+        <p class="form-msg" id="bookclub-authorpick-form-msg"></p>
+      </form>
+      <div class="bookclub-authorpick-thanks" id="bookclub-authorpick-thanks" style="display:none;">
+        <p class="bookclub-authorpick-thanks-title">&#10024; ${I18N.t("bookClub.authorPickThanksTitle")}</p>
+        <p class="bookclub-authorpick-thanks-desc">${I18N.t("bookClub.authorPickThanksDesc")}</p>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  document.getElementById("bookclub-authorpick-modal-close").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+
+  const form = document.getElementById("bookclub-authorpick-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!state.token) {
+      location.hash = "#/login";
+      return;
+    }
+    const submitBtn = document.getElementById("bookclub-authorpick-form-submit");
+    const msgEl = document.getElementById("bookclub-authorpick-form-msg");
+    submitBtn.disabled = true;
+    try {
+      await api("/api/groups/" + encodeURIComponent(slug) + "/author-pick", { method: "POST", auth: true });
+      form.style.display = "none";
+      document.getElementById("bookclub-authorpick-thanks").style.display = "";
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+async function renderBookClubDetail(slug) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let group, posts, bcConfig;
+  try {
+    [group, posts, bcConfig] = await Promise.all([
+      api("/api/groups/" + encodeURIComponent(slug)),
+      api("/api/groups/" + encodeURIComponent(slug) + "/posts", state.token ? { auth: true } : {}),
+      getBookClubConfig(),
+    ]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const postsHtml = posts.length
+    ? posts
+        .map(
+          (p) => `
+      <div class="group-post" data-post="${p.id}">
+        <div class="group-post-votes">
+          <button class="vote-btn vote-up ${p.myVote === 1 ? "active" : ""}" data-vote="${p.id}" data-value="1">&#9650;</button>
+          <span class="vote-score">${p.score}</span>
+          <button class="vote-btn vote-down ${p.myVote === -1 ? "active" : ""}" data-vote="${p.id}" data-value="-1">&#9660;</button>
+        </div>
+        <div class="group-post-body">
+          <span class="group-post-type group-post-type-${p.postType}">${I18N.t("groups.postType." + p.postType)}</span>
+          <p class="group-post-title">${escapeHtml(p.title)}</p>
+          ${p.body ? `<p class="group-post-text">${escapeHtml(p.body)}</p>` : ""}
+          <p class="group-post-meta">${escapeHtml(p.authorName)} &middot; ${fmtDate(p.createdAt)}</p>
+        </div>
+      </div>`
+        )
+        .join("")
+    : `<div class="empty-state">${I18N.t("groups.noPosts")}</div>`;
+
+  // Task #242 - the "Pick of the Month" panel is always rendered AND its
+  // button is always real/clickable (per Carlos: "dejalo visual y navegable
+  // pero sin poder accionar" - let people click all the way through the
+  // flow so they can get familiar with it and he can react to the UX), but
+  // nothing is actually submitted while AUTHOR_PICK_PROGRAM_ENABLED is off:
+  // the modal opened below is clearly labeled as a preview, and its submit
+  // handler always ends in the friendly "thanks for trying it, nothing was
+  // sent" state instead of a real confirmation, because the backend never
+  // writes to the database until that flag is flipped.
+  const authorPickHtml = `
+    <div class="bookclub-authorpick">
+      <div class="bookclub-authorpick-headrow">
+        <p class="bookclub-authorpick-title">&#127942; ${I18N.t("bookClub.authorPickTitle")}</p>
+        ${!bcConfig.authorPickEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+      </div>
+      <p class="bookclub-authorpick-desc">${I18N.t("bookClub.authorPickDesc")}</p>
+      <button type="button" class="btn btn-primary" id="bookclub-authorpick-btn">${I18N.t("bookClub.authorPickSubmit")}</button>
+    </div>
+  `;
+
+  viewEl.innerHTML = `
+    <a href="#/book-club" class="back-link">&larr; ${I18N.t("bookClub.backToList")}</a>
+    <div class="bookclub-detail-header">
+      <div>
+        <p class="bookclub-detail-book">&#128214; ${escapeHtml(group.bookTitle || "")}</p>
+        <h2 class="section-heading">${escapeHtml(group.name)}</h2>
+        <p class="groups-subtitle">${[group.city].filter(Boolean).map(escapeHtml).join(" · ")}</p>
+      </div>
+      <button class="btn btn-primary bookclub-video-btn" id="bookclub-video-btn">&#128249; ${I18N.t("bookClub.joinVideoCall")}</button>
+    </div>
+    ${group.description ? `<p class="group-detail-desc">${escapeHtml(group.description)}</p>` : ""}
+    ${authorPickHtml}
+    <div id="group-post-form-wrap">${
+      state.token
+        ? `
+      <form id="group-post-form" class="stacked-form">
+        <label>${I18N.t("groups.postTitleLabel")}<input type="text" name="title" required maxlength="200" /></label>
+        <label>${I18N.t("groups.postBodyLabel")}<textarea name="body" maxlength="5000"></textarea></label>
+        <label>${I18N.t("groups.postTypeLabel")}
+          <select name="postType">
+            <option value="discussion">${I18N.t("groups.postType.discussion")}</option>
+            <option value="question">${I18N.t("groups.postType.question")}</option>
+            <option value="review">${I18N.t("groups.postType.review")}</option>
+            <option value="warning">${I18N.t("groups.postType.warning")}</option>
+          </select>
+        </label>
+        <button type="submit" class="btn btn-primary">${I18N.t("groups.postSubmit")}</button>
+        <p class="form-msg" id="group-post-msg"></p>
+      </form>`
+        : `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`
+    }</div>
+    <div id="group-posts-list">${postsHtml}</div>
+  `;
+
+  const videoBtn = document.getElementById("bookclub-video-btn");
+  if (videoBtn) {
+    videoBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      videoBtn.disabled = true;
+      try {
+        const { videoRoomName } = await api("/api/groups/" + encodeURIComponent(slug) + "/video-room", { method: "POST", auth: true });
+        openBookClubVideoOverlay(videoRoomName);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        videoBtn.disabled = false;
+      }
+    });
+  }
+
+  const authorPickBtn = document.getElementById("bookclub-authorpick-btn");
+  if (authorPickBtn) {
+    authorPickBtn.addEventListener("click", () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      openAuthorPickModal(slug, group);
+    });
+  }
+
+  const postForm = document.getElementById("group-post-form");
+  if (postForm) {
+    postForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("group-post-msg");
+      try {
+        await api("/api/groups/" + encodeURIComponent(slug) + "/posts", {
+          method: "POST",
+          auth: true,
+          body: {
+            title: fd.get("title"),
+            body: fd.get("body"),
+            postType: fd.get("postType"),
+          },
+        });
+        renderBookClubDetail(slug);
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+
+  document.querySelectorAll("[data-vote]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      try {
+        const result = await api("/api/posts/" + btn.dataset.vote + "/vote", {
+          method: "POST",
+          auth: true,
+          body: { value: Number(btn.dataset.value) },
+        });
+        const postEl = btn.closest(".group-post");
+        postEl.querySelector(".vote-score").textContent = result.score;
+        postEl.querySelectorAll(".vote-btn").forEach((b) => b.classList.remove("active"));
+        if (result.myVote !== 0) {
+          postEl.querySelector('[data-value="' + result.myVote + '"]').classList.add("active");
+        }
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+}
+
+// ---------------- Publish a Book ("#/publish-book", task #244) ----------------
+// Independent-author pipeline, separate from selling a used physical book
+// (#/post) and from the Book Club "Pick of the Month" panel. Author writes
+// chapters (optionally with AI co-writing help), submits, gets an automated
+// AI first-pass review, and - if that passes - lands in our team's review
+// queue. Nothing here ever becomes a public/purchasable listing until
+// ORIGINAL_BOOK_PROGRAM_ENABLED flips true on the server once real legal/
+// monetization terms exist, so every step here is real and navigable.
+
+let publishBookConfigCache = null;
+async function getPublishBookConfig() {
+  if (publishBookConfigCache) return publishBookConfigCache;
+  try {
+    publishBookConfigCache = await api("/api/original-works/config");
+  } catch (e) {
+    publishBookConfigCache = { programEnabled: false };
+  }
+  return publishBookConfigCache;
+}
+
+function publishBookStatusBadge(status) {
+  const cls = { draft: "", needs_revision: "warn", team_review: "pending", approved_pending_legal: "approved", published: "approved", rejected: "rejected" }[status] || "";
+  return `<span class="publishbook-status publishbook-status-${cls || "draft"}">${I18N.t("publishBook.status." + status)}</span>`;
+}
+
+async function renderPublishBookHome() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  let works, bpConfig;
+  try {
+    [works, bpConfig] = await Promise.all([api("/api/original-works/mine", { auth: true }), getPublishBookConfig()]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const worksHtml = works.length
+    ? `<div class="publishbook-grid">${works
+        .map(
+          (w) => `
+      <a class="card publishbook-card" href="#/publish-book/${w.id}">
+        <p class="publishbook-card-genre">${escapeHtml(w.genre || I18N.t("publishBook.genreUnset"))}</p>
+        <h3>${escapeHtml(w.title || I18N.t("publishBook.untitled"))}</h3>
+        ${publishBookStatusBadge(w.status)}
+      </a>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("publishBook.empty")}</div>`;
+
+  const steps = [
+    { emoji: "&#9997;&#65039;", title: I18N.t("publishBook.howStep1Title"), body: I18N.t("publishBook.howStep1Body") },
+    { emoji: "&#129302;", title: I18N.t("publishBook.howStep2Title"), body: I18N.t("publishBook.howStep2Body") },
+    { emoji: "&#128101;", title: I18N.t("publishBook.howStep3Title"), body: I18N.t("publishBook.howStep3Body") },
+    { emoji: "&#127942;", title: I18N.t("publishBook.howStep4Title"), body: I18N.t("publishBook.howStep4Body") },
+  ];
+
+  viewEl.innerHTML = `
+    <div class="publishbook-hero">
+      <p class="publishbook-hero-eyebrow">${I18N.t("publishBook.eyebrow")}</p>
+      <h2 class="publishbook-hero-title">${I18N.t("publishBook.heading")}</h2>
+      <p class="publishbook-hero-subtitle">${I18N.t("publishBook.subtitle")}</p>
+      ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+      <button type="button" class="btn btn-primary publishbook-hero-cta" id="publishbook-new-btn">${I18N.t("publishBook.newBook")}</button>
+    </div>
+
+    <h3 class="publishbook-how-heading">${I18N.t("publishBook.howHeading")}</h3>
+    <div class="publishbook-how-grid">
+      ${steps
+        .map(
+          (s, i) => `
+        <div class="publishbook-how-card">
+          <span class="publishbook-how-num">${i + 1}</span>
+          <p class="publishbook-how-emoji">${s.emoji}</p>
+          <p class="publishbook-how-title">${s.title}</p>
+          <p class="publishbook-how-body">${s.body}</p>
+        </div>`
+        )
+        .join("")}
+    </div>
+
+    <form id="publishbook-new-form" class="stacked-form publishbook-new-form" style="display:none;">
+      <h3 class="publishbook-chapters-heading">${I18N.t("publishBook.newBook")}</h3>
+      <label>${I18N.t("publishBook.titleLabel")}<input type="text" name="title" required maxlength="200" /></label>
+      <label>${I18N.t("publishBook.genreLabel")}<input type="text" name="genre" maxlength="60" placeholder="${I18N.t("publishBook.genrePlaceholder")}" /></label>
+      <label>${I18N.t("publishBook.synopsisLabel")}<textarea name="synopsis" maxlength="2000" placeholder="${I18N.t("publishBook.synopsisPlaceholder")}"></textarea></label>
+      <button type="submit" class="btn btn-primary">${I18N.t("publishBook.createSubmit")}</button>
+      <p class="form-msg" id="publishbook-new-msg"></p>
+    </form>
+
+    ${works.length ? `<h3 class="publishbook-chapters-heading">${I18N.t("publishBook.yourBooks")}</h3>` : ""}
+    <div style="margin-top:8px;">${worksHtml}</div>
+  `;
+
+  const newBtn = document.getElementById("publishbook-new-btn");
+  const newForm = document.getElementById("publishbook-new-form");
+  if (newBtn && newForm) {
+    newBtn.addEventListener("click", () => {
+      newForm.style.display = "block";
+      newForm.scrollIntoView({ behavior: "smooth", block: "center" });
+      const titleInput = newForm.querySelector('[name="title"]');
+      if (titleInput) titleInput.focus();
+    });
+    newForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("publishbook-new-msg");
+      try {
+        const created = await api("/api/original-works", {
+          method: "POST",
+          auth: true,
+          body: { title: fd.get("title"), genre: fd.get("genre"), synopsis: fd.get("synopsis") },
+        });
+        location.hash = "#/publish-book/" + created.id;
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+}
+
+async function renderPublishBookEditor(id) {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  let work, bpConfig;
+  try {
+    [work, bpConfig] = await Promise.all([api("/api/original-works/" + encodeURIComponent(id), { auth: true }), getPublishBookConfig()]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const editable = work.status === "draft" || work.status === "needs_revision";
+  const chapters = work.chapters && work.chapters.length ? work.chapters : [{ title: "", content: "" }];
+
+  let statusNoteHtml = "";
+  if (work.status === "needs_revision" && work.aiReviewNotes) {
+    statusNoteHtml = `<p class="publishbook-status-note">&#129302; ${escapeHtml(work.aiReviewNotes)}</p>`;
+  } else if (work.status === "team_review") {
+    statusNoteHtml = `<p class="publishbook-status-note">${I18N.t("publishBook.teamReviewNote")}</p>`;
+  } else if (work.status === "approved_pending_legal") {
+    statusNoteHtml = `<p class="publishbook-status-note">&#10024; ${I18N.t("publishBook.approvedNote")}</p>`;
+  } else if (work.status === "rejected" && work.teamDecisionNotes) {
+    statusNoteHtml = `<p class="publishbook-status-note">${escapeHtml(work.teamDecisionNotes)}</p>`;
+  }
+
+  function chapterBlockHtml(c, i) {
+    return `
+    <div class="publishbook-chapter" data-chapter="${i}">
+      <div class="publishbook-chapter-head">
+        <input type="text" class="publishbook-chapter-title" value="${escapeHtml(c.title || "")}" placeholder="${I18N.t("publishBook.chapterTitlePlaceholder")} ${i + 1}" ${editable ? "" : "disabled"} />
+        ${editable ? `<button type="button" class="publishbook-chapter-remove" data-remove-chapter aria-label="${I18N.t("common.cancel")}">&times;</button>` : ""}
+      </div>
+      <textarea class="publishbook-chapter-content" rows="8" placeholder="${I18N.t("publishBook.chapterContentPlaceholder")}" ${editable ? "" : "disabled"}>${escapeHtml(c.content || "")}</textarea>
+      ${
+        editable
+          ? `<button type="button" class="btn btn-secondary publishbook-ai-btn" data-ai-toggle>&#129302; ${I18N.t("publishBook.askAi")}</button>
+      <div class="publishbook-ai-panel" data-ai-panel style="display:none;">
+        <input type="text" class="publishbook-ai-instruction" placeholder="${I18N.t("publishBook.aiInstructionPlaceholder")}" />
+        <button type="button" class="btn btn-primary" data-ai-go>${I18N.t("publishBook.aiGo")}</button>
+        <p class="form-msg" data-ai-msg></p>
+        <div class="publishbook-ai-suggestion" data-ai-suggestion style="display:none;">
+          <p class="publishbook-ai-suggestion-text"></p>
+          <button type="button" class="btn btn-primary" data-ai-insert>${I18N.t("publishBook.aiInsert")}</button>
+        </div>
+      </div>`
+          : ""
+      }
+    </div>`;
+  }
+
+  // Wires the AI-assist / remove buttons for exactly one chapter block, so
+  // new chapters added mid-session work without re-rendering (and losing)
+  // the wizard's current step.
+  function wireChapterBlock(el) {
+    const removeBtn = el.querySelector("[data-remove-chapter]");
+    if (removeBtn) {
+      removeBtn.addEventListener("click", () => {
+        if (document.querySelectorAll(".publishbook-chapter").length <= 1) return;
+        el.remove();
+        saveDraft().catch(() => {});
+        renumberChapters();
+      });
+    }
+    const aiToggle = el.querySelector("[data-ai-toggle]");
+    const aiPanel = el.querySelector("[data-ai-panel]");
+    if (aiToggle && aiPanel) {
+      aiToggle.addEventListener("click", () => {
+        aiPanel.style.display = aiPanel.style.display === "none" ? "block" : "none";
+      });
+    }
+    const aiGoBtn = el.querySelector("[data-ai-go]");
+    if (aiGoBtn) {
+      aiGoBtn.addEventListener("click", async () => {
+        const instruction = el.querySelector(".publishbook-ai-instruction").value.trim();
+        const currentText = el.querySelector(".publishbook-chapter-content").value;
+        const msgEl = el.querySelector("[data-ai-msg]");
+        if (!instruction) {
+          msgEl.textContent = I18N.t("publishBook.aiInstructionRequired");
+          msgEl.className = "form-msg error";
+          return;
+        }
+        msgEl.textContent = "";
+        aiGoBtn.disabled = true;
+        try {
+          const { suggestion } = await api("/api/original-works/" + encodeURIComponent(id) + "/ai-assist", {
+            method: "POST",
+            auth: true,
+            body: { instruction, currentText, locale: I18N.lang },
+          });
+          const suggestionBox = el.querySelector("[data-ai-suggestion]");
+          suggestionBox.querySelector(".publishbook-ai-suggestion-text").textContent = suggestion;
+          suggestionBox.style.display = "block";
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+        } finally {
+          aiGoBtn.disabled = false;
+        }
+      });
+    }
+    const aiInsertBtn = el.querySelector("[data-ai-insert]");
+    if (aiInsertBtn) {
+      aiInsertBtn.addEventListener("click", () => {
+        const suggestionBox = el.querySelector("[data-ai-suggestion]");
+        const suggestionText = suggestionBox.querySelector(".publishbook-ai-suggestion-text").textContent;
+        const textarea = el.querySelector(".publishbook-chapter-content");
+        textarea.value = (textarea.value ? textarea.value + "\n\n" : "") + suggestionText;
+        suggestionBox.style.display = "none";
+      });
+    }
+  }
+
+  function renumberChapters() {
+    document.querySelectorAll(".publishbook-chapter").forEach((el, i) => {
+      el.dataset.chapter = i;
+      const titleInput = el.querySelector(".publishbook-chapter-title");
+      if (titleInput && !titleInput.value) titleInput.placeholder = I18N.t("publishBook.chapterTitlePlaceholder") + " " + (i + 1);
+    });
+  }
+
+  function collectChapters() {
+    return Array.from(document.querySelectorAll(".publishbook-chapter")).map((el) => ({
+      title: el.querySelector(".publishbook-chapter-title").value,
+      content: el.querySelector(".publishbook-chapter-content").value,
+    }));
+  }
+
+  async function saveDraft(chaptersOverride) {
+    const formEl = document.getElementById("publishbook-form");
+    const fd = formEl ? new FormData(formEl) : null;
+    return api("/api/original-works/" + encodeURIComponent(id), {
+      method: "PATCH",
+      auth: true,
+      body: {
+        title: fd ? fd.get("title") : work.title,
+        genre: fd ? fd.get("genre") : work.genre,
+        synopsis: fd ? fd.get("synopsis") : work.synopsis,
+        chapters: chaptersOverride || collectChapters(),
+      },
+    });
+  }
+
+  if (!editable) {
+    viewEl.innerHTML = `
+      <a href="#/publish-book" class="back-link">&larr; ${I18N.t("publishBook.backToList")}</a>
+      <div class="publishbook-detail-header">
+        <div>
+          ${publishBookStatusBadge(work.status)}
+          ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+        </div>
+      </div>
+      <h2 class="section-heading">${escapeHtml(work.title || I18N.t("publishBook.untitled"))}</h2>
+      <p class="groups-subtitle">${escapeHtml(work.genre || I18N.t("publishBook.genreUnset"))}</p>
+      ${statusNoteHtml}
+      ${
+        work.status === "approved_pending_legal"
+          ? `<div class="publishbook-publish-wrap" id="publishbook-publish-wrap">
+        <button type="button" class="btn btn-primary publishbook-publish-btn" id="publishbook-publish-btn">&#128640; ${I18N.t("publishBook.publishNow")}</button>
+      </div>`
+          : ""
+      }
+      ${work.synopsis ? `<p class="group-detail-desc">${escapeHtml(work.synopsis)}</p>` : ""}
+      <h3 class="publishbook-chapters-heading">${I18N.t("publishBook.chaptersHeading")}</h3>
+      <div id="publishbook-chapters">${chapters.map(chapterBlockHtml).join("")}</div>
+    `;
+
+    const publishBtn = document.getElementById("publishbook-publish-btn");
+    if (publishBtn) {
+      publishBtn.addEventListener("click", async () => {
+        publishBtn.disabled = true;
+        try {
+          await api("/api/original-works/" + encodeURIComponent(id) + "/publish", { method: "POST", auth: true });
+          document.getElementById("publishbook-publish-wrap").innerHTML = `
+            <div class="publishbook-publish-thanks">
+              <p class="publishbook-publish-thanks-title">&#10024; ${I18N.t("publishBook.publishComingSoonTitle")}</p>
+              <p class="publishbook-publish-thanks-desc">${I18N.t("publishBook.publishComingSoonDesc")}</p>
+            </div>`;
+        } catch (err) {
+          alert(err.message);
+          publishBtn.disabled = false;
+        }
+      });
+    }
+    return;
+  }
+
+  // ---- Editable state: a guided 3-step wizard (Details -> Chapters ->
+  // Review & Submit) instead of one long form, per Carlos's request that
+  // publishing an original work feel fantastic and walk the author through
+  // it step by step. Submitting still never makes anything public - see
+  // ORIGINAL_BOOK_PROGRAM_ENABLED in server.js - but the whole exercise,
+  // including AI co-writing and the automated review verdict, is real.
+  viewEl.innerHTML = `
+    <a href="#/publish-book" class="back-link">&larr; ${I18N.t("publishBook.backToList")}</a>
+    <div class="publishbook-detail-header">
+      <h2 class="section-heading">${I18N.t("publishBook.wizardHeading")}</h2>
+      ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+    </div>
+    ${statusNoteHtml}
+    <div class="publishbook-steps">
+      <span class="publishbook-step-dot active" data-step-indicator="1"><span class="publishbook-step-num">1</span>${I18N.t("publishBook.stepDetails")}</span>
+      <span class="publishbook-step-line"></span>
+      <span class="publishbook-step-dot" data-step-indicator="2"><span class="publishbook-step-num">2</span>${I18N.t("publishBook.stepChapters")}</span>
+      <span class="publishbook-step-line"></span>
+      <span class="publishbook-step-dot" data-step-indicator="3"><span class="publishbook-step-num">3</span>${I18N.t("publishBook.stepReview")}</span>
+    </div>
+
+    <div class="publishbook-step-panel" data-step="1">
+      <p class="publishbook-step-intro">${I18N.t("publishBook.step1Intro")}</p>
+      <form id="publishbook-form" class="stacked-form">
+        <label>${I18N.t("publishBook.titleLabel")}<input type="text" name="title" required maxlength="200" value="${escapeHtml(work.title || "")}" /></label>
+        <label>${I18N.t("publishBook.genreLabel")}<input type="text" name="genre" maxlength="60" value="${escapeHtml(work.genre || "")}" placeholder="${I18N.t("publishBook.genrePlaceholder")}" /></label>
+        <label>${I18N.t("publishBook.synopsisLabel")}<textarea name="synopsis" maxlength="2000" placeholder="${I18N.t("publishBook.synopsisPlaceholder")}">${escapeHtml(work.synopsis || "")}</textarea></label>
+      </form>
+      <div class="publishbook-actions">
+        <button type="button" class="btn btn-primary" data-next="2">${I18N.t("publishBook.continueToChapters")}</button>
+      </div>
+    </div>
+
+    <div class="publishbook-step-panel" data-step="2" style="display:none;">
+      <p class="publishbook-step-intro">${I18N.t("publishBook.step2Intro")}</p>
+      <div id="publishbook-chapters">${chapters.map(chapterBlockHtml).join("")}</div>
+      <button type="button" class="btn btn-secondary" id="publishbook-add-chapter">+ ${I18N.t("publishBook.addChapter")}</button>
+      <div class="publishbook-actions">
+        <button type="button" class="btn btn-secondary" data-back="1">${I18N.t("publishBook.back")}</button>
+        <button type="button" class="btn btn-primary" data-next="3">${I18N.t("publishBook.continueToReview")}</button>
+      </div>
+    </div>
+
+    <div class="publishbook-step-panel" data-step="3" style="display:none;">
+      <p class="publishbook-step-intro">${I18N.t("publishBook.step3Intro")}</p>
+      <div class="publishbook-review-card" id="publishbook-review-card"></div>
+      <p class="publishbook-legal-note">&#128274; ${I18N.t("publishBook.legalPreviewNote")}</p>
+      <div class="publishbook-actions">
+        <button type="button" class="btn btn-secondary" data-back="2">${I18N.t("publishBook.back")}</button>
+        <button type="button" class="btn btn-primary" id="publishbook-submit-btn">${I18N.t("publishBook.submitForReview")}</button>
+      </div>
+      <p class="form-msg" id="publishbook-save-msg"></p>
+    </div>
+    <p class="publishbook-autosave-note">${I18N.t("publishBook.autosaveNote")}</p>
+  `;
+
+  document.querySelectorAll(".publishbook-chapter").forEach(wireChapterBlock);
+
+  function goToStep(n) {
+    document.querySelectorAll(".publishbook-step-panel").forEach((el) => {
+      el.style.display = Number(el.dataset.step) === n ? "" : "none";
+    });
+    document.querySelectorAll(".publishbook-step-dot").forEach((el) => {
+      el.classList.toggle("active", Number(el.dataset.stepIndicator) <= n);
+    });
+    viewEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (n === 3) populateReview();
+  }
+
+  function populateReview() {
+    const fd = new FormData(document.getElementById("publishbook-form"));
+    const title = fd.get("title") || I18N.t("publishBook.untitled");
+    const genre = fd.get("genre") || I18N.t("publishBook.genreUnset");
+    const synopsis = fd.get("synopsis") || "";
+    const chs = collectChapters();
+    const wordCount = chs.reduce((sum, c) => sum + String(c.content || "").trim().split(/\s+/).filter(Boolean).length, 0);
+    document.getElementById("publishbook-review-card").innerHTML = `
+      <p class="publishbook-review-genre">${escapeHtml(genre)}</p>
+      <h3>${escapeHtml(title)}</h3>
+      ${synopsis ? `<p class="publishbook-review-synopsis">${escapeHtml(synopsis)}</p>` : ""}
+      <p class="publishbook-review-stats">${chs.length} ${I18N.t("publishBook.chaptersHeading")} &middot; ${wordCount} ${I18N.t("publishBook.words")}</p>
+    `;
+  }
+
+  document.querySelectorAll("[data-next]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const target = Number(btn.dataset.next);
+      const formEl = document.getElementById("publishbook-form");
+      if (formEl && !formEl.reportValidity()) return;
+      btn.disabled = true;
+      try {
+        await saveDraft();
+        goToStep(target);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+  document.querySelectorAll("[data-back]").forEach((btn) => {
+    btn.addEventListener("click", () => goToStep(Number(btn.dataset.back)));
+  });
+
+  const addChapterBtn = document.getElementById("publishbook-add-chapter");
+  if (addChapterBtn) {
+    addChapterBtn.addEventListener("click", () => {
+      const container = document.getElementById("publishbook-chapters");
+      const index = container.children.length;
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = chapterBlockHtml({ title: "", content: "" }, index);
+      const newEl = wrapper.firstElementChild;
+      container.appendChild(newEl);
+      wireChapterBlock(newEl);
+      saveDraft().catch(() => {});
+      newEl.querySelector(".publishbook-chapter-title").focus();
+    });
+  }
+
+  const submitBtn = document.getElementById("publishbook-submit-btn");
+  if (submitBtn) {
+    submitBtn.addEventListener("click", async () => {
+      const msgEl = document.getElementById("publishbook-save-msg");
+      submitBtn.disabled = true;
+      try {
+        await saveDraft();
+        await api("/api/original-works/" + encodeURIComponent(id) + "/submit", {
+          method: "POST",
+          auth: true,
+          body: { locale: I18N.lang },
+        });
+        renderPublishBookEditor(id);
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+        submitBtn.disabled = false;
+      }
+    });
+  }
+}
+
 // ---------------- Notifications page ("#/notifications", reached from the icon nav) ----------------
 
 async function renderNotificationsPage() {
@@ -3575,7 +4531,7 @@ function drawMomentViewer() {
       </div>
       ${
         m.mediaType === "video"
-          ? `<video class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>`
+          ? `<video class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>${renderMediaOverlayLayer(m.overlays)}`
           : `<img class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" />`
       }
       ${m.caption ? `<div class="moment-viewer-caption">${linkifyHashtags(escapeHtml(m.caption))}</div>` : ""}
@@ -3652,15 +4608,27 @@ function drawMomentViewer() {
     if (videoEl) {
       videoEl.muted = false;
       videoEl.volume = 1;
-      videoEl.addEventListener("loadedmetadata", () => {
-        if (fill && videoEl.duration && isFinite(videoEl.duration)) {
-          requestAnimationFrame(() => {
-            fill.style.transition = "width " + videoEl.duration * 1000 + "ms linear";
-            fill.style.width = "100%";
-          });
-        }
-      });
-      videoEl.addEventListener("ended", () => stepMomentViewer(1));
+      const startProgressAnim = (durationMs) => {
+        if (!fill) return;
+        fill.style.transition = "none";
+        fill.style.width = "0%";
+        requestAnimationFrame(() => {
+          fill.style.transition = "width " + durationMs + "ms linear";
+          fill.style.width = "100%";
+        });
+      };
+      // AI auto-clip (task #160): a trimmed Moment loops within its
+      // suggested window instead of auto-advancing to the next story on
+      // "ended" (it never reaches its real end - see wireMomentTrimLoop()).
+      const trim = wireMomentTrimLoop(videoEl, m, () => startProgressAnim((trim.end - trim.start) * 1000));
+      if (trim) {
+        videoEl.addEventListener("loadedmetadata", () => startProgressAnim((trim.end - trim.start) * 1000));
+      } else {
+        videoEl.addEventListener("loadedmetadata", () => {
+          if (videoEl.duration && isFinite(videoEl.duration)) startProgressAnim(videoEl.duration * 1000);
+        });
+        videoEl.addEventListener("ended", () => stepMomentViewer(1));
+      }
     }
   } else {
     const duration = 5000;
@@ -3909,6 +4877,144 @@ function closeClipsPlayer() {
   closeSwipeFeed(clipsState);
 }
 
+// ---- Videos hub (task #231) - general-purpose long-form video section,
+// reached from the Marketplace nav dropdown (#/videos). Deliberately a
+// normal scrollable page (thumbnail grid + a plain watch page below), NOT
+// the full-screen swipe player Moments/Clips use - short-form passive
+// scroll and long-form active browsing are different mental modes and stay
+// visually separate on purpose (see server.js's is_long_video split). Every
+// video here really is an mkt_moments row under the hood, so likes/saves/
+// comments reuse the exact same /api/moments/:id/... endpoints as Moments -
+// the watch page below renders them with the same #moment-viewer-* element
+// ids wireMomentViewerActions()/openMomentComments() already know how to
+// wire, instead of duplicating that logic. ----
+
+async function renderVideosFeed() {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let videos = [];
+  try {
+    videos = await api("/api/videos/feed");
+  } catch (e) {}
+  viewEl.innerHTML = `
+    <div style="margin:16px;">
+      <h1 class="section-heading">${I18N.t("videos.feedTitle")}</h1>
+      ${
+        videos.length
+          ? `<div class="videos-grid">${videos.map(videoCardHtml).join("")}</div>`
+          : `<div class="empty-state">${I18N.t("videos.empty")}</div>`
+      }
+    </div>
+  `;
+}
+
+function videoCardHtml(v) {
+  return `
+    <a class="video-card" href="#/videos/${v.id}">
+      <div class="video-card-thumb-wrap">
+        <video class="video-card-thumb" src="${v.mediaUrl}#t=0.1" muted preload="metadata"></video>
+      </div>
+      <div class="video-card-body">
+        <p class="video-card-title">${escapeHtml(v.title || "")}</p>
+        <a class="video-card-channel" href="#/profile/${v.userId}" onclick="event.stopPropagation()">${escapeHtml(v.userName || "")}</a>
+        <p class="video-card-meta">\u{2764}\u{FE0F} ${v.likeCount || 0} &middot; ${fmtDate(v.createdAt)}</p>
+      </div>
+    </a>
+  `;
+}
+
+// Small horizontal strip used on a product detail page ("Related videos") -
+// hidden entirely (returns "") when there are none, per task #231's spec.
+function relatedVideosStripHtml(videos) {
+  if (!videos || !videos.length) return "";
+  return `
+    <div class="related-videos-section">
+      <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("videos.relatedTitle")}</h2>
+      <div class="related-videos-row">
+        ${videos
+          .map(
+            (v) => `
+          <a class="related-video-card" href="#/videos/${v.id}">
+            <video class="related-video-thumb" src="${v.mediaUrl}#t=0.1" muted preload="metadata"></video>
+            <span class="related-video-title">${escapeHtml(v.title || "")}</span>
+          </a>`
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+async function renderVideoWatch(id) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let v;
+  try {
+    v = await api("/api/moments/" + id);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${I18N.t("videos.notFound")}</p>`;
+    return;
+  }
+  if (!v || !v.isLongVideo) {
+    viewEl.innerHTML = `<p class="form-msg error">${I18N.t("videos.notFound")}</p>`;
+    return;
+  }
+  let linkedProduct = null;
+  if (v.linkedProductId) {
+    try {
+      linkedProduct = await api("/api/products/" + v.linkedProductId);
+    } catch (e) {}
+  }
+  const isOwn = state.user && state.user.id === v.userId;
+
+  viewEl.innerHTML = `
+    <div class="video-watch-wrap" id="moment-viewer-overlay">
+      <div class="video-watch-player-wrap">
+        <video class="video-watch-player" id="moment-viewer-media" src="${v.mediaUrl}" controls playsinline></video>
+        ${renderMediaOverlayLayer(v.overlays)}
+      </div>
+      <div class="video-watch-body">
+        <h1 class="video-watch-title">${escapeHtml(v.title || "")}</h1>
+        <a class="video-watch-channel" href="#/profile/${v.userId}">
+          ${v.userPhoto ? `<img class="video-watch-avatar" src="${v.userPhoto}" />` : `<div class="video-watch-avatar-placeholder">${initials(v.userName)}</div>`}
+          <span>${escapeHtml(v.userName || "")}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        </a>
+        <div class="video-watch-actions">
+          <button class="video-watch-action-btn ${v.liked ? "active" : ""}" id="moment-viewer-like">${MOMENT_ICON_HEART} <span>${v.likeCount || 0}</span></button>
+          <button class="video-watch-action-btn" id="moment-viewer-message">${MOMENT_ICON_MESSAGE} <span>${I18N.t("videos.comments")}</span></button>
+          <button class="video-watch-action-btn ${v.saved ? "active" : ""}" id="moment-viewer-save">${MOMENT_ICON_SAVE} <span>${I18N.t("saved.save")}</span></button>
+          <button class="video-watch-action-btn" id="moment-viewer-share">${MOMENT_ICON_SHARE} <span>${I18N.t("videos.share")}</span></button>
+        </div>
+        ${v.caption ? `<p class="video-watch-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
+        ${
+          linkedProduct
+            ? `<a class="video-watch-product-card" href="#/product/${linkedProduct.id}">
+                 ${linkedProduct.photos && linkedProduct.photos[0] ? `<img src="${linkedProduct.photos[0]}" />` : `<div class="product-thumb-empty">\u{1F4E6}</div>`}
+                 <div>
+                   <p class="field-hint">${I18N.t("videos.linkedProductLabel")}</p>
+                   <p class="video-watch-product-title">${escapeHtml(linkedProduct.title)}</p>
+                   <p class="product-price">${fmtPrice(linkedProduct.price)}</p>
+                 </div>
+               </a>`
+            : ""
+        }
+        ${isOwn ? `<div class="action-row"><button class="btn btn-danger" id="video-watch-delete">${I18N.t("moments.delete")}</button></div>` : ""}
+      </div>
+    </div>
+  `;
+  wireMomentViewerActions(v);
+  const delBtn = document.getElementById("video-watch-delete");
+  if (delBtn) {
+    delBtn.addEventListener("click", async () => {
+      if (!confirm("Delete this video? / ¿Eliminar este video?")) return;
+      try {
+        await api("/api/moments/" + v.id, { method: "DELETE", auth: true });
+        location.hash = "#/profile";
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+}
+
 // Reports how the viewer engaged with the item currently on screen -
 // "complete" if they stuck around for most of it (video loops, so a
 // near-full watch counts even without a real "ended" event; photos use the
@@ -4051,7 +5157,7 @@ function drawSwipeItem(sw) {
       ${
         isPhoto
           ? `<img class="clips-video clips-photo" id="clips-video" src="${v.mediaUrl}" />`
-          : `<video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>`
+          : `<video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>${renderMediaOverlayLayer(v.overlays)}`
       }
       ${sw.closable ? `<button class="clips-close" id="clips-close" aria-label="${I18N.t("common.close")}">&times;</button>` : ""}
       <div class="clips-info">
@@ -4099,6 +5205,9 @@ function drawSwipeItem(sw) {
     mediaEl.addEventListener("loadedmetadata", () => {
       if (sw.videos[sw.index] === v) sw.currentDurationMs = (mediaEl.duration || 0) * 1000;
     });
+    // AI auto-clip (task #160): loop within the trim window if this Moment
+    // has one, same as everywhere else its video plays.
+    wireMomentTrimLoop(mediaEl, v);
   }
   if (mediaEl) {
     let lastTap = 0;
@@ -4238,11 +5347,23 @@ function wireSwipeGestures(rootEl, sw) {
 }
 
 const MAX_ACTIVE_MOMENTS = 3;
-const MAX_MOMENT_VIDEO_SECONDS = 180;
+const MAX_MOMENT_VIDEO_SECONDS = 90; // matches Instagram Reels cap
 // Client-side mirrors of server.js's MAX_ACTIVE_MOMENTS (reused as-is for
 // Loops' active-count cap - see server.js) and MAX_LOOP_VIDEO_SECONDS, kept
 // in sync by hand the same way MAX_MOMENT_VIDEO_SECONDS above already is.
-const MAX_LOOP_VIDEO_SECONDS = 60;
+const MAX_LOOP_VIDEO_SECONDS = 20; // matches Stories-style short clips
+// Long-form "Videos" hub (task #231) - client-side mirror of server.js's
+// MAX_LONG_VIDEO_SECONDS, kept in sync by hand same as the two above.
+const MAX_LONG_VIDEO_SECONDS = 1200;
+
+// Max video length for the current create-wizard target - used everywhere
+// the wizard needs to know its own cap (the hold-record ring, the
+// gallery-upload duration probe) instead of each call site re-deriving it.
+function wizardMaxVideoSeconds() {
+  if (createWizard && createWizard.target === "loop") return MAX_LOOP_VIDEO_SECONDS;
+  if (createWizard && createWizard.target === "video") return MAX_LONG_VIDEO_SECONDS;
+  return MAX_MOMENT_VIDEO_SECONDS;
+}
 
 function openMomentUploadModal() {
   if (!state.token) {
@@ -4383,6 +5504,19 @@ const CREATE_WIZARD_FILTERS = [
 
 const CREATE_WIZARD_STICKERS = ["\u{1F600}", "\u{1F602}", "\u{1F60D}", "\u{1F525}", "\u{1F389}", "\u{1F4DA}", "❤️", "\u{1F44D}", "\u{1F60E}", "✨", "\u{1F973}", "\u{1F4D6}"];
 
+// Task #204 - text overlay preset colors (white/black first so there's
+// always a readable choice against any background) and the three-step
+// size scale shared by both text and sticker overlays (in the wizard editor
+// and again wherever a video with baked-in overlay metadata is played back).
+const WIZARD_TEXT_COLORS = ["#FFFFFF", "#000000", "#FFD84D", "#FF3B30", "#34C759", "#0A84FF"];
+const WIZARD_OVERLAY_SIZE_STEPS = ["sm", "md", "lg"];
+const WIZARD_OVERLAY_SIZE_SCALE = { sm: 0.7, md: 1, lg: 1.4 };
+
+// Task #203 - procedurally-generated (Web Audio API oscillators, not
+// licensed/recorded audio - see playWizardSoundPreset()) background sound
+// presets offered from the create-wizard's "Add sound" pill.
+const WIZARD_SOUND_PRESETS = ["none", "upbeat", "chill", "dramatic", "retro"];
+
 const WIZARD_HOLD_THRESHOLD_MS = 380;
 // Below this much accumulated hold time, a press is treated as an oversized
 // tap rather than an intentional video, and the shutter falls back to
@@ -4392,14 +5526,29 @@ const WIZARD_MIN_INTENTIONAL_HOLD_MS = 500;
 // Max hold-record duration for the current wizard session's target - a
 // function rather than a fixed constant (the old WIZARD_RING_TARGET_MS)
 // specifically so a Loop capture stops recording at MAX_LOOP_VIDEO_SECONDS
-// instead of letting the user hold for the full 3-minute Moment length.
+// (and, since task #231, a "video" capture at MAX_LONG_VIDEO_SECONDS)
+// instead of letting the user hold for the full Moment length.
 function wizardRingTargetMs() {
-  return (createWizard && createWizard.target === "loop" ? MAX_LOOP_VIDEO_SECONDS : MAX_MOMENT_VIDEO_SECONDS) * 1000;
+  return wizardMaxVideoSeconds() * 1000;
 }
 
 function createWizardFilterCss(id) {
   const f = CREATE_WIZARD_FILTERS.find((x) => x.id === id);
   return f ? f.css : "";
+}
+
+// Task #202 - the live camera <video> preview's filter combines the chosen
+// look (CREATE_WIZARD_FILTERS) with the manual brightness/exposure slider.
+// Photos bake this in at capture time (see takePhoto()'s ctx.filter); video
+// recording does NOT bake it in - MediaRecorder here records straight off
+// createWizard.stream (the raw camera MediaStream), and a CSS filter on the
+// <video> preview element never reaches captureStream()/track data, so for
+// video captures this only affects what the creator sees while framing the
+// shot, not the saved file. See wireWizardCaptureGesture()/beginHoldRecording().
+function wizardLiveFilterCss() {
+  const base = createWizardFilterCss(createWizard.filter);
+  const brightness = "brightness(" + (createWizard.brightness || 100) + "%)";
+  return base ? base + " " + brightness : brightness;
 }
 
 let createWizard = null;
@@ -4415,6 +5564,10 @@ function stopCreateWizardCamera() {
       createWizard.recorder.stop();
     } catch (e) {}
   }
+  // Safety net for task #203's sound-preset mixing graph - normally already
+  // torn down in finalizeWizardVideo()/the discarded-tiny-hold path below,
+  // but this covers any exit (e.g. closing the wizard mid-recording).
+  stopWizardSoundMix();
 }
 
 function closeCreateWizard() {
@@ -4425,22 +5578,48 @@ function closeCreateWizard() {
 }
 
 // `target` distinguishes what the wizard's final publish step posts to:
-// "moment" (default - POST /api/moments) or "loop" (POST /api/loops, see the
-// "Loop" option in the create dropdown). Every other step of the wizard
-// (capture, filters, caption) behaves identically for both - only the
-// publish call and a couple of labels branch on it - see the
-// wizard-publish click handler in drawCreateWizard()'s step-3 branch.
+// "moment" (default - POST /api/moments), "loop" (POST /api/loops, see the
+// "Loop" option in the create dropdown), or "video" (task #231 - the
+// long-form Videos hub, still POST /api/moments but with target:"video" in
+// the body - see server.js). Every other step of the wizard (capture,
+// filters, caption) behaves identically across all three - only the
+// publish call, the video-length cap, and a couple of extra fields/steps
+// (title, link-to-product) branch on it - see the wizard-publish click
+// handler and the step-4 branch in drawCreateWizard().
 function openCreateWizard(target) {
   if (!state.token) {
     location.hash = "#/login";
     return;
   }
+  const resolvedTarget = target === "loop" ? "loop" : target === "video" ? "video" : "moment";
   createWizard = {
     step: 1, filter: "none", mediaType: null, rawDataUrl: null, recording: false,
     stream: null, recorder: null, chunks: [], durationSeconds: null,
     facingMode: "user", flashOn: false, timerMode: 0,
     recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
-    overlays: [], gridOn: false, target: target === "loop" ? "loop" : "moment",
+    overlays: [], gridOn: false, target: resolvedTarget,
+    // Task #202 - live preview/capture exposure, 50-150%, default 100
+    // (no adjustment). Lives on createWizard so it survives multiple shots
+    // within one wizard session, and is reset back to 100 automatically
+    // every time openCreateWizard() rebuilds a fresh createWizard object.
+    brightness: 100,
+    // Task #203 - chosen background-sound preset id (see
+    // WIZARD_SOUND_PRESETS) and whether the mic track is kept alongside it
+    // when mixing into a recorded video. Reset the same way as brightness.
+    soundPreset: "none", soundKeepMic: true,
+    // AI auto-clip (task #160): the trim window the creator confirmed, if
+    // any - both null means "publish the full video". Set from a
+    // POST /api/ai/suggest-clip suggestion in step 3; see wireWizardAiClip().
+    clipStartSec: null, clipEndSec: null,
+    // Long-form Videos hub (task #231, target:"video" only) - title is
+    // required, linkedProductId is an optional pointer to one of the
+    // poster's own mkt_products rows chosen in the step-4 "link to a
+    // listing?" screen (see drawCreateWizardStep4()). myProducts caches
+    // that screen's GET /api/products?sellerId=<me> fetch across
+    // back/forward navigation within the wizard so it isn't re-fetched
+    // every time the user steps back and forward again.
+    titleDraft: "", captionDraft: "", hashtagsDraft: "",
+    linkedProductId: null, myProducts: null, finalMedia: null,
   };
   const overlay = document.createElement("div");
   overlay.id = "create-wizard-overlay";
@@ -4502,6 +5681,13 @@ function updateWizardSideRailEnabled() {
     const el = document.getElementById("wizard-rail-" + a);
     if (el) el.disabled = locked;
   });
+  // Task #203 - the sound preset/mic choice feeds the audio graph built at
+  // the start of a recording (see buildWizardRecordingStream()); changing
+  // it mid-clip wouldn't affect audio already recorded, so lock it out
+  // while a hold-recording is in progress or accumulating to avoid a
+  // misleading "I changed the sound" UI state.
+  const soundPill = document.getElementById("wizard-fs-sound-pill");
+  if (soundPill) soundPill.disabled = locked;
 }
 
 function showWizardRecBadge(show) {
@@ -4529,6 +5715,30 @@ function wizardToggleGrid() {
   if (gridEl) gridEl.classList.toggle("show", createWizard.gridOn);
   const btn = document.getElementById("wizard-rail-grid");
   if (btn) btn.classList.toggle("active", createWizard.gridOn);
+}
+
+// Task #202 - toggles the brightness/exposure slider panel over the live
+// camera preview. The slider itself lives in the step-1 markup (see
+// drawCreateWizard()) and is wired in wireWizardBrightnessPanel() below.
+function wizardToggleBrightnessPanel() {
+  const panel = document.getElementById("wizard-fs-brightness-panel");
+  if (!panel) return;
+  const show = panel.hidden;
+  panel.hidden = !show;
+  const btn = document.getElementById("wizard-rail-lighting");
+  if (btn) btn.classList.toggle("active", show);
+}
+
+function wireWizardBrightnessPanel() {
+  const slider = document.getElementById("wizard-fs-brightness-slider");
+  const valueEl = document.getElementById("wizard-fs-brightness-value");
+  if (!slider) return;
+  slider.addEventListener("input", () => {
+    createWizard.brightness = parseInt(slider.value, 10) || 100;
+    if (valueEl) valueEl.textContent = createWizard.brightness + "%";
+    const video = document.getElementById("wizard-fs-video");
+    if (video) video.style.filter = wizardLiveFilterCss();
+  });
 }
 
 function wizardToggleFlash() {
@@ -4568,6 +5778,218 @@ function wizardToggleFilterStrip() {
   if (strip) strip.hidden = !strip.hidden;
 }
 
+// ---- Task #203: procedurally-generated sound presets (Web Audio API) ----
+// Every preset is built from plain oscillator/gain nodes at call time - no
+// audio files, no samples, no third-party/commercial music of any kind, so
+// there's no licensing/IP exposure. `destGain` is the GainNode the preset's
+// oscillators should feed (either a live speaker preview node, or the
+// GainNode inside the recording mix graph built by buildWizardRecordingStream()
+// below). Returns a stop() function that tears down every node/timer it
+// created; callers are responsible for calling it exactly once when the
+// preset should end.
+function playWizardSoundPreset(audioCtx, presetId, destGain) {
+  if (!presetId || presetId === "none") return () => {};
+  const stopFns = [];
+
+  function makeOsc(type, freq) {
+    const osc = audioCtx.createOscillator();
+    osc.type = type;
+    osc.frequency.value = freq;
+    const g = audioCtx.createGain();
+    g.gain.value = 0.0001;
+    osc.connect(g).connect(destGain);
+    osc.start();
+    stopFns.push(() => {
+      try { osc.stop(); } catch (e) {}
+      try { osc.disconnect(); } catch (e) {}
+      try { g.disconnect(); } catch (e) {}
+    });
+    return { osc, gain: g };
+  }
+
+  function pluckLoop(type, notes, stepMs, peakGain, decayMs) {
+    const { osc, gain } = makeOsc(type, notes[0]);
+    let step = 0;
+    const iv = setInterval(() => {
+      const t = audioCtx.currentTime;
+      const f = notes[step % notes.length];
+      osc.frequency.setValueAtTime(f, t);
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.setValueAtTime(peakGain, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + decayMs / 1000);
+      step++;
+    }, stepMs);
+    stopFns.push(() => clearInterval(iv));
+  }
+
+  if (presetId === "upbeat") {
+    // Bright square-wave arpeggio, quick tempo.
+    pluckLoop("square", [330, 392, 440, 392], 260, 0.22, 0.18);
+  } else if (presetId === "chill") {
+    // Slow sine pad with a gentle volume swell, no percussive beat.
+    const { osc, gain } = makeOsc("sine", 220);
+    const osc2 = audioCtx.createOscillator();
+    osc2.type = "sine";
+    osc2.frequency.value = 330;
+    const g2 = audioCtx.createGain();
+    g2.gain.value = 0.06;
+    osc2.connect(g2).connect(destGain);
+    osc2.start();
+    stopFns.push(() => {
+      try { osc2.stop(); } catch (e) {}
+      try { osc2.disconnect(); } catch (e) {}
+      try { g2.disconnect(); } catch (e) {}
+    });
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.12, audioCtx.currentTime + 1.5);
+    const iv = setInterval(() => {
+      const t = audioCtx.currentTime;
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.setValueAtTime(gain.gain.value, t);
+      gain.gain.linearRampToValueAtTime(0.05, t + 2);
+      gain.gain.linearRampToValueAtTime(0.14, t + 4);
+    }, 4000);
+    stopFns.push(() => clearInterval(iv));
+  } else if (presetId === "dramatic") {
+    // Low sawtooth drone that slowly bends, tension-building.
+    const { osc, gain } = makeOsc("sawtooth", 80);
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 2);
+    const iv = setInterval(() => {
+      osc.frequency.linearRampToValueAtTime(55 + Math.random() * 45, audioCtx.currentTime + 1.4);
+    }, 1500);
+    stopFns.push(() => clearInterval(iv));
+  } else if (presetId === "retro") {
+    // Fast stepped square-wave arpeggio, 8-bit game vibe.
+    pluckLoop("square", [440, 523, 587, 659, 523], 150, 0.16, 0.12);
+  }
+
+  return () => stopFns.forEach((fn) => fn());
+}
+
+// Short (~1.2s) speaker preview of a preset, played through the device's own
+// output rather than mixed into any recording - used by the sound picker so
+// a creator can hear a preset before committing to it.
+function wizardPreviewSoundPreset(presetId) {
+  if (!presetId || presetId === "none") return;
+  const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtxClass) return;
+  try {
+    const ctx = new AudioCtxClass();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.3;
+    gain.connect(ctx.destination);
+    const stop = playWizardSoundPreset(ctx, presetId, gain);
+    setTimeout(() => {
+      stop();
+      ctx.close().catch(() => {});
+    }, 1200);
+  } catch (e) {}
+}
+
+function updateWizardSoundPillLabel() {
+  const pill = document.getElementById("wizard-fs-sound-pill");
+  if (!pill) return;
+  const label = createWizard.soundPreset && createWizard.soundPreset !== "none" ? I18N.t("camera.soundPicker." + createWizard.soundPreset) : I18N.t("create.addSound");
+  pill.innerHTML = "&#9835; " + label;
+}
+
+function wizardOpenSoundPicker() {
+  const existing = document.getElementById("wizard-sound-picker");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const wrap = document.getElementById("wizard-fs-video-wrap");
+  if (!wrap) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-sound-picker";
+  panel.id = "wizard-sound-picker";
+  panel.innerHTML = `
+    <p class="wizard-sound-picker-title">${I18N.t("camera.soundPicker.title")}</p>
+    <div class="wizard-sound-picker-list">
+      ${WIZARD_SOUND_PRESETS.map(
+        (p) => `<button type="button" class="wizard-sound-preset-btn ${createWizard.soundPreset === p ? "active" : ""}" data-preset="${p}">${I18N.t("camera.soundPicker." + p)}</button>`
+      ).join("")}
+    </div>
+    <label class="wizard-sound-mic-toggle">
+      <input type="checkbox" id="wizard-sound-keep-mic" ${createWizard.soundKeepMic ? "checked" : ""} />
+      ${I18N.t("camera.soundPicker.keepMic")}
+    </label>
+    <button type="button" class="wizard-sound-picker-close" id="wizard-sound-picker-close">${I18N.t("common.close")}</button>
+  `;
+  wrap.appendChild(panel);
+  panel.querySelectorAll(".wizard-sound-preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard.soundPreset = btn.dataset.preset;
+      panel.querySelectorAll(".wizard-sound-preset-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === createWizard.soundPreset));
+      updateWizardSoundPillLabel();
+      wizardPreviewSoundPreset(createWizard.soundPreset);
+    });
+  });
+  const micToggle = document.getElementById("wizard-sound-keep-mic");
+  if (micToggle) {
+    micToggle.addEventListener("change", (e) => {
+      createWizard.soundKeepMic = !!e.target.checked;
+    });
+  }
+  const closeBtn = document.getElementById("wizard-sound-picker-close");
+  if (closeBtn) closeBtn.addEventListener("click", () => panel.remove());
+}
+
+// Builds the MediaStream actually handed to `new MediaRecorder(...)` when a
+// hold-recording starts. When no sound preset is selected this is just
+// createWizard.stream unchanged (the mic audio track that was already part
+// of the getUserMedia() stream - see startWizardCameraStream()). When a
+// preset IS selected, it creates an AudioContext, routes the mic (if
+// "keep my voice" is on) and the generated preset both through their own
+// GainNode into one MediaStreamAudioDestinationNode, and returns a new
+// MediaStream combining the camera's video track(s) with that mixed audio
+// track - so the generated sound is genuinely encoded into the saved
+// recording, not just played live for vibe. See beginHoldRecording()/
+// pauseHoldRecording() for how it's paused/resumed/torn down.
+function buildWizardRecordingStream() {
+  const camStream = createWizard.stream;
+  if (!camStream) return camStream;
+  if (!createWizard.soundPreset || createWizard.soundPreset === "none") return camStream;
+  const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtxClass) return camStream;
+  try {
+    const audioCtx = new AudioCtxClass();
+    const dest = audioCtx.createMediaStreamDestination();
+    const micTracks = camStream.getAudioTracks();
+    if (createWizard.soundKeepMic && micTracks.length) {
+      const micSource = audioCtx.createMediaStreamSource(new MediaStream(micTracks));
+      const micGain = audioCtx.createGain();
+      micGain.gain.value = 1;
+      micSource.connect(micGain).connect(dest);
+    }
+    const musicGain = audioCtx.createGain();
+    musicGain.gain.value = 0.35;
+    musicGain.connect(dest);
+    const stopMusic = playWizardSoundPreset(audioCtx, createWizard.soundPreset, musicGain);
+    createWizard._soundAudioCtx = audioCtx;
+    createWizard._soundStopFn = stopMusic;
+    createWizard._soundMusicGain = musicGain;
+    return new MediaStream([...camStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+  } catch (e) {
+    return camStream;
+  }
+}
+
+function stopWizardSoundMix() {
+  if (!createWizard) return;
+  if (createWizard._soundStopFn) {
+    try { createWizard._soundStopFn(); } catch (e) {}
+    createWizard._soundStopFn = null;
+  }
+  if (createWizard._soundAudioCtx) {
+    try { createWizard._soundAudioCtx.close().catch(() => {}); } catch (e) {}
+    createWizard._soundAudioCtx = null;
+  }
+  createWizard._soundMusicGain = null;
+}
+
 // Right-hand options rail: layout inspired by mainstream camera apps but
 // built from our own generic Unicode glyphs (not copied icon assets).
 // Tier 1 items show by default; tier 2 items reveal via the "more" toggle,
@@ -4587,11 +6009,21 @@ const CREATE_WIZARD_RAIL_ITEMS = [
   { action: "flash", tier: 2, icon: "&#9889;" },
 ];
 
+// Task #202 - the "lighting" rail item (already present as an unwired
+// tier-2 placeholder) is repurposed as the brightness/exposure toggle
+// rather than adding a brand-new rail button, so it inherits the exact
+// same rail styling/placement/tap-to-reveal-label behavior as every other
+// item (grid, flip, timer, ...) for free. Its label/tooltip uses the
+// dedicated camera.brightnessToggle i18n key instead of the generic
+// create.rail_lighting one.
+const WIZARD_RAIL_LABEL_KEY_OVERRIDE = { lighting: "camera.brightnessToggle" };
+
 function wizardRailItemsHtml() {
   const items = CREATE_WIZARD_RAIL_ITEMS.map((it) => {
     const hiddenStyle = it.action === "flash" ? ' style="display:none;"' : "";
-    return `<button class="wizard-fs-rail-item" data-tier="${it.tier}" data-action="${it.action}" id="wizard-rail-${it.action}"${hiddenStyle}>
-      <span class="rail-label">${I18N.t("create.rail_" + it.action)}</span>
+    const labelKey = WIZARD_RAIL_LABEL_KEY_OVERRIDE[it.action] || ("create.rail_" + it.action);
+    return `<button class="wizard-fs-rail-item" data-tier="${it.tier}" data-action="${it.action}" id="wizard-rail-${it.action}" title="${I18N.t(labelKey)}"${hiddenStyle}>
+      <span class="rail-label">${I18N.t(labelKey)}</span>
       <span class="rail-icon">${it.icon}</span>
     </button>`;
   }).join("");
@@ -4619,6 +6051,7 @@ function wireWizardRail() {
       else if (action === "flip") wizardFlipCamera();
       else if (action === "timer") wizardCycleTimer();
       else if (action === "flash") wizardToggleFlash();
+      else if (action === "lighting") wizardToggleBrightnessPanel();
       else if (action === "effects" || action === "filters") wizardToggleFilterStrip();
       else if (action === "duration") wizardShowToast(I18N.t("create.durationHint"));
       else wizardShowToast(I18N.t("create.comingSoon"));
@@ -4666,18 +6099,36 @@ function startWizardCameraStream() {
     if (fallback) fallback.style.display = "flex";
     return;
   }
+  const onStream = (stream) => {
+    createWizard.stream = stream;
+    video.srcObject = stream;
+    video.style.display = "";
+    if (fallback) fallback.style.display = "none";
+    updateWizardFlashSupport();
+  };
   navigator.mediaDevices
     .getUserMedia({ video: { facingMode: createWizard.facingMode }, audio: true })
-    .then((stream) => {
-      createWizard.stream = stream;
-      video.srcObject = stream;
-      video.style.display = "";
-      if (fallback) fallback.style.display = "none";
-      updateWizardFlashSupport();
-    })
-    .catch(() => {
-      video.style.display = "none";
-      if (fallback) fallback.style.display = "flex";
+    .then(onStream)
+    .catch((err) => {
+      // Bugfix: requesting video+audio together fails outright on some
+      // devices/browsers when the microphone is unavailable or its
+      // permission was denied separately from the camera's - which used to
+      // leave the whole capture screen with no live stream at all (video
+      // stays hidden, fallback message shown) even though the camera itself
+      // was fine, making the shutter button look completely dead since
+      // takePhoto()/beginHoldRecording() both bail out early on
+      // `!video.srcObject`. Retry camera-only before giving up, so a
+      // mic-permission problem degrades to "photo/video without your own
+      // voice" instead of "capture screen doesn't work at all".
+      console.error("getUserMedia(video+audio) failed, retrying video-only:", err);
+      navigator.mediaDevices
+        .getUserMedia({ video: { facingMode: createWizard.facingMode } })
+        .then(onStream)
+        .catch((err2) => {
+          console.error("getUserMedia(video-only) also failed:", err2);
+          video.style.display = "none";
+          if (fallback) fallback.style.display = "flex";
+        });
     });
 }
 
@@ -4698,6 +6149,10 @@ function finalizeWizardRecording() {
 }
 
 function finalizeWizardVideo() {
+  // Task #203 - tear down the sound-preset audio graph (if any) now that
+  // MediaRecorder has flushed its last chunk; leaving the AudioContext/
+  // oscillators running past this point would just waste battery/CPU.
+  stopWizardSoundMix();
   const blob = new Blob(createWizard.chunks, { type: "video/webm" });
   createWizard.durationSeconds = createWizard.recordAccumMs / 1000;
   const reader = new FileReader();
@@ -4719,8 +6174,15 @@ function wireWizardCaptureGesture() {
   const beginHoldRecording = () => {
     if (!createWizard.stream) return;
     if (!createWizard.recorder) {
+      // Task #203 - if a sound preset is selected, this returns a MediaStream
+      // whose audio track is the generated preset (optionally mixed with
+      // the mic) instead of the camera's raw audio track, so the recorded
+      // file actually carries the sound - not just the live preview. With
+      // no preset selected it's createWizard.stream unchanged (identical to
+      // pre-#203 behavior).
+      const recordingStream = buildWizardRecordingStream();
       try {
-        createWizard.recorder = new MediaRecorder(createWizard.stream);
+        createWizard.recorder = new MediaRecorder(recordingStream);
       } catch (e) {
         alert(I18N.t("create.cameraUnavailable"));
         return;
@@ -4733,6 +6195,9 @@ function wireWizardCaptureGesture() {
       createWizard.recorder.start(250);
     } else if (createWizard.recorder.state === "paused") {
       createWizard.recorder.resume();
+      // Resuming a multi-clip hold - bring the sound preset's volume back
+      // up from the 0 it was set to when the previous segment paused.
+      if (createWizard._soundMusicGain) createWizard._soundMusicGain.gain.value = 0.35;
     }
     createWizard.recording = true;
     createWizard.segmentStartTs = Date.now();
@@ -4750,6 +6215,10 @@ function wireWizardCaptureGesture() {
     if (createWizard.recorder && createWizard.recorder.state === "recording") {
       createWizard.recorder.pause();
     }
+    // Task #203 - mute (not tear down) the sound preset between hold
+    // segments of the same multi-clip recording; it's brought back up in
+    // beginHoldRecording()'s resume branch above.
+    if (createWizard._soundMusicGain) createWizard._soundMusicGain.gain.value = 0;
     btn.classList.remove("recording");
     showWizardRecBadge(false);
     stopWizardRing();
@@ -4765,6 +6234,10 @@ function wireWizardCaptureGesture() {
         createWizard.recorder.onstop = null;
         createWizard.recorder.stop();
       }
+      // Task #203 - onstop is nulled out above so finalizeWizardVideo() (and
+      // its stopWizardSoundMix() call) never runs for this discarded clip;
+      // tear the sound graph down explicitly instead.
+      stopWizardSoundMix();
       createWizard.recorder = null;
       createWizard.chunks = [];
       createWizard.recordAccumMs = 0;
@@ -4791,6 +6264,13 @@ function wireWizardCaptureGesture() {
       ctx.translate(canvas.width, 0);
       ctx.scale(-1, 1);
     }
+    // Task #202 - bake the manual exposure/brightness adjustment into the
+    // still right away (canvas 2D .filter works the same as CSS filter).
+    // The style filter (CREATE_WIZARD_FILTERS) stays un-baked here and is
+    // applied later at publish time via bakeImageFilter() instead, same as
+    // before this task - brightness is captured immediately since, unlike
+    // the style filter, there's no later step where it can be re-chosen.
+    ctx.filter = "brightness(" + (createWizard.brightness || 100) + "%)";
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     createWizard.rawDataUrl = canvas.toDataURL("image/jpeg", 0.92);
     createWizard.mediaType = "image";
@@ -4816,7 +6296,13 @@ function wireWizardCaptureGesture() {
     btn.classList.add("pressed");
     createWizard.holdArmed = true;
     createWizard.holdTimer = setTimeout(() => {
-      if (createWizard.holdArmed) runCaptureFlow(true);
+      if (!createWizard.holdArmed) return;
+      try {
+        runCaptureFlow(true);
+      } catch (err) {
+        console.error("Camera shutter hold-start failed:", err);
+        wizardShowToast(I18N.t("create.cameraUnavailable"));
+      }
     }, WIZARD_HOLD_THRESHOLD_MS);
   });
 
@@ -4828,10 +6314,21 @@ function wireWizardCaptureGesture() {
       clearTimeout(createWizard.holdTimer);
       createWizard.holdTimer = null;
     }
-    if (createWizard.recording) {
-      pauseHoldRecording();
-    } else if (createWizard.recordAccumMs === 0) {
-      runCaptureFlow(false);
+    // Defensive: a thrown error inside pauseHoldRecording()/runCaptureFlow()
+    // (e.g. from the newer brightness/sound-mixing code added in tasks
+    // #202/#203) must never leave the shutter permanently unresponsive -
+    // this codebase has a documented history of exactly that failure mode
+    // ("every following tap on the shutter does nothing at all"). Catch and
+    // log instead of letting it propagate silently.
+    try {
+      if (createWizard.recording) {
+        pauseHoldRecording();
+      } else if (createWizard.recordAccumMs === 0) {
+        runCaptureFlow(false);
+      }
+    } catch (err) {
+      console.error("Camera shutter release handler failed:", err);
+      wizardShowToast(I18N.t("create.cameraUnavailable"));
     }
   };
   btn.addEventListener("pointerup", release);
@@ -4843,6 +6340,13 @@ function wizardHandleMediaFile(file) {
   if (!file) return;
   const isVideo = file.type.startsWith("video/");
   if (!isVideo) {
+    // The Videos hub (task #231) is video-only - a photo picked from the
+    // gallery button while target:"video" is active isn't a valid upload
+    // for it (server.js's POST /api/moments rejects it too).
+    if (createWizard.target === "video") {
+      alert(I18N.t("videos.mustBeVideo"));
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       createWizard.rawDataUrl = reader.result;
@@ -4859,8 +6363,8 @@ function wizardHandleMediaFile(file) {
   const objectUrl = URL.createObjectURL(file);
   probe.onloadedmetadata = () => {
     URL.revokeObjectURL(objectUrl);
-    if (probe.duration && probe.duration > MAX_MOMENT_VIDEO_SECONDS) {
-      alert(I18N.t("moments.videoTooLong"));
+    if (probe.duration && probe.duration > wizardMaxVideoSeconds()) {
+      alert(I18N.t(createWizard.target === "video" ? "videos.videoTooLong" : "moments.videoTooLong"));
       return;
     }
     createWizard.durationSeconds = probe.duration || null;
@@ -4877,24 +6381,65 @@ function wizardHandleMediaFile(file) {
   probe.src = objectUrl;
 }
 
+// Task #204 - cycles an overlay's size through WIZARD_OVERLAY_SIZE_STEPS
+// (sm -> md -> lg -> sm...), used by the small resize button rendered on
+// each overlay in the editor (see renderWizardOverlays() below).
+function wizardCycleOverlaySize(ov) {
+  const idx = WIZARD_OVERLAY_SIZE_STEPS.indexOf(ov.size || "md");
+  ov.size = WIZARD_OVERLAY_SIZE_STEPS[(idx + 1) % WIZARD_OVERLAY_SIZE_STEPS.length];
+}
+
 function renderWizardOverlays(interactive) {
   const wrap = document.getElementById("wizard-preview-wrap");
   if (!wrap) return;
   wrap.querySelectorAll(".wizard-overlay-item").forEach((el) => el.remove());
   createWizard.overlays.forEach((ov) => {
     const el = document.createElement("div");
-    el.className = "wizard-overlay-item " + ov.type;
+    el.className = "wizard-overlay-item " + ov.type + " size-" + (ov.size || "md");
     el.style.left = ov.xPct + "%";
     el.style.top = ov.yPct + "%";
-    el.textContent = ov.value;
-    if (ov.type === "text") el.style.color = ov.color;
-    if (interactive) wireWizardOverlayDrag(el, wrap, ov);
+    const contentSpan = document.createElement("span");
+    contentSpan.className = "wizard-overlay-content";
+    contentSpan.textContent = ov.value;
+    if (ov.type === "text") contentSpan.style.color = ov.color;
+    el.appendChild(contentSpan);
+    if (interactive) {
+      // Small always-visible resize-cycle and remove (×) controls on every
+      // overlay, per task #204 - both stop propagation so tapping them
+      // doesn't also start a drag (see wireWizardOverlayDrag() below).
+      const resizeBtn = document.createElement("button");
+      resizeBtn.type = "button";
+      resizeBtn.className = "wizard-overlay-resize";
+      resizeBtn.title = I18N.t("create.overlayResize");
+      resizeBtn.textContent = (ov.size || "md").toUpperCase();
+      resizeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        wizardCycleOverlaySize(ov);
+        renderWizardOverlays(true);
+      });
+      el.appendChild(resizeBtn);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "wizard-overlay-remove";
+      removeBtn.title = I18N.t("create.removeOverlay");
+      removeBtn.innerHTML = "&times;";
+      removeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        createWizard.overlays = createWizard.overlays.filter((o) => o.id !== ov.id);
+        renderWizardOverlays(true);
+      });
+      el.appendChild(removeBtn);
+
+      wireWizardOverlayDrag(el, wrap, ov);
+    }
     wrap.appendChild(el);
   });
 }
 
 function wireWizardOverlayDrag(el, wrap, ov) {
   el.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".wizard-overlay-resize") || e.target.closest(".wizard-overlay-remove")) return;
     e.preventDefault();
     el.classList.add("dragging");
     try { el.setPointerCapture(e.pointerId); } catch (err) {}
@@ -4934,10 +6479,67 @@ function drawWizardStickerPicker() {
   toolbar.insertAdjacentElement("afterend", picker);
   picker.querySelectorAll("button").forEach((btn) => {
     btn.addEventListener("click", () => {
-      createWizard.overlays.push({ id: "s" + Date.now(), type: "sticker", value: btn.dataset.emoji, xPct: 50, yPct: 50 });
+      createWizard.overlays.push({ id: "s" + Date.now(), type: "sticker", value: btn.dataset.emoji, size: "md", xPct: 50, yPct: 50 });
       renderWizardOverlays(true);
       picker.remove();
     });
+  });
+}
+
+// Task #204 - replaces the old bare prompt() text-add flow with a small
+// composer offering a size toggle (sm/md/lg, shared with stickers - see
+// WIZARD_OVERLAY_SIZE_STEPS) and 6 preset colors (WIZARD_TEXT_COLORS,
+// white/black first for guaranteed contrast against any background). No
+// font-family picker - out of scope per task #204's MVP note.
+function drawWizardTextComposer() {
+  const existing = document.getElementById("wizard-text-composer");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const toolbar = document.querySelector(".wizard-edit-toolbar");
+  if (!toolbar) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-text-composer";
+  panel.id = "wizard-text-composer";
+  panel.innerHTML = `
+    <textarea id="wizard-text-input" maxlength="60" rows="2" placeholder="${I18N.t("create.addTextPrompt")}"></textarea>
+    <div class="wizard-text-size-row">
+      ${WIZARD_OVERLAY_SIZE_STEPS.map((s) => `<button type="button" class="wizard-text-size-btn ${s === "md" ? "active" : ""}" data-size="${s}">${I18N.t("create.textSize_" + s)}</button>`).join("")}
+    </div>
+    <div class="wizard-text-color-row">
+      ${WIZARD_TEXT_COLORS.map(
+        (c, i) => `<button type="button" class="wizard-text-color-swatch ${i === 0 ? "active" : ""}" data-color="${c}" style="background:${c};" aria-label="${c}"></button>`
+      ).join("")}
+    </div>
+    <div class="action-row">
+      <button type="button" class="btn btn-secondary" id="wizard-text-cancel">${I18N.t("common.cancel")}</button>
+      <button type="button" class="btn btn-primary" id="wizard-text-confirm">${I18N.t("create.addText")}</button>
+    </div>
+  `;
+  toolbar.insertAdjacentElement("afterend", panel);
+
+  let chosenSize = "md";
+  let chosenColor = WIZARD_TEXT_COLORS[0];
+  panel.querySelectorAll(".wizard-text-size-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      chosenSize = btn.dataset.size;
+      panel.querySelectorAll(".wizard-text-size-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    });
+  });
+  panel.querySelectorAll(".wizard-text-color-swatch").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      chosenColor = btn.dataset.color;
+      panel.querySelectorAll(".wizard-text-color-swatch").forEach((b) => b.classList.toggle("active", b === btn));
+    });
+  });
+  document.getElementById("wizard-text-cancel").addEventListener("click", () => panel.remove());
+  document.getElementById("wizard-text-confirm").addEventListener("click", () => {
+    const val = document.getElementById("wizard-text-input").value.trim();
+    panel.remove();
+    if (!val) return;
+    createWizard.overlays.push({ id: "t" + Date.now(), type: "text", value: val.slice(0, 60), color: chosenColor, size: chosenSize, xPct: 50, yPct: 35 });
+    renderWizardOverlays(true);
   });
 }
 
@@ -4950,17 +6552,24 @@ function drawCreateWizard() {
     const ringC = 2 * Math.PI * 30;
     overlay.innerHTML = `
       <div class="wizard-fs-video-wrap ${createWizard.facingMode === "user" ? "mirrored" : ""}" id="wizard-fs-video-wrap">
-        <video id="wizard-fs-video" autoplay playsinline muted style="filter:${createWizardFilterCss(createWizard.filter)};"></video>
+        <video id="wizard-fs-video" autoplay playsinline muted style="filter:${wizardLiveFilterCss()};"></video>
         <div class="wizard-fs-fallback" id="wizard-fs-fallback" style="display:none;">
           <p>${I18N.t("create.cameraUnavailable")}</p>
         </div>
         <div class="wizard-fs-grid ${createWizard.gridOn ? "show" : ""}" id="wizard-fs-grid" aria-hidden="true"></div>
         <div class="wizard-fs-topbar">
           <button class="wizard-fs-icon-btn" id="wizard-fs-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
-          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${I18N.t("create.addSound")}</button>
+          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${
+            createWizard.soundPreset && createWizard.soundPreset !== "none" ? I18N.t("camera.soundPicker." + createWizard.soundPreset) : I18N.t("create.addSound")
+          }</button>
           <button class="wizard-fs-icon-btn" id="wizard-fs-effects-btn" title="${I18N.t("create.rail_effects")}">&#10024;</button>
         </div>
         <div class="wizard-fs-rec-badge" id="wizard-fs-rec-badge" style="display:none;"><span class="wizard-fs-rec-dot"></span><span id="wizard-fs-rec-time">0:00</span></div>
+        <div class="wizard-fs-brightness-panel" id="wizard-fs-brightness-panel" hidden>
+          <span class="wizard-fs-brightness-icon" aria-hidden="true">&#9788;</span>
+          <input type="range" id="wizard-fs-brightness-slider" min="50" max="150" step="5" value="${createWizard.brightness}" aria-label="${I18N.t("camera.brightnessToggle")}" />
+          <span class="wizard-fs-brightness-value" id="wizard-fs-brightness-value">${createWizard.brightness}%</span>
+        </div>
         <div class="wizard-fs-rail" id="wizard-fs-rail">${wizardRailItemsHtml()}</div>
       </div>
       <div class="wizard-fs-bottom">
@@ -4992,12 +6601,12 @@ function drawCreateWizard() {
         createWizard.filter = btn.dataset.filter;
         document.querySelectorAll(".wizard-fs-filter-item").forEach((b) => b.classList.toggle("active", b.dataset.filter === createWizard.filter));
         const v = document.getElementById("wizard-fs-video");
-        if (v) v.style.filter = createWizardFilterCss(createWizard.filter);
+        if (v) v.style.filter = wizardLiveFilterCss();
       });
     });
 
     document.getElementById("wizard-fs-close").addEventListener("click", () => closeOverlayViaBack(closeCreateWizard));
-    document.getElementById("wizard-fs-sound-pill").addEventListener("click", () => wizardShowToast(I18N.t("create.comingSoon")));
+    document.getElementById("wizard-fs-sound-pill").addEventListener("click", wizardOpenSoundPicker);
     document.getElementById("wizard-fs-effects-btn").addEventListener("click", wizardToggleFilterStrip);
     document.getElementById("wizard-fs-gallery-btn").addEventListener("click", () => document.getElementById("wizard-file-media").click());
     document.getElementById("wizard-file-media").addEventListener("change", (e) => wizardHandleMediaFile(e.target.files[0]));
@@ -5005,6 +6614,7 @@ function drawCreateWizard() {
       if (createWizard.recordAccumMs > 0) finalizeWizardRecording();
     });
     wireWizardRail();
+    wireWizardBrightnessPanel();
     wireWizardCaptureGesture();
     return;
   }
@@ -5013,7 +6623,7 @@ function drawCreateWizard() {
     overlay.className = "modal-overlay create-wizard-overlay";
     overlay.innerHTML = `
       <div class="modal-box wizard-box">
-        <h2 class="section-heading">${I18N.t(createWizard.target === "loop" ? "create.step2TitleLoop" : "create.step2Title")}</h2>
+        <h2 class="section-heading">${I18N.t(createWizard.target === "loop" ? "create.step2TitleLoop" : createWizard.target === "video" ? "create.step2TitleVideo" : "create.step2Title")}</h2>
         <div class="wizard-edit-toolbar">
           <button class="wizard-edit-tool-btn" id="wizard-add-text-btn" title="${I18N.t("create.addText")}">Aa</button>
           <button class="wizard-edit-tool-btn" id="wizard-add-sticker-btn" title="${I18N.t("create.addSticker")}">&#128512;</button>
@@ -5045,12 +6655,7 @@ function drawCreateWizard() {
       if (img) img.style.filter = createWizardFilterCss(createWizard.filter);
       else if (vid) vid.style.filter = createWizardFilterCss(createWizard.filter);
     });
-    document.getElementById("wizard-add-text-btn").addEventListener("click", () => {
-      const val = prompt(I18N.t("create.addTextPrompt"));
-      if (!val) return;
-      createWizard.overlays.push({ id: "t" + Date.now(), type: "text", value: val.slice(0, 60), color: "#FFD84D", xPct: 50, yPct: 35 });
-      renderWizardOverlays(true);
-    });
+    document.getElementById("wizard-add-text-btn").addEventListener("click", drawWizardTextComposer);
     document.getElementById("wizard-add-sticker-btn").addEventListener("click", drawWizardStickerPicker);
     document.getElementById("wizard-back").addEventListener("click", () => {
       createWizard.step = 1;
@@ -5060,6 +6665,11 @@ function drawCreateWizard() {
       createWizard.recordAccumMs = 0;
       createWizard.recorder = null;
       createWizard.chunks = [];
+      // The AI-suggested trim window (if any) belongs to the clip that's
+      // about to be discarded - clear it so a fresh capture never inherits
+      // a stale window.
+      createWizard.clipStartSec = null;
+      createWizard.clipEndSec = null;
       drawCreateWizard();
     });
     document.getElementById("wizard-next").addEventListener("click", () => {
@@ -5069,7 +6679,9 @@ function drawCreateWizard() {
     return;
   }
 
-  // step 3: caption + hashtags + publish
+  // step 3: title (video only) + caption + hashtags + next/publish
+  if (createWizard.step === 3) {
+  const isVideoStep3 = createWizard.target === "video";
   overlay.innerHTML = `
     <div class="modal-box wizard-box">
       <h2 class="section-heading">${I18N.t("create.step3Title")}</h2>
@@ -5080,10 +6692,31 @@ function drawCreateWizard() {
             : `<img class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" />`
         }
       </div>
+      ${
+        createWizard.mediaType === "video" && createWizard.durationSeconds > 20
+          ? `<div class="form-group" id="wizard-clip-group">
+               <button type="button" class="btn btn-ai-suggest btn-ai-suggest-sm" id="wizard-ai-clip">&#9986;&#65039; ${I18N.t("create.aiSuggestClip")}</button>
+               <p class="field-hint" id="wizard-ai-clip-hint"></p>
+               <div id="wizard-clip-result" style="display:none;">
+                 <p class="field-hint">${I18N.t("create.aiClipSuggested")} <span id="wizard-clip-range"></span></p>
+                 <p class="field-hint" id="wizard-clip-reason"></p>
+                 <a href="#" id="wizard-clip-reset">${I18N.t("create.aiClipUseFullVideo")}</a>
+               </div>
+             </div>`
+          : ""
+      }
+      ${
+        isVideoStep3
+          ? `<div class="form-group">
+               <label>${I18N.t("create.videoTitleLabel")}</label>
+               <input type="text" id="wizard-video-title" maxlength="120" placeholder="${I18N.t("create.videoTitlePlaceholder")}" value="${escapeHtml(createWizard.titleDraft || "")}" />
+             </div>`
+          : ""
+      }
       <div class="form-group">
         <label>${I18N.t("create.captionLabel")}</label>
-        <textarea id="wizard-caption" rows="2" maxlength="130" placeholder="${I18N.t("create.captionPlaceholder")}"></textarea>
-        <p class="field-hint"><span id="wizard-caption-count">0</span>/130</p>
+        <textarea id="wizard-caption" rows="2" maxlength="130" placeholder="${I18N.t("create.captionPlaceholder")}">${escapeHtml(createWizard.captionDraft || "")}</textarea>
+        <p class="field-hint"><span id="wizard-caption-count">${(createWizard.captionDraft || "").length}</span>/130</p>
         ${
           createWizard.mediaType === "image"
             ? `<button type="button" class="btn btn-ai-suggest btn-ai-suggest-sm" id="wizard-ai-suggest">&#10024; ${I18N.t("create.aiSuggestCaption")}</button>
@@ -5094,11 +6727,11 @@ function drawCreateWizard() {
       </div>
       <div class="form-group">
         <label>${I18N.t("create.hashtagsLabel")}</label>
-        <input type="text" id="wizard-hashtags" placeholder="${I18N.t("create.hashtagsPlaceholder")}" />
+        <input type="text" id="wizard-hashtags" placeholder="${I18N.t("create.hashtagsPlaceholder")}" value="${escapeHtml(createWizard.hashtagsDraft || "")}" />
       </div>
       <div class="action-row">
         <button class="btn btn-secondary" id="wizard-back2">${I18N.t("create.back")}</button>
-        <button class="btn btn-primary" id="wizard-publish">${I18N.t("create.publish")}</button>
+        <button class="btn btn-primary" id="wizard-publish">${I18N.t(isVideoStep3 ? "create.next" : "create.publish")}</button>
       </div>
       <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel3">${I18N.t("common.cancel")}</a></p>
       <p class="form-msg" id="wizard-publish-msg"></p>
@@ -5182,6 +6815,11 @@ function drawCreateWizard() {
     });
   }
 
+  // AI auto-clip (task #160) - only offered for videos over ~20s (the
+  // button itself is omitted from the markup above otherwise). Mirrors the
+  // caption assistant's loading-state/error-handling pattern above.
+  wireWizardAiClip(overlay);
+
   document.getElementById("wizard-back2").addEventListener("click", () => {
     createWizard.step = 2;
     drawCreateWizard();
@@ -5191,8 +6829,19 @@ function drawCreateWizard() {
     const publishBtn = document.getElementById("wizard-publish");
     const msgEl = document.getElementById("wizard-publish-msg");
     const isLoop = createWizard.target === "loop";
+    const isVideoTarget = createWizard.target === "video";
+    let videoTitleVal = "";
+    if (isVideoTarget) {
+      const titleInput = document.getElementById("wizard-video-title");
+      videoTitleVal = titleInput ? titleInput.value.trim() : "";
+      if (!videoTitleVal) {
+        msgEl.textContent = I18N.t("videos.titleRequired");
+        msgEl.className = "form-msg error";
+        return;
+      }
+    }
     publishBtn.disabled = true;
-    msgEl.textContent = I18N.t(isLoop ? "loops.uploading" : "moments.uploading");
+    msgEl.textContent = isVideoTarget ? "" : I18N.t(isLoop ? "loops.uploading" : "moments.uploading");
     msgEl.className = "form-msg";
     try {
       let finalMedia = createWizard.rawDataUrl;
@@ -5212,6 +6861,22 @@ function drawCreateWizard() {
         .join(" ");
       const captionText = captionEl.value.trim();
       const fullCaption = hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText;
+      createWizard.captionDraft = captionText;
+      createWizard.hashtagsDraft = hashtagsRaw;
+
+      // Videos hub (task #231) - title + caption/hashtags are ready, but
+      // publishing waits for one more optional step: "link to one of your
+      // listings?" (see the createWizard.step === 4 branch below, after
+      // this function). The actual POST /api/moments call happens there.
+      if (isVideoTarget) {
+        createWizard.titleDraft = videoTitleVal;
+        createWizard.finalMedia = finalMedia;
+        createWizard.captionText = fullCaption;
+        createWizard.step = 4;
+        publishBtn.disabled = false;
+        drawCreateWizard();
+        return;
+      }
 
       if (isLoop) {
         // server.js's mkt_loops schema uses "photo"/"video" for media_type
@@ -5236,6 +6901,14 @@ function drawCreateWizard() {
             media: finalMedia,
             caption: fullCaption,
             durationSeconds: createWizard.durationSeconds,
+            // AI auto-clip (task #160) - null/null (the default) means
+            // "publish the full video"; see POST /api/moments in server.js.
+            trimStartSec: createWizard.clipStartSec,
+            trimEndSec: createWizard.clipEndSec,
+            // Task #204 - only videos send overlay metadata; photo overlays
+            // are already baked into `finalMedia`'s pixels above and would
+            // just be drawn twice if sent again here.
+            overlays: createWizard.mediaType === "video" ? createWizard.overlays : undefined,
           },
         });
       }
@@ -5250,6 +6923,298 @@ function drawCreateWizard() {
       msgEl.className = "form-msg error";
       publishBtn.disabled = false;
     }
+  });
+  return;
+  }
+
+  // step 4 (Videos hub only, task #231): optional "link to one of your
+  // listings?" screen shown after caption/title, before the actual publish
+  // call. General-purpose across any product category, not book-specific -
+  // reuses the same "my listings" endpoint the profile page's own-listings
+  // tab already calls (GET /api/products?sellerId=<me>). Linking is never
+  // required - "Skip" is the default selection and stays selected unless
+  // the creator explicitly taps a listing.
+  if (createWizard.step === 4) {
+    overlay.className = "modal-overlay create-wizard-overlay";
+    overlay.innerHTML = `
+      <div class="modal-box wizard-box">
+        <h2 class="section-heading">${I18N.t("create.videoLinkProductTitle")}</h2>
+        <p class="field-hint">${I18N.t("create.videoLinkProductHint")}</p>
+        <div id="wizard-link-product-list"><p>${I18N.t("common.loading")}</p></div>
+        <div class="action-row">
+          <button class="btn btn-secondary" id="wizard-back3">${I18N.t("create.back")}</button>
+          <button class="btn btn-primary" id="wizard-publish-video">${I18N.t("create.publish")}</button>
+        </div>
+        <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel4">${I18N.t("common.cancel")}</a></p>
+        <p class="form-msg" id="wizard-publish-msg"></p>
+      </div>
+    `;
+    document.getElementById("wizard-cancel4").addEventListener("click", (e) => {
+      e.preventDefault();
+      closeOverlayViaBack(closeCreateWizard);
+    });
+    document.getElementById("wizard-back3").addEventListener("click", () => {
+      createWizard.step = 3;
+      drawCreateWizard();
+    });
+
+    const listEl = document.getElementById("wizard-link-product-list");
+    function renderLinkProductChoices() {
+      const products = createWizard.myProducts || [];
+      const skipRow = `
+        <label class="wizard-link-product-row">
+          <input type="radio" name="wizard-link-product" value="" ${createWizard.linkedProductId ? "" : "checked"} />
+          <span>${I18N.t("create.videoSkipLink")}</span>
+        </label>`;
+      const productRows = products
+        .map(
+          (p) => `
+        <label class="wizard-link-product-row">
+          <input type="radio" name="wizard-link-product" value="${p.id}" ${createWizard.linkedProductId === p.id ? "checked" : ""} />
+          ${p.photos && p.photos[0] ? `<img class="wizard-link-product-thumb" src="${p.photos[0]}" />` : `<span class="wizard-link-product-thumb wizard-link-product-thumb-empty">\u{1F4E6}</span>`}
+          <span class="wizard-link-product-info"><span class="wizard-link-product-title">${escapeHtml(p.title)}</span><span class="wizard-link-product-price">${fmtPrice(p.price)}</span></span>
+        </label>`
+        )
+        .join("");
+      listEl.innerHTML = skipRow + (productRows || `<p class="field-hint">${I18N.t("create.videoNoListings")}</p>`);
+      listEl.querySelectorAll('input[name="wizard-link-product"]').forEach((input) => {
+        input.addEventListener("change", () => {
+          createWizard.linkedProductId = input.value || null;
+        });
+      });
+    }
+
+    if (createWizard.myProducts) {
+      renderLinkProductChoices();
+    } else if (state.user) {
+      api("/api/products?sellerId=" + encodeURIComponent(state.user.id))
+        .then((products) => {
+          createWizard.myProducts = (products || []).filter((p) => p.status !== "sold");
+          renderLinkProductChoices();
+        })
+        .catch(() => {
+          createWizard.myProducts = [];
+          renderLinkProductChoices();
+        });
+    } else {
+      createWizard.myProducts = [];
+      renderLinkProductChoices();
+    }
+
+    document.getElementById("wizard-publish-video").addEventListener("click", async () => {
+      const publishBtn = document.getElementById("wizard-publish-video");
+      const msgEl = document.getElementById("wizard-publish-msg");
+      publishBtn.disabled = true;
+      msgEl.textContent = I18N.t("moments.uploading");
+      msgEl.className = "form-msg";
+      try {
+        await api("/api/moments", {
+          method: "POST",
+          auth: true,
+          body: {
+            target: "video",
+            mediaType: "video",
+            media: createWizard.finalMedia,
+            title: createWizard.titleDraft,
+            caption: createWizard.captionText,
+            durationSeconds: createWizard.durationSeconds,
+            linkedProductId: createWizard.linkedProductId || undefined,
+            // AI auto-clip (task #160) - null/null (the default) means
+            // "publish the full video"; see POST /api/moments in server.js.
+            trimStartSec: createWizard.clipStartSec,
+            trimEndSec: createWizard.clipEndSec,
+            // Task #204 - long-form Videos-hub uploads are always video, so
+            // overlay metadata (if any) always goes along.
+            overlays: createWizard.overlays,
+          },
+        });
+        msgEl.textContent = I18N.t("videos.posted");
+        msgEl.className = "form-msg ok";
+        setTimeout(() => {
+          closeOverlayViaBack(closeCreateWizard);
+          router();
+        }, 700);
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+        publishBtn.disabled = false;
+      }
+    });
+    return;
+  }
+}
+
+// ---- AI auto-clip (task #160): wizard step-3 wiring ------------------------
+// Wires the "#wizard-ai-clip" button (present only for video captures over
+// ~20s - see the markup in drawCreateWizard() above). Mirrors the caption
+// assistant's loading-state/error pattern: sample a handful of small frames
+// from the raw video client-side, send them to POST /api/ai/suggest-clip,
+// then preview the suggested window by looping the step-3 preview video
+// between startSec/endSec. The chosen window (or none, if the user resets to
+// "use full video") is stored on createWizard.clipStartSec/clipEndSec and
+// sent along with the publish call.
+function wireWizardAiClip(overlay) {
+  const btn = document.getElementById("wizard-ai-clip");
+  if (!btn) return;
+  const hintEl = document.getElementById("wizard-ai-clip-hint");
+  const resultEl = document.getElementById("wizard-clip-result");
+  const rangeEl = document.getElementById("wizard-clip-range");
+  const reasonEl = document.getElementById("wizard-clip-reason");
+  const resetLink = document.getElementById("wizard-clip-reset");
+  const btnLabel = btn.innerHTML;
+  const previewVideoEl = overlay.querySelector(".wizard-preview-media");
+
+  function stopPreviewLoop() {
+    if (previewVideoEl) previewVideoEl.ontimeupdate = null;
+  }
+
+  function playPreviewLoop() {
+    if (!previewVideoEl || createWizard.clipStartSec == null || createWizard.clipEndSec == null) return;
+    const start = createWizard.clipStartSec;
+    const end = createWizard.clipEndSec;
+    try {
+      previewVideoEl.currentTime = start;
+    } catch (e) {}
+    previewVideoEl.play().catch(() => {});
+    previewVideoEl.ontimeupdate = () => {
+      if (previewVideoEl.currentTime >= end) {
+        try {
+          previewVideoEl.currentTime = start;
+        } catch (e) {}
+      }
+    };
+  }
+
+  function showResult() {
+    rangeEl.textContent = I18N.t("create.aiClipRange")
+      .replace("{start}", formatClipTime(createWizard.clipStartSec))
+      .replace("{end}", formatClipTime(createWizard.clipEndSec));
+    resultEl.style.display = "block";
+  }
+
+  if (resetLink) {
+    resetLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      createWizard.clipStartSec = null;
+      createWizard.clipEndSec = null;
+      stopPreviewLoop();
+      resultEl.style.display = "none";
+    });
+  }
+
+  // Re-show the suggestion (and resume the preview loop) if the user comes
+  // back to step 3 after already running auto-clip once.
+  if (createWizard.clipStartSec != null && createWizard.clipEndSec != null) {
+    showResult();
+    reasonEl.textContent = "";
+    playPreviewLoop();
+  }
+
+  btn.addEventListener("click", async () => {
+    if (!createWizard.rawDataUrl || !createWizard.durationSeconds) return;
+    btn.disabled = true;
+    btn.textContent = I18N.t("create.aiClipThinking");
+    hintEl.textContent = "";
+    hintEl.className = "field-hint";
+    resultEl.style.display = "none";
+    stopPreviewLoop();
+    try {
+      const frames = await sampleVideoFrames(createWizard.rawDataUrl, createWizard.durationSeconds);
+      const data = await api("/api/ai/suggest-clip", {
+        method: "POST",
+        auth: true,
+        body: { durationSec: createWizard.durationSeconds, frames },
+      });
+      createWizard.clipStartSec = data.startSec;
+      createWizard.clipEndSec = data.endSec;
+      showResult();
+      reasonEl.textContent = data.reason || "";
+      playPreviewLoop();
+    } catch (err) {
+      hintEl.textContent = (err && err.message) || I18N.t("create.aiClipError");
+      hintEl.className = "field-hint error";
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = btnLabel;
+    }
+  });
+}
+
+// Samples ~7 small frames evenly across a video (from its raw data URL) for
+// the AI auto-clip request above - an offscreen, unattached-from-layout
+// <video> is seeked to each timestamp (awaiting the "seeked" event, since
+// currentTime writes are asynchronous) and drawn to a small canvas, kept at
+// ~320px wide so the request stays light.
+function sampleVideoFrames(dataUrl, durationSec, count) {
+  count = count || 7;
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.style.position = "fixed";
+    video.style.left = "-9999px";
+    video.style.top = "0";
+    video.style.width = "1px";
+    video.style.height = "1px";
+    document.body.appendChild(video);
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+
+    function cleanup() {
+      try {
+        video.pause();
+      } catch (e) {}
+      video.removeAttribute("src");
+      video.load();
+      video.remove();
+    }
+
+    video.addEventListener("error", () => {
+      cleanup();
+      reject(new Error("Could not read video"));
+    });
+    video.addEventListener("loadedmetadata", async () => {
+      try {
+        const dur = durationSec && durationSec > 0 ? durationSec : video.duration || 0;
+        if (!dur) throw new Error("Could not read video duration");
+        const w = 320;
+        const ratio = video.videoWidth && video.videoHeight ? video.videoHeight / video.videoWidth : 16 / 9;
+        canvas.width = w;
+        canvas.height = Math.max(1, Math.round(w * ratio));
+        const frames = [];
+        for (let i = 0; i < count; i++) {
+          const t = Math.min(dur - 0.05, Math.max(0, (dur * (i + 0.5)) / count));
+          await seekVideoTo(video, t);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          frames.push({ t, image: canvas.toDataURL("image/jpeg", 0.6) });
+        }
+        cleanup();
+        resolve(frames);
+      } catch (e) {
+        cleanup();
+        reject(e);
+      }
+    });
+    video.src = dataUrl;
+  });
+}
+
+function seekVideoTo(video, t) {
+  return new Promise((resolve, reject) => {
+    const onSeeked = () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+      resolve();
+    };
+    const onError = () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+      reject(new Error("Could not seek video"));
+    };
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("error", onError);
+    video.currentTime = t;
   });
 }
 
@@ -5288,10 +7253,14 @@ function bakeWizardOverlays(dataUrl, overlays) {
       overlays.forEach((ov) => {
         const x = (ov.xPct / 100) * canvas.width;
         const y = (ov.yPct / 100) * canvas.height;
+        // Task #204 - the sm/md/lg size picked in the editor scales the same
+        // base font sizes used here (WIZARD_OVERLAY_SIZE_SCALE), so what got
+        // dragged into place is what ends up baked into the JPEG.
+        const scale = WIZARD_OVERLAY_SIZE_SCALE[ov.size] || 1;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         if (ov.type === "text") {
-          const fontSize = Math.round(canvas.width * 0.06);
+          const fontSize = Math.round(canvas.width * 0.06 * scale);
           ctx.font = `800 ${fontSize}px sans-serif`;
           ctx.fillStyle = ov.color || "#FFD84D";
           ctx.shadowColor = "rgba(0,0,0,0.5)";
@@ -5299,7 +7268,7 @@ function bakeWizardOverlays(dataUrl, overlays) {
           ctx.fillText(ov.value, x, y);
           ctx.shadowBlur = 0;
         } else {
-          const fontSize = Math.round(canvas.width * 0.12);
+          const fontSize = Math.round(canvas.width * 0.12 * scale);
           ctx.font = `${fontSize}px sans-serif`;
           ctx.fillText(ov.value, x, y);
         }
@@ -5351,7 +7320,25 @@ async function renderProfile(userId) {
   const reviews = reviewsRes.status === "fulfilled" ? reviewsRes.value : [];
   const products = productsRes.status === "fulfilled" ? productsRes.value : [];
   const photos = photosRes.status === "fulfilled" ? photosRes.value : [];
-  const moments = momentsRes.status === "fulfilled" ? momentsRes.value : [];
+  const allMoments = momentsRes.status === "fulfilled" ? momentsRes.value : [];
+  // Videos hub (task #231) - GET /api/moments/user/:id intentionally
+  // returns both short-form Moments and long-form Videos (they're the same
+  // table), so the split happens here, client-side: the "Moments" stories
+  // rail only ever gets the short-form ones, and the new "Videos" tab
+  // (this user's channel) only gets the long-form ones. This is the
+  // client-side half of the short-form/long-form separation server.js
+  // already enforces on the main scroll feeds.
+  const moments = allMoments.filter((m) => !m.isLongVideo);
+  const userVideos = allMoments.filter((m) => m.isLongVideo);
+  // GET /api/moments/user/:id doesn't attach author name/photo (it's always
+  // the one profile we're already rendering), but videoCardHtml() expects
+  // them - fill them in from the profile response we just fetched.
+  if (profile) {
+    userVideos.forEach((v) => {
+      v.userName = profile.name;
+      v.userPhoto = profile.photo;
+    });
+  }
 
   let friendStatus = null;
   let followStatus = null;
@@ -5450,6 +7437,7 @@ async function renderProfile(userId) {
         <button class="tab-btn active" data-tab="listings">${I18N.t("profile.myListings")}</button>
         <button class="tab-btn" data-tab="photos">${I18N.t("profile.photosTab")}</button>
         <button class="tab-btn" data-tab="reviews">${I18N.t("profile.reviews")}</button>
+        ${isMe || userVideos.length ? `<button class="tab-btn" data-tab="videos">${I18N.t("profile.videosTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="friends">${I18N.t("profile.friendsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="requests">${I18N.t("profile.requestsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="saved">${I18N.t("profile.savedTab")}</button>` : ""}
@@ -5518,6 +7506,19 @@ async function renderProfile(userId) {
         }
       </div>
 
+      ${
+        isMe || userVideos.length
+          ? `<div id="tab-videos" style="display:none;">
+               <div class="videos-grid">
+                 ${
+                   userVideos.length
+                     ? userVideos.map(videoCardHtml).join("")
+                     : `<div class="empty-state">${I18N.t("videos.emptyChannel")}</div>`
+                 }
+               </div>
+             </div>`
+          : ""
+      }
       ${isMe ? `<div id="tab-friends" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-requests" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-saved" style="display:none;"></div>` : ""}
@@ -5536,7 +7537,7 @@ async function renderProfile(userId) {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "photos", "reviews", "friends", "requests", "saved", "blocked", "offers", "analytics", "notifications", "ads"].forEach((t) => {
+      ["listings", "photos", "reviews", "videos", "friends", "requests", "saved", "blocked", "offers", "analytics", "notifications", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
@@ -6238,16 +8239,254 @@ function openEditProfileModal(profile) {
   });
 }
 
-// ---------------- Messages ----------------
+// ---------------- Realtime chat (WebSocket client) - task #234 ----------------
+// Talks to the wire contract documented in server.js's "realtime chat
+// (WebSocket)" section (task #233) - read that doc-comment block first if
+// touching anything below. The socket is opened app-wide on login (see
+// setAuth() and the bottom "Init" section) and kept alive across page
+// navigation, not just while #/messages is open, so presence/typing/live
+// delivery and the unread badge all work from anywhere in the app.
+//
+// Progressive enhancement: the REST endpoints (GET /api/conversations,
+// GET /api/conversations/:id) remain the single source of truth and are
+// always used for the initial load of any view. The poll loop started in
+// renderMessages() below only actually performs a fetch while
+// chatSocketConnected is false - i.e. it's a fallback for when the socket
+// never connects at all (old browser, blocked WS, flaky network), not a
+// second parallel update path once the socket is live.
+
+let chatSocket = null;
+let chatSocketConnected = false; // true once THIS socket's "connected" frame arrived
+let chatReconnectAttempts = 0;
+let chatReconnectTimer = null;
+const CHAT_RECONNECT_BASE_MS = 1000;
+const CHAT_RECONNECT_MAX_MS = 30000;
+
+const chatState = {
+  activeOtherId: null, // otherUserId of the open thread, or null
+  otherUser: null, // { id, name, photo } of the open thread's other participant
+  messages: [], // open thread's messages, oldest -> newest, id-keyed source of truth
+  convos: [], // last loaded conversation list (cache, not authoritative)
+  presence: {}, // userId -> { online, lastSeenAt }
+  typingTimer: null, // clears the "typing..." indicator if typing:stop never arrives
+  replyTarget: null, // message object currently staged as a reply quote, or null
+  myTypingActive: false,
+  myTypingIdleTimer: null,
+  pendingAttachment: null, // { dataUrl, kind: "image"|"video" } staged before sending
+};
+
+function chatWsUrl() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return proto + "//" + location.host + "/ws?token=" + encodeURIComponent(state.token);
+}
+
+function connectChatSocket() {
+  if (!state.token) return;
+  if (chatSocket && (chatSocket.readyState === WebSocket.OPEN || chatSocket.readyState === WebSocket.CONNECTING)) return;
+  if (chatReconnectTimer) { clearTimeout(chatReconnectTimer); chatReconnectTimer = null; }
+  let ws;
+  try {
+    ws = new WebSocket(chatWsUrl());
+  } catch (e) {
+    scheduleChatReconnect();
+    return;
+  }
+  chatSocket = ws;
+  ws.addEventListener("message", (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    handleChatSocketMessage(msg);
+  });
+  ws.addEventListener("close", () => {
+    chatSocketConnected = false;
+    if (chatSocket === ws) chatSocket = null;
+    if (state.token) scheduleChatReconnect();
+  });
+  ws.addEventListener("error", () => {
+    // The browser always follows "error" with "close" for WebSocket, which
+    // does the actual reconnect scheduling above - nothing extra needed here.
+  });
+}
+
+function scheduleChatReconnect() {
+  if (chatReconnectTimer || !state.token) return;
+  // Exponential backoff (1s, 2s, 4s, ... capped at 30s) so a dropped
+  // connection (mobile network blip, backgrounding) doesn't hammer the
+  // server, but chat quietly comes back on its own without the user having
+  // to refresh the page.
+  const delay = Math.min(CHAT_RECONNECT_BASE_MS * Math.pow(2, chatReconnectAttempts), CHAT_RECONNECT_MAX_MS);
+  chatReconnectAttempts++;
+  chatReconnectTimer = setTimeout(() => {
+    chatReconnectTimer = null;
+    connectChatSocket();
+  }, delay);
+}
+
+function disconnectChatSocket() {
+  if (chatReconnectTimer) { clearTimeout(chatReconnectTimer); chatReconnectTimer = null; }
+  chatReconnectAttempts = 0;
+  chatSocketConnected = false;
+  if (chatSocket) {
+    // The "close" listener registered in connectChatSocket() will still
+    // fire after this - harmless, since it only schedules a reconnect when
+    // state.token is set, and setAuth(null, null) always clears the token
+    // before calling this on logout.
+    try { chatSocket.close(); } catch (e) {}
+    chatSocket = null;
+  }
+}
+
+function wsSendChat(obj) {
+  if (chatSocket && chatSocket.readyState === WebSocket.OPEN) {
+    try { chatSocket.send(JSON.stringify(obj)); } catch (e) {}
+  }
+}
+
+function handleChatSocketMessage(msg) {
+  if (!msg || typeof msg.type !== "string") return;
+  if (msg.type === "connected") {
+    chatSocketConnected = true;
+    chatReconnectAttempts = 0;
+    return;
+  }
+  if (msg.type === "message:new") return onChatMessageNew(msg.message);
+  if (msg.type === "message:read") return onChatMessageRead(msg);
+  if (msg.type === "reaction:added" || msg.type === "reaction:removed") return onChatReactionChanged(msg);
+  if (msg.type === "message:deleted") return onChatMessageDeleted(msg);
+  if (msg.type === "presence:update" || msg.type === "presence:result") return onChatPresenceUpdate(msg);
+  if (msg.type === "typing") return onChatTyping(msg);
+  // Unknown types (pong, auth:error, ...) are ignored client-side too - same
+  // forward-compatible convention as the server's envelope contract.
+}
+
+function isMessagesRouteOpen() {
+  return !!document.getElementById("convo-list");
+}
+
+function onChatMessageNew(message) {
+  if (!state.user) return;
+  const myId = state.user.id;
+  const otherId = message.fromUserId === myId ? message.toUserId : message.fromUserId;
+  pollUnread();
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+  if (chatState.activeOtherId && otherId === chatState.activeOtherId) {
+    // Re-fetch the thread from the server (rather than just appending the
+    // pushed message locally) so read-receipts flip correctly - per
+    // server.js's documented contract, `read` only flips via a GET
+    // /api/conversations/:id call, which this triggers.
+    loadChatThread(otherId, { keepSkeleton: true });
+  }
+}
+
+function onChatMessageRead(msg) {
+  if (msg.conversationWith !== chatState.activeOtherId) return;
+  let changed = false;
+  chatState.messages.forEach((m) => {
+    if (msg.messageIds.includes(m.id)) { m.read = true; changed = true; }
+  });
+  if (changed) renderThreadMessages([]);
+}
+
+function onChatReactionChanged(msg) {
+  const m = chatState.messages.find((x) => x.id === msg.messageId);
+  if (m) {
+    m.reactions = msg.reactions;
+    renderThreadMessages([]);
+  }
+}
+
+function onChatMessageDeleted(msg) {
+  if (msg.mode === "forEveryone") {
+    const m = chatState.messages.find((x) => x.id === msg.messageId);
+    if (m) {
+      m.deleted = true;
+      m.text = "";
+      m.attachmentUrl = null;
+      m.attachmentType = null;
+      m.reactions = {};
+      renderThreadMessages([]);
+    }
+  } else if (msg.mode === "forMe") {
+    // Only echoed to the caller's OWN other tabs/sessions (see server.js) -
+    // safe to always apply since it can only ever be about our own view.
+    const idx = chatState.messages.findIndex((x) => x.id === msg.messageId);
+    if (idx !== -1) {
+      chatState.messages.splice(idx, 1);
+      renderThreadMessages([]);
+    }
+  }
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+  pollUnread();
+}
+
+function onChatPresenceUpdate(msg) {
+  chatState.presence[msg.userId] = { online: msg.online, lastSeenAt: msg.lastSeenAt };
+  updatePresenceDom(msg.userId);
+}
+
+function onChatTyping(msg) {
+  if (msg.from !== chatState.activeOtherId) return;
+  const row = document.getElementById("chat-typing-row");
+  if (!row) return;
+  clearTimeout(chatState.typingTimer);
+  if (msg.state === "start") {
+    row.style.display = "";
+    // Safety timeout in case a typing:stop frame is lost (dropped
+    // connection mid-type) - the indicator doesn't stick around forever.
+    chatState.typingTimer = setTimeout(() => { row.style.display = "none"; }, 6000);
+    const container = document.getElementById("chat-messages");
+    if (container && container.scrollHeight - container.scrollTop - container.clientHeight < 150) {
+      container.scrollTop = container.scrollHeight;
+    }
+  } else {
+    row.style.display = "none";
+  }
+}
+
+async function fetchPresenceOnce(userId) {
+  try {
+    const p = await api("/api/users/" + userId + "/presence", { auth: true });
+    chatState.presence[userId] = p;
+    updatePresenceDom(userId);
+  } catch (e) {}
+}
+
+function updatePresenceDom(userId) {
+  const p = chatState.presence[userId];
+  if (!p) return;
+  document.querySelectorAll('[data-presence-dot-for="' + userId + '"]').forEach((el) => {
+    el.classList.toggle("online", !!p.online);
+  });
+  if (chatState.activeOtherId === userId) {
+    const sub = document.getElementById("chat-thread-presence");
+    if (sub) sub.innerHTML = presenceLineHtml(p);
+    renderThreadMessages([]); // read-receipt "delivered" state depends on the other user's online-ness
+  }
+}
+
+function presenceLineHtml(p) {
+  if (!p) return I18N.t("messages.offline");
+  if (p.online) return `<span class="presence-dot online inline"></span>${I18N.t("messages.online")}`;
+  if (p.lastSeenAt) return escapeHtml(I18N.t("messages.lastSeenPrefix") + " " + timeAgoStr(p.lastSeenAt));
+  return I18N.t("messages.offline");
+}
+
+// ---------------- Messages (conversation list + thread view) ----------------
 
 let convoPollTimer = null;
+let presenceRefreshTimer = null;
 
 async function renderMessages(otherUserId) {
   if (!state.token) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
     return;
   }
-  if (convoPollTimer) clearInterval(convoPollTimer);
+  if (convoPollTimer) { clearInterval(convoPollTimer); convoPollTimer = null; }
+  if (presenceRefreshTimer) { clearInterval(presenceRefreshTimer); presenceRefreshTimer = null; }
+  chatState.activeOtherId = otherUserId || null;
+  chatState.messages = [];
+  chatState.replyTarget = null;
+  chatState.pendingAttachment = null;
 
   viewEl.innerHTML = `
     <h2 class="section-heading">${I18N.t("messages.inbox")}</h2>
@@ -6257,79 +8496,786 @@ async function renderMessages(otherUserId) {
     </div>
   `;
 
-  await loadConvoList(otherUserId);
-  if (otherUserId) await loadChat(otherUserId);
+  connectChatSocket(); // no-op if already open/connecting
 
+  await loadConvoList(otherUserId);
+  if (otherUserId) await loadChatThread(otherUserId);
+
+  // REST fallback poll - only actually fetches while the socket hasn't
+  // connected (see the doc-comment at the top of this section).
   convoPollTimer = setInterval(async () => {
-    await loadConvoList(otherUserId);
-    if (otherUserId) await loadChat(otherUserId, true);
+    if (chatSocketConnected) return;
+    await loadConvoList(chatState.activeOtherId);
+    if (chatState.activeOtherId) await loadChatThread(chatState.activeOtherId, { keepSkeleton: true });
   }, 4000);
+
+  if (otherUserId) {
+    presenceRefreshTimer = setInterval(() => {
+      if (chatState.activeOtherId) fetchPresenceOnce(chatState.activeOtherId);
+    }, 30000);
+  }
+}
+
+function convoPreviewText(c) {
+  if (c.lastMessageDeleted) return I18N.t("messages.deletedTombstone");
+  if (c.lastMessageAttachmentType === "audio") return "\u{1F3A4} " + I18N.t("messages.voiceMessage");
+  if (c.lastMessageAttachmentType === "video") return "\u{1F3A5} " + I18N.t("messages.video");
+  if (c.lastMessageAttachmentType === "image") return "\u{1F4F7} " + I18N.t("messages.photo");
+  return c.lastMessage || "";
 }
 
 async function loadConvoList(activeId) {
   const list = document.getElementById("convo-list");
   if (!list) return;
-  const convos = await api("/api/conversations", { auth: true });
+  let convos;
+  try {
+    convos = await api("/api/conversations", { auth: true });
+  } catch (e) {
+    return;
+  }
+  chatState.convos = convos;
   setUnreadBadge(convos.filter((c) => c.unread).length);
   list.innerHTML = convos.length
     ? convos
-        .map(
-          (c) => `
-      <a class="convo-item ${c.userId === activeId ? "active" : ""}" href="#/messages/${c.userId}">
-        ${c.userPhoto ? `<img class="mini-avatar" style="width:32px;height:32px;" src="${c.userPhoto}" />` : `<div class="seller-avatar-placeholder" style="width:32px;height:32px;font-size:13px;">${initials(c.userName)}</div>`}
-        <div>
+        .map((c) => {
+          const presence = chatState.presence[c.userId];
+          const online = presence ? presence.online : false;
+          return `
+      <a class="convo-item ${c.userId === activeId ? "active" : ""} ${c.unread ? "unread" : ""}" href="#/messages/${c.userId}">
+        <span class="convo-avatar-wrap">
+          ${c.userPhoto ? `<img class="convo-avatar" src="${c.userPhoto}" />` : `<div class="seller-avatar-placeholder convo-avatar">${initials(c.userName)}</div>`}
+          <span class="presence-dot ${online ? "online" : ""}" data-presence-dot-for="${c.userId}"></span>
+        </span>
+        <div class="convo-text">
           <div class="convo-name">${escapeHtml(c.userName)}</div>
-          <div class="convo-preview">${escapeHtml(c.lastMessage)}</div>
+          <div class="convo-preview">${escapeHtml(convoPreviewText(c))}</div>
         </div>
-        ${c.unread ? `<span class="convo-dot"></span>` : ""}
-      </a>`
-        )
+        <div class="convo-meta">
+          <span class="convo-time">${timeAgoStr(c.lastAt)}</span>
+          ${c.unread ? `<span class="convo-unread-badge" aria-label="${I18N.t("messages.unread")}"></span>` : ""}
+        </div>
+      </a>`;
+        })
         .join("")
     : `<div class="empty-state messages-empty">
         <p>${I18N.t("messages.noConversations")}</p>
         <a href="#/marketplace" class="btn btn-secondary">${I18N.t("messages.emptyBrowseCta")}</a>
       </div>`;
+  // Best-effort presence for conversation partners not yet covered by a live
+  // presence:update - one request per partner, only for what's on screen.
+  convos.slice(0, 20).forEach((c) => {
+    if (!chatState.presence[c.userId]) fetchPresenceOnce(c.userId);
+  });
 }
 
-async function loadChat(otherUserId, silent) {
+// ---- Thread view ----
+
+function chatPanelSkeletonHtml(other) {
+  return `
+    <div class="chat-thread-header">
+      <a href="#/profile/${other.id}" class="chat-thread-avatar-link">
+        ${other.photo ? `<img src="${other.photo}" alt="" />` : `<div class="seller-avatar-placeholder">${initials(other.name)}</div>`}
+      </a>
+      <div class="chat-thread-headtext">
+        <a href="#/profile/${other.id}" class="chat-thread-name">${escapeHtml(other.name || "")}</a>
+        <div class="chat-thread-presence" id="chat-thread-presence">${I18N.t("messages.offline")}</div>
+      </div>
+    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-typing-row" id="chat-typing-row" style="display:none;">
+      <div class="chat-bubble theirs typing-bubble"><span></span><span></span><span></span></div>
+    </div>
+    <div class="chat-reply-preview" id="chat-reply-preview" style="display:none;"></div>
+    <div class="chat-attach-preview" id="chat-attach-preview" style="display:none;"></div>
+    <div class="chat-record-overlay" id="chat-record-overlay" style="display:none;"></div>
+    <div class="chat-input-row">
+      <button type="button" class="chat-icon-btn" id="chat-attach-btn" title="${I18N.t("messages.attach")}" aria-label="${I18N.t("messages.attach")}">\u{1F4CE}</button>
+      <input type="file" id="chat-file-input" accept="image/*,video/*" style="display:none;" />
+      <input id="chat-text" placeholder="${I18N.t("messages.typeMessage")}" autocomplete="off" />
+      <button type="button" class="chat-icon-btn chat-mic-btn" id="chat-mic-btn" title="${I18N.t("messages.holdToRecord")}" aria-label="${I18N.t("messages.holdToRecord")}">\u{1F3A4}</button>
+      <button type="button" class="btn btn-primary chat-send-btn" id="chat-send" style="display:none;">${I18N.t("messages.send")}</button>
+    </div>
+  `;
+}
+
+async function loadChatThread(otherUserId, opts) {
+  opts = opts || {};
   const panel = document.getElementById("chat-panel");
   if (!panel) return;
-  if (!silent) panel.innerHTML = `<div class="chat-messages" id="chat-messages"></div><div class="chat-input-row"><input id="chat-text" placeholder="${I18N.t("messages.typeMessage")}" /><button class="btn btn-primary" id="chat-send">${I18N.t("messages.send")}</button></div>`;
 
-  const messages = await api("/api/conversations/" + otherUserId, { auth: true });
-  const other = await api("/api/users/" + otherUserId);
+  if (panel.dataset.threadFor !== otherUserId) {
+    let other;
+    try {
+      other = await api("/api/users/" + otherUserId);
+    } catch (e) {
+      other = { id: otherUserId, name: "?" };
+    }
+    chatState.otherUser = other;
+    panel.dataset.threadFor = otherUserId;
+    panel.innerHTML = chatPanelSkeletonHtml(other);
+    wireChatPanel(otherUserId);
+    fetchPresenceOnce(otherUserId);
+  }
+
+  let messages;
+  try {
+    messages = await api("/api/conversations/" + otherUserId, { auth: true });
+  } catch (e) {
+    return;
+  }
+  const prevIds = new Set(chatState.messages.map((m) => m.id));
+  chatState.messages = messages;
+  const newIds = messages.filter((m) => !prevIds.has(m.id)).map((m) => m.id);
+  renderThreadMessages(newIds);
+  pollUnread();
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+}
+
+function mergeIncomingMessage(m) {
+  const idx = chatState.messages.findIndex((x) => x.id === m.id);
+  if (idx === -1) chatState.messages.push(m);
+  else chatState.messages[idx] = m;
+  chatState.messages.sort((a, b) => a.createdAt - b.createdAt);
+  renderThreadMessages([m.id]);
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+}
+
+function renderThreadMessages(newIds) {
   const container = document.getElementById("chat-messages");
-  if (container) {
-    container.innerHTML = messages
-      .map(
-        (m) =>
-          `<div class="chat-bubble ${m.fromUserId === state.user.id ? "mine" : "theirs"}">${escapeHtml(m.text)}</div>`
-      )
-      .join("");
-    container.scrollTop = container.scrollHeight;
-  }
+  if (!container) return;
+  const newSet = new Set(newIds || []);
+  const wasEmpty = !container.dataset.everRendered;
+  const nearBottom = wasEmpty || container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+  container.innerHTML = chatState.messages.map((m) => messageRowHtml(m, newSet.has(m.id))).join("");
+  container.dataset.everRendered = "1";
+  wireVoicePlayers(container);
+  // Only auto-scroll if the user was already near the bottom (or this is
+  // the first render) - don't yank them away from history they scrolled up
+  // to read, per task #234's UX requirement.
+  if (nearBottom) container.scrollTop = container.scrollHeight;
+}
 
-  const sendBtn = document.getElementById("chat-send");
-  if (sendBtn && !sendBtn.dataset.wired) {
-    sendBtn.dataset.wired = "1";
-    const send = async () => {
-      const input = document.getElementById("chat-text");
-      const text = input.value.trim();
-      if (!text) return;
-      input.value = "";
-      try {
-        await api("/api/conversations/" + otherUserId, { method: "POST", auth: true, body: { text } });
-        await loadChat(otherUserId, true);
-        await loadConvoList(otherUserId);
-      } catch (e) {
-        alert(e.message);
-      }
-    };
-    sendBtn.addEventListener("click", send);
-    document.getElementById("chat-text").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") send();
-    });
+const CHAT_REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"];
+
+function attachmentPreviewLabel(m) {
+  if (m.attachmentType === "audio") return "\u{1F3A4} " + I18N.t("messages.voiceMessage");
+  if (m.attachmentType === "video") return "\u{1F3A5} " + I18N.t("messages.video");
+  if (m.attachmentType === "image") return "\u{1F4F7} " + I18N.t("messages.photo");
+  return "";
+}
+
+function truncateText(s, n) {
+  s = s || "";
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function replyQuoteHtml(replyToId) {
+  const orig = chatState.messages.find((x) => x.id === replyToId);
+  if (!orig) return `<div class="chat-reply-quote" data-scroll-to="${replyToId}">${I18N.t("messages.originalMessage")}</div>`;
+  const label = orig.deleted ? I18N.t("messages.deletedTombstone") : orig.text || attachmentPreviewLabel(orig);
+  return `<div class="chat-reply-quote" data-scroll-to="${replyToId}">${escapeHtml(truncateText(label, 80))}</div>`;
+}
+
+function attachmentHtml(m) {
+  if (!m.attachmentType || !m.attachmentUrl) return "";
+  if (m.attachmentType === "image") {
+    return `<img class="chat-attach-img" src="${m.attachmentUrl}" data-lightbox-url="${m.attachmentUrl}" data-lightbox-type="image" alt="" />`;
   }
+  if (m.attachmentType === "video") {
+    return `<div class="chat-attach-video" data-lightbox-url="${m.attachmentUrl}" data-lightbox-type="video">
+      <video src="${m.attachmentUrl}#t=0.1" preload="metadata" muted playsinline></video>
+      <span class="chat-attach-play-badge">▶</span>
+    </div>`;
+  }
+  if (m.attachmentType === "audio") {
+    return `<div class="voice-player">
+      <audio src="${m.attachmentUrl}" preload="metadata"></audio>
+      <button type="button" class="voice-player-btn" aria-label="${I18N.t("messages.play")}">▶</button>
+      <div class="voice-player-track"><div class="voice-player-fill"></div></div>
+      <span class="voice-player-time">0:00</span>
+    </div>`;
+  }
+  return "";
+}
+
+function reactionPillsHtml(m) {
+  const entries = Object.entries(m.reactions || {}).filter(([, users]) => users && users.length);
+  if (!entries.length) return "";
+  const myId = state.user.id;
+  return `<div class="chat-reaction-pills">${entries
+    .map(
+      ([emoji, users]) =>
+        `<button type="button" class="chat-reaction-pill ${users.includes(myId) ? "mine" : ""}" data-message-id="${m.id}" data-emoji="${emoji}">${emoji} <span>${users.length}</span></button>`
+    )
+    .join("")}</div>`;
+}
+
+function fmtMsgTime(ts) {
+  return new Date(ts).toLocaleTimeString(I18N.lang === "es" ? "es-ES" : "en-US", { hour: "2-digit", minute: "2-digit" });
+}
+
+function receiptHtml(m) {
+  if (m.read) return `<span class="chat-receipt read" title="${I18N.t("messages.read")}">✓✓</span>`;
+  const other = chatState.presence[m.toUserId];
+  if (other && other.online) return `<span class="chat-receipt delivered" title="${I18N.t("messages.delivered")}">✓✓</span>`;
+  return `<span class="chat-receipt sent" title="${I18N.t("messages.sent")}">✓</span>`;
+}
+
+function messageRowHtml(m, isNew) {
+  const mine = m.fromUserId === state.user.id;
+  const rowClasses = ["chat-msg-row", mine ? "mine" : "theirs"];
+  if (isNew) rowClasses.push("msg-enter");
+  let inner;
+  if (m.deleted) {
+    inner = `<div class="chat-bubble ${mine ? "mine" : "theirs"} deleted">${I18N.t("messages.deletedTombstone")}</div>`;
+  } else {
+    inner = `
+      <div class="chat-bubble ${mine ? "mine" : "theirs"} ${!m.text && m.attachmentType ? "media-only" : ""}">
+        ${m.replyToId ? replyQuoteHtml(m.replyToId) : ""}
+        ${attachmentHtml(m)}
+        ${m.text ? `<div class="chat-bubble-text">${escapeHtml(m.text)}</div>` : ""}
+        <div class="chat-bubble-meta">
+          <span class="chat-bubble-time">${fmtMsgTime(m.createdAt)}</span>
+          ${mine ? receiptHtml(m) : ""}
+        </div>
+      </div>
+      ${reactionPillsHtml(m)}
+    `;
+  }
+  return `<div class="${rowClasses.join(" ")}" data-message-id="${m.id}" data-from-id="${m.fromUserId}">${inner}</div>`;
+}
+
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+// Minimal custom voice-note player (play/pause + elapsed/total time + a
+// slim progress bar) instead of a raw <audio controls> element, matching
+// the app's own visual style. `timeupdate`/`loadedmetadata`/`ended` don't
+// bubble, so each <audio> needs its own listeners wired once (tracked via
+// dataset.wired, same one-time-wiring convention used elsewhere in app.js).
+function wireVoicePlayers(container) {
+  container.querySelectorAll(".voice-player audio").forEach((audio) => {
+    if (audio.dataset.wired) return;
+    audio.dataset.wired = "1";
+    const wrap = audio.closest(".voice-player");
+    const btn = wrap.querySelector(".voice-player-btn");
+    const fill = wrap.querySelector(".voice-player-fill");
+    const timeEl = wrap.querySelector(".voice-player-time");
+    audio.addEventListener("loadedmetadata", () => {
+      if (isFinite(audio.duration)) timeEl.textContent = fmtDuration(audio.duration);
+    });
+    audio.addEventListener("timeupdate", () => {
+      if (audio.duration) {
+        fill.style.width = (audio.currentTime / audio.duration) * 100 + "%";
+        timeEl.textContent = fmtDuration(audio.currentTime);
+      }
+    });
+    audio.addEventListener("play", () => { btn.textContent = "⏸"; });
+    audio.addEventListener("pause", () => {
+      btn.textContent = "▶";
+      if (audio.ended) { fill.style.width = "0%"; timeEl.textContent = isFinite(audio.duration) ? fmtDuration(audio.duration) : "0:00"; }
+    });
+  });
+}
+
+function scrollToMessage(id) {
+  const row = document.querySelector('.chat-msg-row[data-message-id="' + id + '"]');
+  if (!row) return;
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.classList.add("highlight-flash");
+  setTimeout(() => row.classList.remove("highlight-flash"), 1200);
+}
+
+function openChatLightbox(url, type) {
+  const overlay = document.createElement("div");
+  overlay.className = "chat-lightbox-overlay";
+  overlay.innerHTML = `
+    <button type="button" class="chat-lightbox-close" aria-label="${I18N.t("common.close")}">×</button>
+    <div class="chat-lightbox-media-wrap">
+      ${
+        type === "video"
+          ? `<video src="${url}" controls autoplay playsinline class="chat-lightbox-media"></video>`
+          : `<img src="${url}" class="chat-lightbox-media" alt="" />`
+      }
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay || e.target.closest(".chat-lightbox-close")) overlay.remove();
+  });
+}
+
+async function toggleMyReaction(messageId, emoji) {
+  const m = chatState.messages.find((x) => x.id === messageId);
+  if (!m) return;
+  const myId = state.user.id;
+  const already = !!(m.reactions && m.reactions[emoji] && m.reactions[emoji].includes(myId));
+  try {
+    const res = await api("/api/messages/" + messageId + "/react", { method: already ? "DELETE" : "POST", auth: true, body: { emoji } });
+    m.reactions = res.reactions;
+    renderThreadMessages([]);
+  } catch (e) {}
+}
+
+async function deleteChatMessage(messageId, mode) {
+  try {
+    await api("/api/messages/" + messageId, { method: "DELETE", auth: true, body: { mode } });
+    if (mode === "forMe") {
+      const idx = chatState.messages.findIndex((x) => x.id === messageId);
+      if (idx !== -1) chatState.messages.splice(idx, 1);
+    } else {
+      const m = chatState.messages.find((x) => x.id === messageId);
+      if (m) {
+        m.deleted = true;
+        m.text = "";
+        m.attachmentUrl = null;
+        m.attachmentType = null;
+        m.reactions = {};
+      }
+    }
+    renderThreadMessages([]);
+    loadConvoList(chatState.activeOtherId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function setReplyTargetById(id) {
+  const m = chatState.messages.find((x) => x.id === id);
+  if (!m || m.deleted) return;
+  chatState.replyTarget = m;
+  renderReplyPreview();
+  const input = document.getElementById("chat-text");
+  if (input) input.focus();
+}
+
+function clearReplyTarget() {
+  chatState.replyTarget = null;
+  renderReplyPreview();
+}
+
+function renderReplyPreview() {
+  const el = document.getElementById("chat-reply-preview");
+  if (!el) return;
+  if (!chatState.replyTarget) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  const m = chatState.replyTarget;
+  const label = m.text || attachmentPreviewLabel(m);
+  el.style.display = "flex";
+  el.innerHTML = `
+    <div class="chat-reply-preview-bar">
+      <span class="chat-reply-preview-text">${escapeHtml(truncateText(label, 90))}</span>
+      <button type="button" class="chat-reply-cancel" data-reply-cancel aria-label="${I18N.t("common.close")}">×</button>
+    </div>`;
+}
+
+function closeMessageActionSheet() {
+  const existing = document.getElementById("chat-action-overlay");
+  if (existing) existing.remove();
+}
+
+function openMessageActionSheet(messageId) {
+  const m = chatState.messages.find((x) => x.id === messageId);
+  if (!m || m.deleted) return;
+  closeMessageActionSheet();
+  const mine = m.fromUserId === state.user.id;
+  const overlay = document.createElement("div");
+  overlay.className = "chat-action-overlay";
+  overlay.id = "chat-action-overlay";
+  overlay.innerHTML = `
+    <div class="chat-action-sheet">
+      <div class="chat-reaction-row">
+        ${CHAT_REACTION_EMOJIS.map((em) => `<button type="button" class="chat-reaction-choice" data-emoji="${em}">${em}</button>`).join("")}
+      </div>
+      <button type="button" class="chat-action-item" data-action="reply">${I18N.t("messages.reply")}</button>
+      <button type="button" class="chat-action-item" data-action="deleteForMe">${I18N.t("messages.deleteForMe")}</button>
+      ${mine ? `<button type="button" class="chat-action-item danger" data-action="deleteForEveryone">${I18N.t("messages.deleteForEveryone")}</button>` : ""}
+      <button type="button" class="chat-action-item" data-action="cancel">${I18N.t("common.cancel")}</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", async (e) => {
+    if (e.target === overlay) return closeMessageActionSheet();
+    const emojiBtn = e.target.closest(".chat-reaction-choice");
+    if (emojiBtn) {
+      await toggleMyReaction(messageId, emojiBtn.dataset.emoji);
+      closeMessageActionSheet();
+      return;
+    }
+    const actionBtn = e.target.closest(".chat-action-item");
+    if (!actionBtn) return;
+    const action = actionBtn.dataset.action;
+    closeMessageActionSheet();
+    if (action === "reply") setReplyTargetById(messageId);
+    else if (action === "deleteForMe") deleteChatMessage(messageId, "forMe");
+    else if (action === "deleteForEveryone") deleteChatMessage(messageId, "forEveryone");
+  });
+}
+
+// Long-press (mouse+touch, via Pointer Events) opens the reaction/action
+// sheet; a short horizontal drag on a bubble is the WhatsApp-style
+// swipe-to-reply gesture. Both share one pointerdown->move->up state
+// machine per container so they don't fight each other.
+function wireLongPressAndSwipe(container) {
+  const LONG_PRESS_MS = 450;
+  const SWIPE_THRESHOLD = 56;
+  let pressTimer = null;
+  let pressTarget = null;
+  let startX = 0, startY = 0, tracking = false, swiped = false;
+
+  const clearPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+
+  container.addEventListener("pointerdown", (e) => {
+    const row = e.target.closest(".chat-msg-row");
+    if (!row || row.classList.contains("deleted")) return;
+    if (e.target.closest(".chat-reaction-pill, .voice-player-btn, [data-lightbox-url], .chat-reply-quote")) return;
+    pressTarget = row;
+    startX = e.clientX;
+    startY = e.clientY;
+    tracking = true;
+    swiped = false;
+    pressTimer = setTimeout(() => {
+      if (!tracking) return;
+      openMessageActionSheet(row.dataset.messageId);
+      tracking = false;
+    }, LONG_PRESS_MS);
+  });
+  container.addEventListener("pointermove", (e) => {
+    if (!tracking || !pressTarget) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if (Math.abs(dy) > 30) {
+      clearPress();
+      tracking = false;
+      pressTarget.classList.remove("swiping");
+      pressTarget.style.transform = "";
+      return;
+    }
+    if (dx > 12 && dx < 140) {
+      clearPress(); // horizontal drag cancels the long-press timer and becomes a swipe
+      pressTarget.classList.add("swiping");
+      pressTarget.style.transform = "translateX(" + dx + "px)";
+      swiped = dx > SWIPE_THRESHOLD;
+    }
+  });
+  const endPress = () => {
+    clearPress();
+    if (pressTarget) {
+      if (swiped) setReplyTargetById(pressTarget.dataset.messageId);
+      pressTarget.classList.remove("swiping");
+      pressTarget.style.transform = "";
+    }
+    tracking = false;
+    swiped = false;
+    pressTarget = null;
+  };
+  container.addEventListener("pointerup", endPress);
+  container.addEventListener("pointerleave", endPress);
+  container.addEventListener("pointercancel", endPress);
+}
+
+function toggleComposeButtons() {
+  const input = document.getElementById("chat-text");
+  const sendBtn = document.getElementById("chat-send");
+  const micBtn = document.getElementById("chat-mic-btn");
+  if (!input || !sendBtn || !micBtn) return;
+  const hasText = input.value.trim().length > 0;
+  sendBtn.style.display = hasText ? "" : "none";
+  micBtn.style.display = hasText ? "none" : "";
+}
+
+function handleMyTyping(otherUserId) {
+  if (!chatState.myTypingActive) {
+    chatState.myTypingActive = true;
+    wsSendChat({ type: "typing:start", to: otherUserId });
+  }
+  clearTimeout(chatState.myTypingIdleTimer);
+  chatState.myTypingIdleTimer = setTimeout(() => stopMyTyping(otherUserId), 3000);
+}
+
+function stopMyTyping(otherUserId) {
+  clearTimeout(chatState.myTypingIdleTimer);
+  chatState.myTypingIdleTimer = null;
+  if (chatState.myTypingActive) {
+    chatState.myTypingActive = false;
+    wsSendChat({ type: "typing:stop", to: otherUserId });
+  }
+}
+
+async function sendChatText() {
+  const input = document.getElementById("chat-text");
+  const otherId = chatState.activeOtherId;
+  if (!input || !otherId) return;
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  toggleComposeButtons();
+  stopMyTyping(otherId);
+  const body = { text };
+  if (chatState.replyTarget) body.replyToId = chatState.replyTarget.id;
+  clearReplyTarget();
+  try {
+    const sent = await api("/api/conversations/" + otherId, { method: "POST", auth: true, body });
+    mergeIncomingMessage(sent);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function stageChatAttachment(file) {
+  const isImage = file.type.startsWith("image/");
+  const isVideo = file.type.startsWith("video/");
+  if (!isImage && !isVideo) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    chatState.pendingAttachment = { dataUrl: reader.result, kind: isImage ? "image" : "video" };
+    renderAttachPreview();
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderAttachPreview() {
+  const el = document.getElementById("chat-attach-preview");
+  if (!el) return;
+  const a = chatState.pendingAttachment;
+  if (!a) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  el.style.display = "flex";
+  el.innerHTML = `
+    <div class="chat-attach-preview-bar">
+      ${a.kind === "image" ? `<img src="${a.dataUrl}" class="chat-attach-preview-thumb" />` : `<video src="${a.dataUrl}" class="chat-attach-preview-thumb" muted></video>`}
+      <span class="chat-attach-preview-label">${a.kind === "image" ? I18N.t("messages.photo") : I18N.t("messages.video")}</span>
+      <button type="button" class="chat-icon-btn" data-attach-cancel aria-label="${I18N.t("common.cancel")}">×</button>
+      <button type="button" class="btn btn-primary chat-attach-send-btn" data-attach-send>${I18N.t("messages.send")}</button>
+    </div>`;
+  el.querySelector("[data-attach-cancel]").addEventListener("click", () => {
+    chatState.pendingAttachment = null;
+    renderAttachPreview();
+  });
+  el.querySelector("[data-attach-send]").addEventListener("click", sendChatAttachment);
+}
+
+async function sendChatAttachment() {
+  const a = chatState.pendingAttachment;
+  const otherId = chatState.activeOtherId;
+  if (!a || !otherId) return;
+  chatState.pendingAttachment = null;
+  renderAttachPreview();
+  try {
+    const up = await api("/api/messages/attachments", { method: "POST", auth: true, body: { media: a.dataUrl, type: a.kind, conversationWith: otherId } });
+    const body = { attachmentUrl: up.url, attachmentType: up.type };
+    if (chatState.replyTarget) body.replyToId = chatState.replyTarget.id;
+    clearReplyTarget();
+    const sent = await api("/api/conversations/" + otherId, { method: "POST", auth: true, body });
+    mergeIncomingMessage(sent);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// Voice-note hold-to-record: pointerdown starts recording immediately (a
+// dedicated mic button, so no hold-threshold delay is needed the way the
+// camera wizard needs one to disambiguate hold-vs-tap on a shared shutter
+// button), pointerup releases + sends, sliding the pointer up past a
+// threshold cancels - the standard WhatsApp voice-note gesture. Reuses the
+// same MediaRecorder + getUserMedia({audio:true}) approach as
+// wireWizardCaptureGesture()/beginHoldRecording() in the camera wizard.
+function wireVoiceNoteGesture(micBtn, otherUserId) {
+  if (!micBtn) return;
+  let recorder = null;
+  let chunks = [];
+  let stream = null;
+  let startTs = 0;
+  let durationTimer = null;
+  let canceled = false;
+  let startY = 0;
+
+  const overlayEl = () => document.getElementById("chat-record-overlay");
+
+  const updateOverlay = (elapsedMs, dragY) => {
+    const el = overlayEl();
+    if (!el) return;
+    const cancelZone = dragY < -70;
+    el.classList.toggle("cancel-armed", cancelZone);
+    el.innerHTML = `
+      <div class="chat-record-pulse"></div>
+      <span class="chat-record-time">${fmtDuration(Math.floor(elapsedMs / 1000))}</span>
+      <span class="chat-record-hint">${cancelZone ? I18N.t("messages.releaseToCancel") : I18N.t("messages.slideToCancel")}</span>
+    `;
+  };
+
+  const startRecording = async () => {
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      alert(I18N.t("messages.micUnavailable"));
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      alert(I18N.t("messages.micUnavailable"));
+      return;
+    }
+    try {
+      recorder = new MediaRecorder(stream);
+    } catch (e) {
+      stream.getTracks().forEach((t) => t.stop());
+      alert(I18N.t("messages.micUnavailable"));
+      return;
+    }
+    chunks = [];
+    canceled = false;
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunks.push(e.data);
+    };
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      if (!canceled && Date.now() - startTs >= 500) {
+        finalizeVoiceNote(chunks, recorder.mimeType || "audio/webm", otherUserId);
+      }
+      chunks = [];
+    };
+    recorder.start(250);
+    startTs = Date.now();
+    micBtn.classList.add("recording");
+    const el = overlayEl();
+    if (el) el.style.display = "flex";
+    durationTimer = setInterval(() => updateOverlay(Date.now() - startTs, 0), 200);
+    updateOverlay(0, 0);
+  };
+
+  const stopRecording = (didCancel) => {
+    canceled = didCancel;
+    clearInterval(durationTimer);
+    durationTimer = null;
+    micBtn.classList.remove("recording");
+    const el = overlayEl();
+    if (el) {
+      el.style.display = "none";
+      el.classList.remove("cancel-armed");
+    }
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+  };
+
+  micBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { micBtn.setPointerCapture(e.pointerId); } catch (err) {}
+    startY = e.clientY;
+    startRecording();
+  });
+  micBtn.addEventListener("pointermove", (e) => {
+    if (!recorder || recorder.state !== "recording") return;
+    const dy = e.clientY - startY;
+    updateOverlay(Date.now() - startTs, dy);
+    if (dy < -90) stopRecording(true);
+  });
+  const release = () => {
+    if (recorder && recorder.state === "recording") stopRecording(false);
+  };
+  micBtn.addEventListener("pointerup", release);
+  micBtn.addEventListener("pointercancel", () => {
+    if (recorder && recorder.state === "recording") stopRecording(true);
+  });
+}
+
+function finalizeVoiceNote(chunks, mimeType, otherUserId) {
+  const blob = new Blob(chunks, { type: mimeType.split(";")[0] || "audio/webm" });
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const up = await api("/api/messages/attachments", { method: "POST", auth: true, body: { media: reader.result, type: "audio", conversationWith: otherUserId } });
+      const body = { attachmentUrl: up.url, attachmentType: up.type };
+      if (chatState.replyTarget) body.replyToId = chatState.replyTarget.id;
+      clearReplyTarget();
+      const sent = await api("/api/conversations/" + otherUserId, { method: "POST", auth: true, body });
+      mergeIncomingMessage(sent);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+  reader.readAsDataURL(blob);
+}
+
+// One-time wiring for a freshly-built thread panel skeleton (called from
+// loadChatThread() only when the panel is rebuilt for a new otherUserId,
+// not on every message update - message-level interactions use event
+// delegation on #chat-messages so they keep working across re-renders).
+function wireChatPanel(otherUserId) {
+  const container = document.getElementById("chat-messages");
+  const input = document.getElementById("chat-text");
+  const sendBtn = document.getElementById("chat-send");
+  const micBtn = document.getElementById("chat-mic-btn");
+  const attachBtn = document.getElementById("chat-attach-btn");
+  const fileInput = document.getElementById("chat-file-input");
+  const replyPreview = document.getElementById("chat-reply-preview");
+
+  input.addEventListener("input", () => {
+    toggleComposeButtons();
+    handleMyTyping(otherUserId);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendChatText();
+    }
+  });
+  input.addEventListener("blur", () => stopMyTyping(otherUserId));
+  sendBtn.addEventListener("click", sendChatText);
+
+  attachBtn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (file) stageChatAttachment(file);
+    fileInput.value = "";
+  });
+
+  wireVoiceNoteGesture(micBtn, otherUserId);
+
+  container.addEventListener("click", (e) => {
+    const reactPill = e.target.closest(".chat-reaction-pill");
+    if (reactPill) {
+      toggleMyReaction(reactPill.dataset.messageId, reactPill.dataset.emoji);
+      return;
+    }
+    const voiceBtn = e.target.closest(".voice-player-btn");
+    if (voiceBtn) {
+      const audio = voiceBtn.closest(".voice-player").querySelector("audio");
+      if (audio.paused) {
+        document.querySelectorAll(".voice-player audio").forEach((a) => {
+          if (a !== audio) a.pause();
+        });
+        audio.play().catch(() => {});
+      } else {
+        audio.pause();
+      }
+      return;
+    }
+    const lightboxTarget = e.target.closest("[data-lightbox-url]");
+    if (lightboxTarget) {
+      openChatLightbox(lightboxTarget.dataset.lightboxUrl, lightboxTarget.dataset.lightboxType);
+      return;
+    }
+    const quote = e.target.closest(".chat-reply-quote");
+    if (quote) {
+      scrollToMessage(quote.dataset.scrollTo);
+      return;
+    }
+  });
+
+  wireLongPressAndSwipe(container);
+
+  replyPreview.addEventListener("click", (e) => {
+    if (e.target.closest("[data-reply-cancel]")) clearReplyTarget();
+  });
+
+  toggleComposeButtons();
 }
 
 // ---------------- International (producer/distributor cross-border matching) ----------------
@@ -6707,6 +9653,7 @@ function adminTabsMarkup(active) {
     { key: "reports", label: I18N.t("admin.tabReports") },
     { key: "products", label: I18N.t("admin.tabProducts") },
     { key: "users", label: I18N.t("admin.tabUsers") },
+    { key: "books", label: I18N.t("admin.tabBooks") },
   ];
   return `<div class="admin-tabs">${tabs
     .map((t) => `<a href="#/admin/${t.key}" class="admin-tab${active === t.key ? " active" : ""}">${t.label}</a>`)
@@ -6726,7 +9673,70 @@ async function renderAdminPanel(section) {
   `;
   if (section === "users") return renderAdminUsers();
   if (section === "products") return renderAdminProducts();
+  if (section === "books") return renderAdminBookSubmissions();
   return renderAdminReports();
+}
+
+// Task #244 - team review queue for the "Publish a Book" independent-
+// author program. Approving here never makes a book public/for sale (see
+// ORIGINAL_BOOK_PROGRAM_ENABLED in server.js) - it just records that our
+// team liked it, so we can see how the pipeline feels end to end before
+// any legal/monetization terms exist.
+async function renderAdminBookSubmissions() {
+  const content = document.getElementById("admin-content");
+  let works;
+  try {
+    works = await api("/api/admin/original-works?status=team_review", { auth: true });
+  } catch (e) {
+    content.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  content.innerHTML = works.length
+    ? `<div class="intl-admin-list">${works
+        .map(
+          (w) => `
+      <div class="intl-admin-row">
+        <div class="intl-card-head">
+          <span class="intl-role-tag">${escapeHtml(w.genre || I18N.t("publishBook.genreUnset"))}</span>
+        </div>
+        <p class="intl-card-name">${escapeHtml(w.title || I18N.t("publishBook.untitled"))}</p>
+        <p class="intl-card-meta">${I18N.t("admin.bookBy")}: ${escapeHtml(w.authorName)} (${escapeHtml(w.authorEmail)}) &middot; ${fmtDate(w.submittedAt)}</p>
+        ${w.synopsis ? `<p style="font-size:13px;color:#555;">${escapeHtml(w.synopsis)}</p>` : ""}
+        ${w.aiReviewNotes ? `<p style="font-size:13px;color:#555;">&#129302; ${escapeHtml(w.aiReviewNotes)}</p>` : ""}
+        <p class="intl-card-meta">${w.chapters.length} ${I18N.t("publishBook.chaptersHeading")}</p>
+        <a class="btn" href="#/publish-book/${w.id}" target="_blank">${I18N.t("admin.viewTarget")}</a>
+        <div class="form-group">
+          <label>${I18N.t("admin.resolutionNote")}</label>
+          <textarea rows="2" data-book-note="${w.id}"></textarea>
+        </div>
+        <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-primary" data-book-approve="${w.id}">${I18N.t("admin.approve")}</button>
+          <button class="btn" data-book-reject="${w.id}">${I18N.t("admin.reject")}</button>
+        </div>
+      </div>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("admin.booksEmpty")}</div>`;
+
+  async function setBookDecision(id, decision) {
+    const note = document.querySelector(`[data-book-note="${id}"]`);
+    try {
+      await api("/api/admin/original-works/" + id + "/decision", {
+        method: "POST",
+        auth: true,
+        body: { decision, notes: note ? note.value : "" },
+      });
+      renderAdminBookSubmissions();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+  document.querySelectorAll("[data-book-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => setBookDecision(btn.dataset.bookApprove, "approve"));
+  });
+  document.querySelectorAll("[data-book-reject]").forEach((btn) => {
+    btn.addEventListener("click", () => setBookDecision(btn.dataset.bookReject, "reject"));
+  });
 }
 
 async function renderAdminReports() {
@@ -6956,3 +9966,7 @@ router();
 pollUnread();
 unreadPollTimer = setInterval(pollUnread, 20000);
 registerServiceWorker();
+// Task #234 - open the app-wide chat socket immediately on page load if a
+// session already exists (returning visitor), not just right after a fresh
+// login via setAuth().
+if (state.token) connectChatSocket();

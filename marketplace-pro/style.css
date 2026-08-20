@@ -23,6 +23,7 @@
   --danger: #C0392B;
   --danger-bg: rgba(192,57,43,0.08);
   --success: #1F8F5A;
+  --info: #2E7BD6;
   --card-shadow: 0 2px 10px rgba(28,26,22,0.10);
   --font-display: "Playfair Display", Georgia, "Times New Roman", serif;
 }
@@ -47,6 +48,7 @@
   --danger: #E5484D;
   --danger-bg: rgba(229,72,77,0.14);
   --success: #3FBF7F;
+  --info: #5AA9FF;
   --card-shadow: 0 1px 3px rgba(0,0,0,0.5);
 }
 
@@ -71,6 +73,7 @@
   --danger: #E5484D;
   --danger-bg: rgba(229,72,77,0.14);
   --success: #3FBF7F;
+  --info: #5AA9FF;
   --card-shadow: 0 4px 16px rgba(0,0,0,0.35);
 }
 
@@ -223,16 +226,35 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   border-left: 1px solid rgba(0,0,0,0.12); background: var(--bg-surface); padding: 0 12px; font-size: 15px;
 }
 
+/* Never wraps to a second row, on any screen size - Profile/Messages/
+   PUBLISH A BOOK/Book Club/notifications bell all stay on one tidy line.
+   On roomy screens that just means the row never needs to scroll; on
+   narrow phones it scrolls sideways instead of breaking into an
+   uneven second line. */
 .topbar-nav {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 14px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
+.topbar-nav::-webkit-scrollbar { display: none; }
 .nav-link {
+  flex: 0 0 auto;
+  white-space: nowrap;
   color: var(--accent-text-on);
   font-size: 14px;
   font-weight: 600;
+}
+/* The icon-only links (Book Club, notifications bell) are bigger glyphs so
+   they visually fill the leftover space at the end of the row instead of
+   leaving it looking empty next to "PUBLISH A BOOK". */
+#nav-book-club, #nav-notifications {
+  font-size: 24px;
+  line-height: 1;
 }
 .nav-link:hover { color: var(--accent-text-on); text-decoration: underline; }
 .nav-link-btn {
@@ -249,6 +271,23 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   border-radius: 6px;
 }
 .nav-post-btn:hover { color: var(--gold-text-on); background: color-mix(in srgb, var(--gold) 85%, black); }
+.nav-post-dropdown-wrap { position: relative; flex: 0 0 auto; }
+.nav-post-dropdown-wrap .nav-post-btn { border: none; font: inherit; cursor: pointer; }
+/* .topbar-nav scrolls horizontally (overflow-x: auto) so it never wraps to
+   a second row; per the CSS spec that also forces overflow-y to behave as
+   "auto", which would clip this dropdown's normal position:absolute/top:100%
+   placement since it renders below the row. Fixed positioning (with top/left
+   set in JS at click time - see wireIconNav in app.js) escapes that clipping
+   entirely by anchoring to the viewport instead of the scrolling row. */
+#nav-post-dropdown { position: fixed; top: auto; left: auto; transform: none; }
+
+/* On narrow phones, shrink the text/padding/gaps a bit so the row reads as
+   one clean line instead of relying on horizontal scroll as much. */
+@media (max-width: 480px) {
+  .topbar-nav { gap: 8px; }
+  .topbar-nav .nav-link { font-size: 12.5px; }
+  .topbar-nav .nav-post-btn { padding: 6px 9px; }
+}
 
 .nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; margin-left: 5px; border-radius: 8px; background: var(--gold); color: var(--gold-text-on); font-size: 10px; font-weight: 800; vertical-align: middle; }
 
@@ -423,6 +462,40 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .wizard-fs-grid.show { opacity: 1; }
 
+/* Task #202 - brightness/exposure slider panel, toggled from the "lighting"
+   rail item. Sits low over the preview so it doesn't collide with the
+   top-bar/rail, matching the dark rgba pill styling used elsewhere in this
+   overlay (wizard-fs-sound-pill, wizard-fs-toast, ...). */
+.wizard-fs-brightness-panel {
+  position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; z-index: 3;
+  background: rgba(0,0,0,0.55); border-radius: 999px; padding: 8px 16px;
+  width: min(78%, 320px);
+}
+.wizard-fs-brightness-panel[hidden] { display: none; }
+.wizard-fs-brightness-icon { color: #fff; font-size: 14px; flex: 0 0 auto; }
+.wizard-fs-brightness-panel input[type="range"] { flex: 1; accent-color: var(--gold); }
+.wizard-fs-brightness-value { color: #fff; font-size: 12px; font-weight: 700; flex: 0 0 auto; min-width: 34px; text-align: right; }
+
+/* Task #203 - sound preset picker panel, opened from the "Add sound" pill. */
+.wizard-sound-picker {
+  position: absolute; left: 50%; top: 56px; transform: translateX(-50%);
+  z-index: 4; background: rgba(20,20,20,0.9); border-radius: 16px; padding: 14px;
+  width: min(86%, 340px); display: flex; flex-direction: column; gap: 10px;
+}
+.wizard-sound-picker-title { color: #fff; font-size: 13px; font-weight: 700; margin: 0; text-align: center; }
+.wizard-sound-picker-list { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.wizard-sound-preset-btn {
+  border: 1px solid rgba(255,255,255,0.3); background: rgba(255,255,255,0.08); color: #fff;
+  border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.wizard-sound-preset-btn.active { background: var(--gold); border-color: var(--gold); color: #2b1810; }
+.wizard-sound-mic-toggle { display: flex; align-items: center; gap: 8px; color: #fff; font-size: 12px; justify-content: center; }
+.wizard-sound-picker-close {
+  align-self: center; border: none; background: none; color: rgba(255,255,255,0.75);
+  font-size: 12px; text-decoration: underline; cursor: pointer; padding: 2px;
+}
+
 /* Right-side labeled options rail, full-screen vertical-video-app layout with our own icon glyphs */
 .wizard-fs-rail {
   position: absolute; top: 70px; right: 6px; width: 62px; max-height: calc(100% - 230px);
@@ -477,12 +550,30 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   display: flex; align-items: center; justify-content: center;
 }
 .wizard-fs-capture-wrap { position: relative; width: 76px; height: 76px; display: flex; align-items: center; justify-content: center; }
-.wizard-fs-capture-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+/* pointer-events:none is the actual fix for the "camera preview works but
+   the red shutter never reacts" bug: this ring is position:absolute and
+   covers the exact same 76x76 box as the button, and since positioned
+   elements paint (and receive touches/clicks) above normal-flow siblings
+   regardless of DOM order, every tap was landing on this decorative SVG
+   instead of #wizard-fs-capture-btn underneath it - no JS handler on the
+   button was ever being reached. */
+.wizard-fs-capture-ring { position: absolute; inset: 0; transform: rotate(-90deg); pointer-events: none; }
 .wizard-fs-capture-btn {
   width: 62px; height: 62px; border-radius: 50%; background: #FF3B30;
   border: 4px solid #fff; cursor: pointer; padding: 0;
   box-shadow: 0 2px 8px rgba(255,59,48,0.5);
   transition: transform 0.1s, border-radius 0.15s;
+  /* Without this, a press-and-hold on mobile gets intercepted by the
+     browser's own touch handling (long-press context menu / "is this a
+     scroll?" gesture detection) before our pointerdown/pointerup JS ever
+     sees it reliably - the camera preview works fine but the shutter looks
+     completely dead. touch-action tells the browser this element handles
+     its own gestures; the -webkit lines stop iOS/Android from popping a
+     text-selection/context menu on the hold. */
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .wizard-fs-capture-btn.pressed { transform: scale(0.9); }
 .wizard-fs-capture-btn.recording { border-radius: 14px; width: 40px; height: 40px; }
@@ -601,11 +692,57 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   position: absolute; cursor: grab; user-select: none; touch-action: none;
   padding: 4px 8px; white-space: nowrap; transform: translate(-50%, -50%);
 }
-.wizard-overlay-item.text { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); border-radius: 6px; }
-.wizard-overlay-item.sticker { font-size: 36px; }
+.wizard-overlay-item.text .wizard-overlay-content { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+.wizard-overlay-item.sticker .wizard-overlay-content { font-size: 36px; }
+/* Task #204 - three-step size scale (higher specificity than the base
+   .text/.sticker rules above so sm/lg reliably override the md default). */
+.wizard-overlay-item.text.size-sm .wizard-overlay-content { font-size: 14px; }
+.wizard-overlay-item.text.size-lg .wizard-overlay-content { font-size: 30px; }
+.wizard-overlay-item.sticker.size-sm .wizard-overlay-content { font-size: 24px; }
+.wizard-overlay-item.sticker.size-lg .wizard-overlay-content { font-size: 52px; }
 .wizard-overlay-item.dragging { cursor: grabbing; outline: 1px dashed var(--gold); }
+.wizard-overlay-resize, .wizard-overlay-remove {
+  position: absolute; top: -10px; width: 20px; height: 20px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,0.75); color: #fff; font-weight: 700; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0;
+}
+.wizard-overlay-resize { right: 18px; font-size: 9px; }
+.wizard-overlay-remove { right: -8px; font-size: 13px; }
 .wizard-sticker-picker { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; padding: 8px 0; }
 .wizard-sticker-picker button { font-size: 24px; background: none; border: none; cursor: pointer; padding: 4px; }
+
+/* Task #204 - the "add text" composer panel (size toggle + color swatches),
+   replaces the old bare prompt() flow. */
+.wizard-text-composer {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); margin-bottom: 10px;
+}
+.wizard-text-composer textarea { width: 100%; resize: none; font-family: inherit; }
+.wizard-text-size-row, .wizard-text-color-row { display: flex; gap: 8px; justify-content: center; }
+.wizard-text-size-btn {
+  border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary);
+  border-radius: 8px; width: 34px; height: 30px; font-weight: 700; cursor: pointer;
+}
+.wizard-text-size-btn.active { border-color: var(--gold); color: var(--gold); }
+.wizard-text-color-swatch {
+  width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--border-color); cursor: pointer; padding: 0;
+}
+.wizard-text-color-swatch.active { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold); }
+
+/* Task #204 - static (non-interactive) rendering of text/sticker overlay
+   metadata on top of a <video> wherever a Moment/Video with saved overlays
+   is played back (feed cards, moment viewer, video watch page, Shorts/Clips
+   swipe player). Photos never use this - their overlays are already baked
+   into the JPEG pixels before upload. */
+.media-overlay-layer { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.media-overlay-item { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; }
+.media-overlay-item.text { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+.media-overlay-item.sticker { font-size: 36px; }
+.media-overlay-item.text.size-sm { font-size: 14px; }
+.media-overlay-item.text.size-lg { font-size: 30px; }
+.media-overlay-item.sticker.size-sm { font-size: 24px; }
+.media-overlay-item.sticker.size-lg { font-size: 52px; }
+.video-watch-player-wrap { position: relative; }
 @media (max-width: 640px) {
   /* Primary nav moves to the bottom of the screen on phones, same place
      Instagram/TikTok/Facebook put it - reachable with a thumb without
@@ -929,6 +1066,112 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .group-post-type-question { background: var(--bg-surface-alt); color: var(--accent-text); }
 .group-post-type-review { background: #fdf2e0; color: #8a5d00; }
 .group-post-type-warning { background: var(--danger-bg); color: var(--danger); }
+
+/* ---- Book Club (task #240/#242) ---- */
+.bookclub-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.bookclub-card { position: relative; overflow: hidden; }
+.bookclub-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--gold); }
+.bookclub-card-book { font-size: 13px; font-weight: 700; color: var(--gold); margin: 0 0 6px; letter-spacing: 0.2px; }
+.bookclub-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+.bookclub-detail-book { font-size: 14px; font-weight: 700; color: var(--gold); margin: 0 0 2px; }
+.bookclub-video-btn { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.bookclub-authorpick {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  background: linear-gradient(135deg, var(--bg-surface-alt), var(--bg-surface));
+  border: 1px solid var(--gold); border-radius: 12px; padding: 16px 18px; margin: 14px 0 18px;
+}
+.bookclub-authorpick-headrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bookclub-authorpick-title { font-weight: 800; font-size: 15px; margin: 0; color: var(--gold); }
+.bookclub-authorpick-desc { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+/* Small "Preview" pill - the button itself is always real and clickable
+   (task #242 rework: "visual y navegable pero sin poder accionar"), this
+   badge just signals that submissions aren't live yet. */
+.bookclub-authorpick-badge { font-size: 11.5px; font-weight: 700; color: var(--gold); background: var(--bg-page); border: 1px solid var(--gold); border-radius: 20px; padding: 3px 10px; letter-spacing: 0.3px; text-transform: uppercase; }
+
+/* Pick of the Month submission preview modal */
+.bookclub-authorpick-modal-overlay { position: fixed; inset: 0; z-index: 900; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.bookclub-authorpick-modal { position: relative; width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--gold); border-radius: 14px; padding: 24px 22px 20px; }
+.bookclub-authorpick-modal-close { position: absolute; top: 10px; right: 12px; background: none; border: none; color: var(--text-secondary); font-size: 24px; line-height: 1; cursor: pointer; padding: 4px; }
+.bookclub-authorpick-modal-title { font-size: 17px; font-weight: 800; color: var(--gold); margin: 0 0 8px; padding-right: 24px; }
+.bookclub-authorpick-modal-intro { font-size: 13px; color: var(--text-secondary); background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin: 0 0 16px; }
+.bookclub-authorpick-thanks { text-align: center; padding: 12px 4px 4px; }
+.bookclub-authorpick-thanks-title { font-size: 16px; font-weight: 800; color: var(--gold); margin: 0 0 8px; }
+.bookclub-authorpick-thanks-desc { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
+/* ---- Publish a Book (task #244 - independent-author pipeline, distinct
+   from selling a used book) ---- */
+.publishbook-intro { background: linear-gradient(135deg, var(--bg-surface-alt), var(--bg-surface)); border: 1px solid var(--gold); border-radius: 12px; padding: 16px 18px; margin: 14px 0 18px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.publishbook-intro-title { font-weight: 800; font-size: 15px; margin: 0; color: var(--gold); }
+.publishbook-intro p { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+.publishbook-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.publishbook-card { position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+.publishbook-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--gold); }
+.publishbook-card-genre { font-size: 12px; font-weight: 700; color: var(--gold); margin: 0; text-transform: uppercase; letter-spacing: 0.3px; }
+.publishbook-status { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.3px; background: var(--bg-page); border: 1px solid var(--border-color); color: var(--text-secondary); }
+.publishbook-status-warn { border-color: #c98a00; color: #c98a00; }
+.publishbook-status-pending { border-color: var(--accent-text); color: var(--accent-text); }
+.publishbook-status-approved { border-color: var(--gold); color: var(--gold); }
+.publishbook-status-rejected { border-color: var(--danger); color: var(--danger); }
+.publishbook-status-note { font-size: 13.5px; color: var(--text-secondary); background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.publishbook-detail-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.publishbook-chapters-heading { margin: 20px 0 8px; font-size: 16px; }
+.publishbook-chapter { border: 1px solid var(--border-color); border-radius: 10px; padding: 12px; margin-bottom: 12px; background: var(--bg-surface); }
+.publishbook-chapter-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.publishbook-chapter-title { flex: 1; font-weight: 700; }
+.publishbook-chapter-remove { background: none; border: none; color: var(--text-secondary); font-size: 20px; line-height: 1; cursor: pointer; padding: 2px 6px; }
+.publishbook-chapter-content { width: 100%; min-height: 140px; resize: vertical; }
+.publishbook-ai-btn { margin-top: 8px; }
+.publishbook-ai-panel { margin-top: 10px; padding: 10px; background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
+.publishbook-ai-instruction { width: 100%; }
+.publishbook-ai-suggestion { margin-top: 8px; padding: 10px; background: var(--bg-surface-alt); border: 1px solid var(--gold); border-radius: 8px; }
+.publishbook-ai-suggestion-text { font-size: 13.5px; white-space: pre-wrap; margin: 0 0 8px; }
+.publishbook-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0 6px; }
+
+/* Landing/hero (renderPublishBookHome) */
+.publishbook-hero { text-align: center; padding: 30px 20px; margin-bottom: 24px; border-radius: 16px; background: linear-gradient(160deg, var(--bg-surface-alt), var(--bg-surface)); border: 1px solid var(--gold); display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.publishbook-hero-eyebrow { font-size: 12px; font-weight: 800; letter-spacing: 0.6px; text-transform: uppercase; color: var(--gold); margin: 0; }
+.publishbook-hero-title { font-size: 26px; margin: 0; }
+.publishbook-hero-subtitle { font-size: 14.5px; color: var(--text-secondary); max-width: 520px; margin: 0; }
+.publishbook-hero-cta { margin-top: 10px; padding: 12px 28px; font-size: 15px; }
+.publishbook-how-heading { text-align: center; margin: 0 0 12px; font-size: 17px; }
+.publishbook-how-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.publishbook-how-card { position: relative; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 18px 14px 14px; text-align: center; }
+.publishbook-how-num { position: absolute; top: -10px; left: -10px; width: 26px; height: 26px; border-radius: 50%; background: var(--gold); color: var(--gold-text-on); font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+.publishbook-how-emoji { font-size: 26px; margin: 4px 0; }
+.publishbook-how-title { font-weight: 800; font-size: 14px; margin: 0 0 4px; }
+.publishbook-how-body { font-size: 12.5px; color: var(--text-secondary); margin: 0; }
+.publishbook-new-form { background: var(--bg-surface); border: 1px solid var(--gold); border-radius: 12px; padding: 18px; margin-bottom: 24px; }
+
+/* Step wizard (renderPublishBookEditor, editable state) */
+.publishbook-steps { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 18px 0 22px; flex-wrap: wrap; }
+.publishbook-step-dot { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
+.publishbook-step-dot.active { color: var(--gold); }
+.publishbook-step-num { width: 22px; height: 22px; border-radius: 50%; background: var(--bg-page); border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center; font-size: 12px; }
+.publishbook-step-dot.active .publishbook-step-num { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+.publishbook-step-line { width: 24px; height: 1px; background: var(--border-color); }
+.publishbook-step-intro { font-size: 13.5px; color: var(--text-secondary); margin: 0 0 14px; }
+.publishbook-review-card { background: var(--bg-surface); border: 1px solid var(--gold); border-radius: 12px; padding: 16px 18px; margin-bottom: 12px; }
+.publishbook-review-genre { font-size: 12px; font-weight: 700; color: var(--gold); text-transform: uppercase; margin: 0 0 4px; }
+.publishbook-review-synopsis { font-size: 13.5px; color: var(--text-secondary); margin: 8px 0; }
+.publishbook-review-stats { font-size: 12.5px; color: var(--text-muted); margin: 8px 0 0; }
+.publishbook-legal-note { font-size: 12.5px; color: var(--text-secondary); background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin: 0 0 14px; }
+.publishbook-autosave-note { text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 16px; }
+
+/* Final "Publish my book" action - real and clickable (task: "necesito
+   todo el recorrido... pero al momento final... que no se pueda accionar"),
+   only reachable after team approval; see POST /api/original-works/:id/publish. */
+.publishbook-publish-wrap { margin: 14px 0 18px; }
+.publishbook-publish-btn { padding: 12px 26px; font-size: 15px; }
+.publishbook-publish-thanks { text-align: center; background: linear-gradient(135deg, var(--bg-surface-alt), var(--bg-surface)); border: 1px solid var(--gold); border-radius: 12px; padding: 18px 20px; }
+.publishbook-publish-thanks-title { font-size: 16px; font-weight: 800; color: var(--gold); margin: 0 0 8px; }
+.publishbook-publish-thanks-desc { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
+/* Live group video call - Jitsi Meet embedded full-screen, no API key
+   needed (see POST /api/groups/:slug/video-room in server.js). */
+.bookclub-video-overlay { position: fixed; inset: 0; z-index: 900; background: #000; display: flex; flex-direction: column; }
+.bookclub-video-topbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: #111; color: #fff; font-size: 14px; font-weight: 700; }
+.bookclub-video-close { background: none; border: none; color: #fff; font-size: 26px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.bookclub-video-frame { flex: 1; width: 100%; border: none; }
 
 /* ---- Saved items ("Guardar", Pinterest-style) ---- */
 .detail-price-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -1343,23 +1586,152 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   100% { transform: translate(-50%, -50%) scale(1); opacity: 0; }
 }
 
-/* ---- Messages ---- */
-.messages-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; height: 560px; }
-@media (max-width: 700px) { .messages-layout { grid-template-columns: 1fr; height: auto; } }
-.convo-list { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; overflow-y: auto; }
-.convo-item { display: flex; gap: 10px; padding: 12px; border-bottom: 1px solid var(--border-color); align-items: center; }
-.convo-item:hover, .convo-item.active { background: var(--bg-surface-alt); }
-.convo-name { font-weight: 700; font-size: 13px; }
-.convo-preview { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
-.convo-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); margin-left: auto; }
+/* ---- Messages (task #234 - Instagram/WhatsApp/Messenger hybrid chat UI) ---- */
+.messages-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; height: 620px; }
+@media (max-width: 700px) { .messages-layout { grid-template-columns: 1fr; height: calc(100vh - 220px); min-height: 520px; } }
 
-.chat-panel { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; display: flex; flex-direction: column; }
-.chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
-.chat-bubble { max-width: 70%; padding: 8px 12px; border-radius: 12px; font-size: 13px; }
-.chat-bubble.mine { align-self: flex-end; background: var(--accent); color: var(--accent-text-on); }
-.chat-bubble.theirs { align-self: flex-start; background: var(--bg-surface-alt); color: var(--text-primary); }
-.chat-input-row { display: flex; border-top: 1px solid var(--border-color); padding: 10px; gap: 8px; }
-.chat-input-row input { flex: 1; padding: 9px 10px; border: 1px solid var(--border-color); border-radius: 6px; }
+/* -- Conversation list -- */
+.convo-list { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; overflow-y: auto; }
+.convo-item { display: flex; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--border-color); align-items: center; text-decoration: none; color: inherit; transition: background 0.15s; }
+.convo-item:hover, .convo-item.active { background: var(--bg-surface-alt); }
+.convo-item.unread .convo-name { font-weight: 800; color: var(--text-primary); }
+.convo-item.unread .convo-preview { color: var(--text-primary); font-weight: 600; }
+.convo-avatar-wrap { position: relative; flex: 0 0 auto; width: 56px; height: 56px; }
+.convo-avatar-wrap img.convo-avatar { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; display: block; }
+.convo-avatar-wrap div.convo-avatar { width: 56px; height: 56px; font-size: 20px; }
+.presence-dot { position: absolute; right: 1px; bottom: 1px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-muted); border: 3px solid var(--bg-surface); }
+.presence-dot.online { background: var(--success); }
+.presence-dot.inline { position: static; display: inline-block; width: 9px; height: 9px; border: none; margin-right: 5px; vertical-align: middle; }
+.convo-text { min-width: 0; flex: 1; }
+.convo-name { font-weight: 700; font-size: 16px; margin-bottom: 2px; }
+.convo-preview { font-size: 14px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.convo-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex: 0 0 auto; }
+.convo-time { font-size: 12.5px; color: var(--text-muted); }
+.convo-unread-badge { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--bg-surface); font-size: 0; }
+[data-theme="premium"] .convo-unread-badge, [data-theme="dark"] .convo-unread-badge { background: var(--gold); }
+
+/* -- Thread panel -- */
+.chat-panel { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; }
+.chat-thread-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border-color); flex: 0 0 auto; }
+.chat-thread-avatar-link img, .chat-thread-avatar-link .seller-avatar-placeholder { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; font-size: 18px; }
+.chat-thread-name { font-size: 16.5px; }
+.chat-thread-presence { font-size: 13px; }
+.chat-thread-headtext { min-width: 0; }
+.chat-thread-name { font-weight: 800; font-size: 14px; color: var(--text-primary); text-decoration: none; display: block; }
+.chat-thread-presence { font-size: 11.5px; color: var(--text-muted); }
+
+.chat-messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 3px; scroll-behavior: smooth; }
+.chat-msg-row { display: flex; max-width: 100%; touch-action: pan-y; transition: transform 0.12s ease; }
+.chat-msg-row.mine { justify-content: flex-end; }
+.chat-msg-row.theirs { justify-content: flex-start; }
+.chat-msg-row.swiping { transition: none; }
+.chat-msg-row.highlight-flash .chat-bubble { animation: chatHighlightFlash 1.2s ease; }
+@keyframes chatHighlightFlash {
+  0% { box-shadow: 0 0 0 2px var(--gold); }
+  70% { box-shadow: 0 0 0 2px var(--gold); }
+  100% { box-shadow: none; }
+}
+.chat-msg-row.msg-enter { animation: chatMsgEnter 0.28s ease-out; }
+@keyframes chatMsgEnter {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.chat-bubble-wrap, .chat-msg-row > .chat-bubble { max-width: 74%; display: flex; flex-direction: column; }
+.chat-msg-row.mine { flex-direction: column; align-items: flex-end; }
+.chat-msg-row.theirs { flex-direction: column; align-items: flex-start; }
+
+.chat-bubble { max-width: 74%; padding: 10px 15px 9px; border-radius: 19px; font-size: 15.5px; line-height: 1.42; word-break: break-word; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+.chat-bubble.mine { background: var(--accent); color: var(--accent-text-on); border-bottom-right-radius: 4px; }
+.chat-bubble.theirs { background: var(--bg-surface-alt); color: var(--text-primary); border-bottom-left-radius: 4px; }
+.chat-bubble.deleted { font-style: italic; color: var(--text-muted); background: var(--bg-surface-alt); opacity: 0.85; }
+.chat-bubble.media-only { padding: 4px; background: transparent; box-shadow: none; }
+.chat-bubble.media-only.mine, .chat-bubble.media-only.theirs { background: transparent; }
+
+.chat-bubble-text { white-space: pre-wrap; }
+.chat-bubble-meta { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 3px; font-size: 11.5px; opacity: 0.8; }
+.chat-bubble-time { font-size: 11.5px; }
+.chat-receipt { font-size: 11px; letter-spacing: -1px; color: var(--text-muted); }
+.chat-bubble.mine .chat-receipt.sent, .chat-bubble.mine .chat-receipt.delivered { color: color-mix(in srgb, var(--accent-text-on) 65%, transparent); }
+.chat-receipt.read { color: var(--info); opacity: 1; }
+
+.chat-reply-quote { display: block; margin: 0 0 5px; padding: 5px 8px; border-left: 3px solid var(--gold); background: rgba(0,0,0,0.08); border-radius: 6px; font-size: 12px; opacity: 0.9; cursor: pointer; }
+.chat-bubble.theirs .chat-reply-quote { background: color-mix(in srgb, var(--text-primary) 6%, transparent); }
+
+.chat-reaction-pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.chat-reaction-pill { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary); border-radius: 999px; padding: 1px 7px; font-size: 12px; cursor: pointer; }
+.chat-reaction-pill.mine { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-surface)); }
+.chat-reaction-pill span { font-size: 10.5px; color: var(--text-muted); }
+
+/* -- Attachments in-bubble -- */
+.chat-attach-img { display: block; max-width: 220px; max-height: 260px; border-radius: 12px; object-fit: cover; cursor: pointer; }
+.chat-attach-video { position: relative; width: 220px; height: 160px; border-radius: 12px; overflow: hidden; background: #000; cursor: pointer; }
+.chat-attach-video video { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.chat-attach-play-badge { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 26px; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,0.6); }
+
+/* -- Voice note player (custom, not <audio controls>) -- */
+.voice-player { display: flex; align-items: center; gap: 8px; min-width: 190px; padding: 3px 2px; }
+.voice-player-btn { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; border: none; background: color-mix(in srgb, currentColor 15%, transparent); color: inherit; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.voice-player-track { flex: 1; height: 4px; border-radius: 2px; background: color-mix(in srgb, currentColor 22%, transparent); overflow: hidden; }
+.voice-player-fill { height: 100%; width: 0%; background: currentColor; opacity: 0.85; }
+.voice-player-time { font-size: 10.5px; opacity: 0.85; flex: 0 0 auto; }
+
+/* -- Typing indicator -- */
+.chat-typing-row { padding: 0 14px 6px; flex: 0 0 auto; }
+.typing-bubble { display: inline-flex; gap: 3px; padding: 9px 12px; align-items: center; }
+.typing-bubble span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.5; animation: chatTypingBounce 1.1s infinite ease-in-out; }
+.typing-bubble span:nth-child(2) { animation-delay: 0.15s; }
+.typing-bubble span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chatTypingBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* -- Reply preview bar above compose -- */
+.chat-reply-preview { flex: 0 0 auto; padding: 0 10px; }
+.chat-reply-preview-bar { display: flex; align-items: center; gap: 8px; background: var(--bg-surface-alt); border-left: 3px solid var(--gold); border-radius: 8px; padding: 6px 8px; margin: 6px 0; }
+.chat-reply-preview-text { flex: 1; font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-reply-cancel { background: none; border: none; font-size: 16px; color: var(--text-muted); cursor: pointer; line-height: 1; padding: 2px 4px; }
+
+/* -- Attachment staging preview above compose -- */
+.chat-attach-preview { flex: 0 0 auto; padding: 0 10px; }
+.chat-attach-preview-bar { display: flex; align-items: center; gap: 8px; background: var(--bg-surface-alt); border-radius: 8px; padding: 6px 8px; margin: 6px 0; }
+.chat-attach-preview-thumb { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; }
+.chat-attach-preview-label { flex: 1; font-size: 12px; color: var(--text-secondary); }
+
+/* -- Compose bar -- */
+.chat-input-row { display: flex; align-items: center; border-top: 1px solid var(--border-color); padding: 10px 12px; gap: 8px; flex: 0 0 auto; }
+.chat-input-row input { flex: 1; padding: 11px 16px; border: 1px solid var(--border-color); border-radius: 22px; background: var(--bg-page); color: var(--text-primary); font-size: 15.5px; }
+.chat-icon-btn { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent; color: var(--text-secondary); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.chat-icon-btn:hover { background: var(--bg-surface-alt); }
+.chat-mic-btn.recording { background: var(--danger-bg); color: var(--danger); }
+.chat-send-btn { flex: 0 0 auto; padding: 9px 16px; border-radius: 20px; font-size: 13px; }
+
+/* -- Voice-note recording overlay -- */
+.chat-record-overlay { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--danger-bg); flex: 0 0 auto; }
+.chat-record-pulse { width: 12px; height: 12px; border-radius: 50%; background: var(--danger); animation: chatRecordPulse 1s infinite; }
+@keyframes chatRecordPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.chat-record-time { font-weight: 700; font-size: 13px; color: var(--danger); font-variant-numeric: tabular-nums; }
+.chat-record-hint { margin-left: auto; font-size: 12px; color: var(--text-secondary); }
+.chat-record-overlay.cancel-armed .chat-record-hint { color: var(--danger); font-weight: 700; }
+
+/* -- Long-press action sheet (reactions + reply/delete menu) -- */
+.chat-action-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 850; display: flex; align-items: flex-end; justify-content: center; }
+@media (min-width: 640px) { .chat-action-overlay { align-items: center; } }
+.chat-action-sheet { background: var(--bg-surface); width: 100%; max-width: 360px; border-radius: 16px 16px 0 0; padding: 14px; box-shadow: 0 -4px 24px rgba(0,0,0,0.25); }
+@media (min-width: 640px) { .chat-action-sheet { border-radius: 16px; } }
+.chat-reaction-row { display: flex; justify-content: space-between; background: var(--bg-surface-alt); border-radius: 999px; padding: 8px 10px; margin-bottom: 10px; }
+.chat-reaction-choice { background: none; border: none; font-size: 22px; cursor: pointer; padding: 2px; transition: transform 0.1s ease; }
+.chat-reaction-choice:hover { transform: scale(1.25); }
+.chat-action-item { display: block; width: 100%; text-align: left; padding: 12px 8px; background: none; border: none; border-top: 1px solid var(--border-color); font-size: 14px; color: var(--text-primary); cursor: pointer; }
+.chat-action-item:first-of-type { border-top: none; }
+.chat-action-item.danger { color: var(--danger); }
+
+/* -- Full-screen media lightbox for chat attachments -- */
+.chat-lightbox-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 900; display: flex; align-items: center; justify-content: center; }
+.chat-lightbox-media-wrap { max-width: 92vw; max-height: 88vh; }
+.chat-lightbox-media { max-width: 92vw; max-height: 88vh; object-fit: contain; display: block; border-radius: 4px; }
+.chat-lightbox-close { position: absolute; top: 16px; right: 18px; background: rgba(255,255,255,0.12); color: #fff; border: none; width: 38px; height: 38px; border-radius: 50%; font-size: 20px; cursor: pointer; }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
 .modal-box { background: var(--bg-surface); border-radius: 10px; padding: 24px; max-width: 420px; width: 100%; max-height: 90vh; overflow-y: auto; }
@@ -1555,3 +1927,49 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .notif-category-grid { display: flex; flex-wrap: wrap; gap: 8px; }
 .notif-category-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 20px; padding: 5px 12px; cursor: pointer; }
 .notif-category-chip input { width: 13px; height: 13px; }
+
+/* ---- Videos hub (task #231) - general-purpose long-form video section,
+   NOT the full-screen swipe player Moments/Clips use - a normal scrollable
+   grid + watch page, on purpose (see server.js's is_long_video split). ---- */
+.videos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; margin-top: 14px; }
+.video-card { display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; text-decoration: none; color: inherit; }
+.video-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
+.video-card-thumb-wrap { aspect-ratio: 16/9; background: #000; }
+.video-card-thumb { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.video-card-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.video-card-title { font-size: 14px; font-weight: 700; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.video-card-channel { font-size: 12px; color: var(--text-secondary); text-decoration: none; }
+.video-card-channel:hover { text-decoration: underline; }
+.video-card-meta { font-size: 12px; color: var(--text-muted); }
+
+.related-videos-section { margin: 20px 16px; }
+.related-videos-row { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
+.related-video-card { flex: 0 0 140px; text-decoration: none; color: inherit; }
+.related-video-thumb { width: 140px; height: 80px; object-fit: cover; border-radius: 8px; background: #000; display: block; pointer-events: none; }
+.related-video-title { display: block; font-size: 12px; font-weight: 600; margin-top: 6px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.video-watch-wrap { margin: 0 16px 24px; position: relative; }
+.video-watch-player { width: 100%; max-height: 65vh; background: #000; border-radius: 10px; display: block; }
+.video-watch-body { padding-top: 14px; }
+.video-watch-title { font-size: 19px; font-weight: 800; margin: 0 0 10px; }
+.video-watch-channel { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: inherit; margin-bottom: 12px; }
+.video-watch-channel:hover { text-decoration: underline; }
+.video-watch-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
+.video-watch-avatar-placeholder { width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: var(--accent-text-on); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.video-watch-actions { display: flex; gap: 10px; margin: 4px 0 14px; flex-wrap: wrap; }
+.video-watch-action-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 20px; padding: 8px 14px; font-weight: 600; font-size: 13px; color: var(--text-primary); }
+.video-watch-action-btn svg { width: 18px; height: 18px; fill: currentColor; stroke: currentColor; stroke-width: 1.4; }
+.video-watch-action-btn.active { color: var(--danger); border-color: var(--danger); }
+.video-watch-caption { white-space: pre-wrap; font-size: 14px; margin: 10px 0; color: var(--text-secondary); }
+.video-watch-product-card { display: flex; gap: 12px; align-items: center; border: 1px solid var(--border-color); border-radius: 10px; padding: 10px; margin: 14px 0; text-decoration: none; color: inherit; background: var(--bg-surface); }
+.video-watch-product-card img, .video-watch-product-card .product-thumb-empty { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; }
+.video-watch-product-title { font-weight: 700; font-size: 14px; margin: 2px 0; }
+
+/* ---- Create-wizard step 4: optional "link to a listing" screen (Videos hub, task #231) ---- */
+.wizard-link-product-row { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--border-color); cursor: pointer; }
+.wizard-link-product-row:last-child { border-bottom: none; }
+.wizard-link-product-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; }
+.wizard-link-product-thumb-empty { display: flex; align-items: center; justify-content: center; background: var(--bg-surface-alt); font-size: 18px; }
+.wizard-link-product-info { display: flex; flex-direction: column; gap: 2px; }
+.wizard-link-product-title { font-size: 13px; font-weight: 600; }
+.wizard-link-product-price { font-size: 12px; color: var(--text-muted); }
