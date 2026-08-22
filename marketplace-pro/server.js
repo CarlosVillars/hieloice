@@ -2611,14 +2611,22 @@ async function handleApi(req, res, pathname, query) {
   if (method === "GET" && pathname === "/api/music/search") {
     if (!JAMENDO_CLIENT_ID) return sendJson(res, 200, { configured: false, tracks: [] });
     const q = String(query.q || "").trim().slice(0, 80);
+    // Task: "que se despliegue una lista de toda la musica royalty free...
+    // para que la gente sepa" - the browsable #/music library page (see
+    // renderMusicLibrary() in app.js) passes a genre tag here so people can
+    // filter by style, not just free-text search. Jamendo's own vocabulary
+    // (its /tracks endpoint takes any of these directly as tags=).
+    const tag = String(query.tag || "").trim().slice(0, 40);
+    const limit = Math.min(60, Math.max(1, Number(query.limit) || 24));
     const params = [
       "client_id=" + encodeURIComponent(JAMENDO_CLIENT_ID),
       "format=json",
-      "limit=24",
+      "limit=" + limit,
       "audioformat=mp32",
       "include=musicinfo",
       q ? "search=" + encodeURIComponent(q) : "boost=popularity_total",
     ];
+    if (tag) params.push("tags=" + encodeURIComponent(tag));
     try {
       const data = await httpsRequestJson("GET", "https://api.jamendo.com/v3.0/tracks/?" + params.join("&"));
       const tracks = (data.results || []).map((t) => ({
@@ -2629,6 +2637,7 @@ async function handleApi(req, res, pathname, query) {
         audioUrl: t.audio,
         image: t.image || t.album_image || null,
         licenseUrl: t.license_ccurl || null,
+        genres: (t.musicinfo && t.musicinfo.tags && t.musicinfo.tags.genres) || [],
       }));
       return sendJson(res, 200, { configured: true, tracks });
     } catch (e) {
@@ -2824,6 +2833,29 @@ async function handleApi(req, res, pathname, query) {
     if (c.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this comment" });
     await db.remove("mkt_photo_comments", { id: "eq." + enc(photoCommentDeleteMatch[2]) });
     return sendJson(res, 200, { ok: true });
+  }
+
+  // Lightweight engagement lookup for a single photo id. Unlike
+  // attachPhotoEngagement() above (batched for a list of real mkt_user_photos
+  // rows), this works for ANY id string - including synthetic ones like
+  // "profile-<userId>" or "cover-<userId>" that the frontend uses to let
+  // people like/comment on someone's profile picture without that picture
+  // needing its own row in mkt_user_photos. mkt_photo_likes/mkt_photo_comments
+  // never enforce a foreign key back to mkt_user_photos (see the other photo
+  // routes above), so this is safe with zero schema changes.
+  const photoEngagementMatch = pathname.match(/^\/api\/photos\/([a-zA-Z0-9-]+)\/engagement$/);
+  if (method === "GET" && photoEngagementMatch) {
+    const meForEngagement = await getAuthUser(req).catch(() => null);
+    const id = photoEngagementMatch[1];
+    const [likeRows, commentRows] = await Promise.all([
+      db.select("mkt_photo_likes", { photo_id: "eq." + enc(id), select: "user_id" }),
+      db.select("mkt_photo_comments", { photo_id: "eq." + enc(id), select: "id" }),
+    ]);
+    return sendJson(res, 200, {
+      likesCount: likeRows.length,
+      likedByMe: !!(meForEngagement && likeRows.some((l) => l.user_id === meForEngagement.id)),
+      commentsCount: commentRows.length,
+    });
   }
 
   // ---- FRIENDS ----
@@ -3551,6 +3583,27 @@ async function handleApi(req, res, pathname, query) {
       .slice(0, 20)
       .map((ov) => {
         if (!ov || typeof ov !== "object") return null;
+        // Task: Moment editor voice-over (a mic-only clip attached alongside
+        // the video, played back in sync client-side - see
+        // wireMomentVoiceoverSync() in app.js) and tagged products (shown as
+        // tappable pills, not baked into the video). Both ride in this same
+        // flexible overlays array rather than needing their own DB columns,
+        // but need their own validation - the generic text/sticker branch
+        // below would truncate a voice-over's data URL to 60 characters and
+        // render the garbled remainder as visible on-screen text.
+        if (ov.type === "voiceover") {
+          const value = String(ov.value || "");
+          if (!value.startsWith("data:audio/")) return null;
+          // ~8MB of base64 is a generous cap for a short voice note, not a
+          // way to smuggle large arbitrary payloads through this field.
+          if (value.length > 8 * 1024 * 1024) return null;
+          return { type: "voiceover", value };
+        }
+        if (ov.type === "product") {
+          const productId = String(ov.productId || "").slice(0, 64);
+          if (!productId) return null;
+          return { type: "product", productId, value: String(ov.value || "").slice(0, 120) };
+        }
         const value = String(ov.value || "").slice(0, 60);
         if (!value) return null;
         const type = ov.type === "sticker" ? "sticker" : "text";
@@ -3565,6 +3618,10 @@ async function handleApi(req, res, pathname, query) {
           yPct: Number.isFinite(yPct) ? Math.max(0, Math.min(100, yPct)) : 50,
         };
         if (type === "text") entry.color = typeof ov.color === "string" ? ov.color.slice(0, 20) : "#FFD84D";
+        if (ov.caption) {
+          entry.caption = true;
+          entry.captionStyle = typeof ov.captionStyle === "string" ? ov.captionStyle.slice(0, 20) : "classic";
+        }
         return entry;
       })
       .filter(Boolean);
