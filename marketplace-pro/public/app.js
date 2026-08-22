@@ -407,6 +407,7 @@ function applyStaticI18n() {
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
+  setText("icon-nav-dropdown-podcasts", "🎙️ " + I18N.t("iconnav.dropdownPodcasts"));
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
   setText("icon-nav-create-camera-label", I18N.t("iconnav.createCamera"));
   setText("icon-nav-create-record-label", I18N.t("iconnav.createRecord"));
@@ -738,6 +739,9 @@ async function router() {
     if (parts[0] === "publish-book" && parts[1]) return renderPublishBookEditor(parts[1]);
     if (parts[0] === "publish-book") return renderPublishBookHome();
     if (parts[0] === "music") return renderMusicLibrary(query);
+    if (parts[0] === "podcast" && parts[1]) return renderPodcastChannel(parts[1]);
+    if (parts[0] === "podcast-episode" && parts[1]) return renderPodcastEpisode(parts[1]);
+    if (parts[0] === "podcasts") return renderPodcastLibrary(query);
     if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
@@ -6349,8 +6353,9 @@ function wizardDrawAudioLibrary() {
   const selected = createWizard.jamendoTrack;
   panel.innerHTML = `
     <div class="wizard-audio-library-head">
+      <button type="button" class="wizard-audio-library-back" id="wizard-audio-library-close" aria-label="${I18N.t("create.back")}">&#8592; ${I18N.t("create.back")}</button>
       <p class="wizard-audio-library-title">${I18N.t("create.audioLibraryTitle")}</p>
-      <button type="button" class="wizard-audio-library-close" id="wizard-audio-library-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      <span class="wizard-audio-library-head-spacer" aria-hidden="true"></span>
     </div>
     <form class="wizard-jamendo-search-row" id="wizard-audio-search-form">
       <input type="text" id="wizard-audio-search-input" value="${escapeHtml(q)}" placeholder="${I18N.t("create.audioSearchByKeywords")}" />
@@ -6388,11 +6393,21 @@ function wizardDrawAudioLibrary() {
     });
   });
   panel.querySelectorAll(".wizard-jamendo-track-btn").forEach((btn) => {
-    btn.addEventListener("click", async () => {
+    btn.addEventListener("click", () => {
       const track = tracks.find((t) => String(t.id) === btn.dataset.trackId);
       if (!track) return;
-      await wizardSelectJamendoTrack(track, null);
       createWizard.songStartSec = 0;
+      // Bug fix: wizardSelectJamendoTrack() sets createWizard.jamendoTrack
+      // synchronously before its first `await` (the network fetch that
+      // pre-decodes the track for live recording), but this screen was
+      // `await`-ing the WHOLE function - including that fetch+decode - before
+      // redrawing. On a slow connection that decode can take several
+      // seconds, so the "selected" bar with its Play/Next (->) button never
+      // appeared to show up: only the instant speaker preview (started
+      // inside wizardSelectJamendoTrack before the fetch) was audible.
+      // Not awaiting it here lets the redraw happen immediately - the
+      // fetch/decode still finishes in the background.
+      wizardSelectJamendoTrack(track, null);
       wizardDrawAudioLibrary();
     });
   });
@@ -6464,7 +6479,7 @@ function wizardDrawVoicePanel(recording) {
       </button>
       ${hasClip && !recording ? `<button type="button" class="wizard-voice-remove-btn" id="wizard-voice-remove-btn">${I18N.t("create.voiceoverRemove")}</button>` : ""}
     </div>
-    <button type="button" class="wizard-sound-picker-close" id="wizard-voice-close">${I18N.t("common.close")}</button>
+    <button type="button" class="wizard-sound-picker-close" id="wizard-voice-close">&#8592; ${I18N.t("create.back")}</button>
   `;
   document.getElementById("wizard-voice-close").addEventListener("click", wizardCloseVoicePanel);
   const removeBtn = document.getElementById("wizard-voice-remove-btn");
@@ -7034,6 +7049,611 @@ function drawMusicLibrary() {
       drawMusicLibrary();
     });
   });
+}
+
+// ---------------- Podcasts ("#/podcasts", "#/podcast/:id", "#/podcast-episode/:id") ----------------
+// Free for every creator - a growth/reach feature (get people creating AND
+// listening), not paid hosting. Modeled loosely on the two platforms that
+// actually dominate podcast listening today (a dedicated library/channel
+// structure like Spotify's, plus reusing existing video content as episodes
+// the way YouTube creators do) but built with HieloIce's own black+gold
+// visual language - no copied icons, logos, or layouts from either. Real
+// creator monetization (tips/memberships/ad revenue share) is intentionally
+// out of scope for now (needs its own payment-processor decision, task #58)
+// - this only builds the free, real, audience-facing half: channels,
+// episodes, follows, views, likes, and a browsable library.
+const PODCAST_CATEGORIES = ["books", "business", "comedy", "education", "truecrime", "music", "tech", "lifestyle", "sports", "news", "storytelling"];
+
+let podcastLibraryState = { tab: "foryou", sort: "trending", episodes: [], channels: [], q: "", category: "", loading: true, myChannel: undefined };
+
+async function renderPodcastLibrary(query) {
+  podcastLibraryState = {
+    tab: (query && query.tab) || "foryou",
+    sort: "trending",
+    episodes: [],
+    channels: [],
+    q: "",
+    category: "",
+    loading: true,
+    myChannel: undefined,
+  };
+  drawPodcastLibrary();
+  const tasks = [podcastLibraryLoadFeed()];
+  if (state.user) tasks.push(podcastLibraryLoadMyChannel());
+  else podcastLibraryState.myChannel = null;
+  await Promise.all(tasks);
+}
+
+async function podcastLibraryLoadMyChannel() {
+  try {
+    const data = await api("/api/podcasts/mine", { auth: true });
+    podcastLibraryState.myChannel = data.channel;
+  } catch (e) {
+    podcastLibraryState.myChannel = null;
+  }
+  drawPodcastLibrary();
+}
+
+async function podcastLibraryLoadFeed() {
+  podcastLibraryState.loading = true;
+  drawPodcastLibrary();
+  try {
+    podcastLibraryState.episodes = await api("/api/podcast-episodes/feed?sort=" + podcastLibraryState.sort);
+  } catch (e) {
+    podcastLibraryState.episodes = [];
+  }
+  podcastLibraryState.loading = false;
+  drawPodcastLibrary();
+}
+
+async function podcastLibraryLoadChannels() {
+  podcastLibraryState.loading = true;
+  drawPodcastLibrary();
+  const params = [];
+  if (podcastLibraryState.q) params.push("q=" + encodeURIComponent(podcastLibraryState.q));
+  if (podcastLibraryState.category) params.push("category=" + encodeURIComponent(podcastLibraryState.category));
+  try {
+    podcastLibraryState.channels = await api("/api/podcasts" + (params.length ? "?" + params.join("&") : ""));
+  } catch (e) {
+    podcastLibraryState.channels = [];
+  }
+  podcastLibraryState.loading = false;
+  drawPodcastLibrary();
+}
+
+function podcastMediaIcon(type) {
+  return type === "video" ? "🎬" : "🎧";
+}
+
+function drawPodcastLibrary() {
+  const s = podcastLibraryState;
+  const myChannelCard =
+    s.myChannel === undefined
+      ? ""
+      : s.myChannel
+      ? `<a href="#/podcast/${s.myChannel.id}" class="podcast-my-channel-card">
+          <span class="podcast-my-channel-icon">🎙️</span>
+          <span class="podcast-my-channel-text">
+            <strong>${escapeHtml(s.myChannel.name)}</strong>
+            <span>${s.myChannel.followerCount} ${I18N.t("podcast.followers")} · ${s.myChannel.episodeCount} ${I18N.t("podcast.episodes")}</span>
+          </span>
+          <span class="podcast-my-channel-cta">${I18N.t("podcast.manage")} &rarr;</span>
+        </a>`
+      : `<div class="podcast-my-channel-card podcast-my-channel-card-empty">
+          <span class="podcast-my-channel-icon">🎙️</span>
+          <span class="podcast-my-channel-text">
+            <strong>${I18N.t("podcast.startYourOwn")}</strong>
+            <span>${I18N.t("podcast.startYourOwnHint")}</span>
+          </span>
+          <button type="button" class="btn btn-gold" id="podcast-create-btn">${I18N.t("podcast.createBtn")}</button>
+        </div>`;
+
+  const tabsHtml = `
+    <div class="podcast-tabs">
+      <button type="button" class="podcast-tab-btn ${s.tab === "foryou" ? "active" : ""}" data-tab="foryou">${I18N.t("podcast.tabForYou")}</button>
+      <button type="button" class="podcast-tab-btn ${s.tab === "browse" ? "active" : ""}" data-tab="browse">${I18N.t("podcast.tabBrowse")}</button>
+    </div>`;
+
+  let bodyHtml;
+  if (s.tab === "foryou") {
+    const sortRow = `
+      <div class="podcast-sort-row">
+        <button type="button" class="podcast-sort-btn ${s.sort === "trending" ? "active" : ""}" data-sort="trending">${I18N.t("podcast.sortTrending")}</button>
+        <button type="button" class="podcast-sort-btn ${s.sort === "new" ? "active" : ""}" data-sort="new">${I18N.t("podcast.sortNew")}</button>
+      </div>`;
+    let listHtml;
+    if (s.loading) listHtml = `<p>${I18N.t("common.loading")}</p>`;
+    else if (!s.episodes.length) listHtml = `<div class="empty-state">${I18N.t("podcast.noEpisodesYet")}</div>`;
+    else
+      listHtml = `<div class="podcast-episode-grid">${s.episodes
+        .map((e) => {
+          const cover = e.coverImage || (e.channel && e.channel.coverImage) || "";
+          return `
+        <a href="#/podcast-episode/${e.id}" class="podcast-episode-card">
+          <span class="podcast-episode-card-cover" style="${cover ? `background-image:url('${cover}')` : ""}">${cover ? "" : podcastMediaIcon(e.mediaType)}</span>
+          <span class="podcast-episode-card-info">
+            <strong>${escapeHtml(e.title)}</strong>
+            <span class="podcast-episode-card-channel">${escapeHtml((e.channel && e.channel.name) || "")}</span>
+            <span class="podcast-episode-card-stats">${podcastMediaIcon(e.mediaType)} ${e.viewCount} · &#9825; ${e.likeCount}</span>
+          </span>
+        </a>`;
+        })
+        .join("")}</div>`;
+    bodyHtml = sortRow + listHtml;
+  } else {
+    const catChips = PODCAST_CATEGORIES.map(
+      (c) => `<button type="button" class="podcast-cat-chip ${s.category === c ? "active" : ""}" data-cat="${c}">${I18N.t("podcast.category." + c)}</button>`
+    ).join("");
+    let listHtml;
+    if (s.loading) listHtml = `<p>${I18N.t("common.loading")}</p>`;
+    else if (!s.channels.length) listHtml = `<div class="empty-state">${I18N.t("podcast.noChannelsYet")}</div>`;
+    else
+      listHtml = `<div class="podcast-channel-grid">${s.channels
+        .map(
+          (c) => `
+        <a href="#/podcast/${c.id}" class="podcast-channel-card">
+          <span class="podcast-channel-card-cover" style="${c.coverImage ? `background-image:url('${c.coverImage}')` : ""}">${c.coverImage ? "" : "🎙️"}</span>
+          <strong>${escapeHtml(c.name)}</strong>
+          <span class="podcast-channel-card-owner">${escapeHtml(c.ownerName || "")}</span>
+          <span class="podcast-channel-card-stats">${c.followerCount} ${I18N.t("podcast.followers")} · ${c.episodeCount} ${I18N.t("podcast.episodes")}</span>
+        </a>`
+        )
+        .join("")}</div>`;
+    bodyHtml = `
+      <form class="podcast-search-row" id="podcast-search-form">
+        <input type="text" id="podcast-search-input" value="${escapeHtml(s.q)}" placeholder="${I18N.t("podcast.searchPlaceholder")}" />
+        <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+      </form>
+      <div class="podcast-cat-row">
+        <button type="button" class="podcast-cat-chip ${!s.category ? "active" : ""}" data-cat="">${I18N.t("podcast.allCategories")}</button>
+        ${catChips}
+      </div>
+      ${listHtml}`;
+  }
+
+  viewEl.innerHTML = `
+    <div class="podcast-library-page">
+      <p class="podcast-eyebrow">🎙️ ${I18N.t("podcast.eyebrow")}</p>
+      <h2 class="podcast-title">${I18N.t("podcast.libraryTitle")}</h2>
+      <p class="podcast-subtitle">${I18N.t("podcast.librarySubtitle")}</p>
+      ${myChannelCard}
+      ${tabsHtml}
+      ${bodyHtml}
+    </div>`;
+
+  const createBtn = document.getElementById("podcast-create-btn");
+  if (createBtn) createBtn.addEventListener("click", () => openCreatePodcastForm());
+
+  document.querySelectorAll(".podcast-tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      podcastLibraryState.tab = btn.dataset.tab;
+      if (podcastLibraryState.tab === "browse" && !podcastLibraryState.channels.length) {
+        podcastLibraryLoadChannels();
+      } else {
+        drawPodcastLibrary();
+      }
+    });
+  });
+  document.querySelectorAll(".podcast-sort-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      podcastLibraryState.sort = btn.dataset.sort;
+      podcastLibraryLoadFeed();
+    });
+  });
+  document.querySelectorAll(".podcast-cat-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      podcastLibraryState.category = btn.dataset.cat;
+      podcastLibraryLoadChannels();
+    });
+  });
+  const searchForm = document.getElementById("podcast-search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      podcastLibraryState.q = document.getElementById("podcast-search-input").value.trim();
+      podcastLibraryLoadChannels();
+    });
+  }
+}
+
+function podcastFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function closePodcastModal() {
+  const existing = document.getElementById("podcast-modal-backdrop");
+  if (existing) existing.remove();
+}
+
+function openCreatePodcastForm() {
+  if (!state.user) {
+    location.hash = "#/login";
+    return;
+  }
+  closePodcastModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "podcast-modal-backdrop";
+  backdrop.id = "podcast-modal-backdrop";
+  const catOptions = PODCAST_CATEGORIES.map((c) => `<option value="${c}">${I18N.t("podcast.category." + c)}</option>`).join("");
+  backdrop.innerHTML = `
+    <div class="podcast-modal">
+      <div class="podcast-modal-head">
+        <p>${I18N.t("podcast.createTitle")}</p>
+        <button type="button" class="podcast-modal-close" id="podcast-modal-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      <form id="podcast-create-form">
+        <label>${I18N.t("podcast.nameLabel")}</label>
+        <input type="text" id="podcast-form-name" maxlength="80" required />
+        <label>${I18N.t("podcast.descriptionLabel")}</label>
+        <textarea id="podcast-form-description" maxlength="500" rows="3"></textarea>
+        <label>${I18N.t("podcast.categoryLabel")}</label>
+        <select id="podcast-form-category">${catOptions}</select>
+        <label>${I18N.t("podcast.coverLabel")}</label>
+        <input type="file" id="podcast-form-cover" accept="image/*" />
+        <p class="field-hint">${I18N.t("podcast.freeHint")}</p>
+        <button type="submit" class="btn btn-gold" id="podcast-form-submit">${I18N.t("podcast.createBtn")}</button>
+      </form>
+    </div>`;
+  document.body.appendChild(backdrop);
+  document.getElementById("podcast-modal-close").addEventListener("click", closePodcastModal);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePodcastModal();
+  });
+  document.getElementById("podcast-create-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("podcast-form-name").value.trim();
+    if (!name) return;
+    const submitBtn = document.getElementById("podcast-form-submit");
+    submitBtn.disabled = true;
+    try {
+      const coverFile = document.getElementById("podcast-form-cover").files[0];
+      let coverImage = null;
+      if (coverFile) coverImage = await podcastFileToDataUrl(coverFile);
+      const channel = await api("/api/podcasts", {
+        method: "POST",
+        auth: true,
+        body: {
+          name,
+          description: document.getElementById("podcast-form-description").value.trim(),
+          category: document.getElementById("podcast-form-category").value,
+          coverImage,
+        },
+      });
+      closePodcastModal();
+      location.hash = "#/podcast/" + channel.id;
+    } catch (err) {
+      showAppToast(err.message || I18N.t("common.error"));
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+function openEditPodcastForm(channel) {
+  closePodcastModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "podcast-modal-backdrop";
+  backdrop.id = "podcast-modal-backdrop";
+  const catOptions = PODCAST_CATEGORIES.map(
+    (c) => `<option value="${c}" ${channel.category === c ? "selected" : ""}>${I18N.t("podcast.category." + c)}</option>`
+  ).join("");
+  backdrop.innerHTML = `
+    <div class="podcast-modal">
+      <div class="podcast-modal-head">
+        <p>${I18N.t("podcast.editChannel")}</p>
+        <button type="button" class="podcast-modal-close" id="podcast-modal-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      <form id="podcast-edit-form">
+        <label>${I18N.t("podcast.nameLabel")}</label>
+        <input type="text" id="podcast-form-name" maxlength="80" required value="${escapeHtml(channel.name)}" />
+        <label>${I18N.t("podcast.descriptionLabel")}</label>
+        <textarea id="podcast-form-description" maxlength="500" rows="3">${escapeHtml(channel.description || "")}</textarea>
+        <label>${I18N.t("podcast.categoryLabel")}</label>
+        <select id="podcast-form-category">${catOptions}</select>
+        <label>${I18N.t("podcast.coverLabel")}</label>
+        <input type="file" id="podcast-form-cover" accept="image/*" />
+        <button type="submit" class="btn btn-gold" id="podcast-form-submit">${I18N.t("common.save")}</button>
+      </form>
+    </div>`;
+  document.body.appendChild(backdrop);
+  document.getElementById("podcast-modal-close").addEventListener("click", closePodcastModal);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePodcastModal();
+  });
+  document.getElementById("podcast-edit-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const submitBtn = document.getElementById("podcast-form-submit");
+    submitBtn.disabled = true;
+    try {
+      const payload = {
+        name: document.getElementById("podcast-form-name").value.trim(),
+        description: document.getElementById("podcast-form-description").value.trim(),
+        category: document.getElementById("podcast-form-category").value,
+      };
+      const coverFile = document.getElementById("podcast-form-cover").files[0];
+      if (coverFile) payload.coverImage = await podcastFileToDataUrl(coverFile);
+      await api("/api/podcasts/" + channel.id, { method: "PUT", auth: true, body: payload });
+      closePodcastModal();
+      renderPodcastChannel(channel.id);
+    } catch (err) {
+      showAppToast(err.message || I18N.t("common.error"));
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+async function openNewEpisodeComposer(channelId) {
+  closePodcastModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "podcast-modal-backdrop";
+  backdrop.id = "podcast-modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="podcast-modal">
+      <div class="podcast-modal-head">
+        <p>${I18N.t("podcast.newEpisodeTitle")}</p>
+        <button type="button" class="podcast-modal-close" id="podcast-modal-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      <form id="podcast-episode-form">
+        <label>${I18N.t("podcast.episodeTitleLabel")}</label>
+        <input type="text" id="podcast-ep-title" maxlength="120" required />
+        <label>${I18N.t("podcast.descriptionLabel")}</label>
+        <textarea id="podcast-ep-description" maxlength="1000" rows="3"></textarea>
+        <div class="podcast-ep-source-tabs">
+          <button type="button" class="podcast-ep-source-tab active" data-source="upload">${I18N.t("podcast.uploadFile")}</button>
+          <button type="button" class="podcast-ep-source-tab" data-source="reuse">${I18N.t("podcast.reuseExisting")}</button>
+        </div>
+        <div id="podcast-ep-source-upload">
+          <label>${I18N.t("podcast.audioOrVideoFile")}</label>
+          <input type="file" id="podcast-ep-file" accept="audio/*,video/*" />
+        </div>
+        <div id="podcast-ep-source-reuse" style="display:none;">
+          <label>${I18N.t("podcast.pickExisting")}</label>
+          <div id="podcast-ep-existing-list"><p>${I18N.t("common.loading")}</p></div>
+        </div>
+        <label>${I18N.t("podcast.coverLabel")} (${I18N.t("common.optional")})</label>
+        <input type="file" id="podcast-ep-cover" accept="image/*" />
+        <button type="submit" class="btn btn-gold" id="podcast-ep-submit">${I18N.t("podcast.publishEpisode")}</button>
+      </form>
+    </div>`;
+  document.body.appendChild(backdrop);
+  document.getElementById("podcast-modal-close").addEventListener("click", closePodcastModal);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePodcastModal();
+  });
+
+  let sourceMode = "upload";
+  let selectedExistingId = null;
+  const uploadDiv = document.getElementById("podcast-ep-source-upload");
+  const reuseDiv = document.getElementById("podcast-ep-source-reuse");
+  document.querySelectorAll(".podcast-ep-source-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      sourceMode = btn.dataset.source;
+      document.querySelectorAll(".podcast-ep-source-tab").forEach((b) => b.classList.toggle("active", b === btn));
+      uploadDiv.style.display = sourceMode === "upload" ? "" : "none";
+      reuseDiv.style.display = sourceMode === "reuse" ? "" : "none";
+    });
+  });
+
+  api("/api/users/me/media", { auth: true })
+    .then((items) => {
+      const listEl = document.getElementById("podcast-ep-existing-list");
+      if (!listEl) return;
+      if (!items.length) {
+        listEl.innerHTML = `<p class="field-hint">${I18N.t("podcast.noExistingMedia")}</p>`;
+        return;
+      }
+      listEl.innerHTML = items
+        .map(
+          (it) => `<button type="button" class="podcast-ep-existing-item" data-id="${it.id}">
+            ${it.mediaType === "video" ? "🎬" : "🎧"} ${escapeHtml(it.label || it.source)} <span class="field-hint">${fmtDate(it.createdAt)}</span>
+          </button>`
+        )
+        .join("");
+      listEl.querySelectorAll(".podcast-ep-existing-item").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          selectedExistingId = btn.dataset.id;
+          listEl.querySelectorAll(".podcast-ep-existing-item").forEach((b) => b.classList.toggle("active", b === btn));
+        });
+      });
+    })
+    .catch(() => {
+      const listEl = document.getElementById("podcast-ep-existing-list");
+      if (listEl) listEl.innerHTML = `<p class="field-hint">${I18N.t("podcast.noExistingMedia")}</p>`;
+    });
+
+  document.getElementById("podcast-episode-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = document.getElementById("podcast-ep-title").value.trim();
+    if (!title) return;
+    const submitBtn = document.getElementById("podcast-ep-submit");
+    submitBtn.disabled = true;
+    try {
+      const payload = {
+        title,
+        description: document.getElementById("podcast-ep-description").value.trim(),
+      };
+      const coverFile = document.getElementById("podcast-ep-cover").files[0];
+      if (coverFile) payload.coverImage = await podcastFileToDataUrl(coverFile);
+
+      if (sourceMode === "reuse") {
+        if (!selectedExistingId) {
+          showAppToast(I18N.t("podcast.pickExistingRequired"));
+          submitBtn.disabled = false;
+          return;
+        }
+        payload.sourceMomentId = selectedExistingId;
+      } else {
+        const file = document.getElementById("podcast-ep-file").files[0];
+        if (!file) {
+          showAppToast(I18N.t("podcast.fileRequired"));
+          submitBtn.disabled = false;
+          return;
+        }
+        payload.mediaType = file.type.startsWith("video/") ? "video" : "audio";
+        payload.media = await podcastFileToDataUrl(file);
+      }
+
+      await api("/api/podcasts/" + channelId + "/episodes", { method: "POST", auth: true, body: payload });
+      closePodcastModal();
+      renderPodcastChannel(channelId);
+    } catch (err) {
+      showAppToast(err.message || I18N.t("common.error"));
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+let podcastChannelState = { channel: null, episodes: [], loading: true };
+
+async function renderPodcastChannel(channelId) {
+  podcastChannelState = { channel: null, episodes: [], loading: true };
+  drawPodcastChannel();
+  try {
+    const [channel, episodes] = await Promise.all([
+      api("/api/podcasts/" + channelId, { auth: true }),
+      api("/api/podcasts/" + channelId + "/episodes"),
+    ]);
+    podcastChannelState.channel = channel;
+    podcastChannelState.episodes = episodes;
+  } catch (e) {
+    podcastChannelState.channel = null;
+  }
+  podcastChannelState.loading = false;
+  drawPodcastChannel();
+}
+
+function drawPodcastChannel() {
+  const { channel, episodes, loading } = podcastChannelState;
+  if (loading) {
+    viewEl.innerHTML = `<div class="podcast-channel-page"><p>${I18N.t("common.loading")}</p></div>`;
+    return;
+  }
+  if (!channel) {
+    viewEl.innerHTML = `<div class="podcast-channel-page"><div class="empty-state">${I18N.t("podcast.notFound")}</div></div>`;
+    return;
+  }
+  const episodesHtml = episodes.length
+    ? episodes
+        .map(
+          (e) => `
+      <a href="#/podcast-episode/${e.id}" class="podcast-episode-row">
+        <span class="podcast-episode-row-icon">${podcastMediaIcon(e.mediaType)}</span>
+        <span class="podcast-episode-row-info">
+          <strong>${escapeHtml(e.title)}</strong>
+          <span>${fmtDate(e.createdAt)} · ${e.viewCount} ${I18N.t("podcast.views")} · &#9825; ${e.likeCount}</span>
+        </span>
+      </a>`
+        )
+        .join("")
+    : `<div class="empty-state">${I18N.t("podcast.noEpisodesYet")}</div>`;
+
+  viewEl.innerHTML = `
+    <div class="podcast-channel-page">
+      <a href="#/podcasts" class="back-link">&larr; ${I18N.t("podcast.libraryTitle")}</a>
+      <div class="podcast-channel-header" style="${channel.coverImage ? `background-image:url('${channel.coverImage}')` : ""}">
+        <div class="podcast-channel-header-overlay">
+          <span class="podcast-channel-header-icon">${channel.coverImage ? "" : "🎙️"}</span>
+          <h2>${escapeHtml(channel.name)}</h2>
+          <p class="podcast-channel-owner">${escapeHtml(channel.ownerName || "")}${channel.category ? " · " + I18N.t("podcast.category." + channel.category) : ""}</p>
+          <p class="podcast-channel-stats">${channel.followerCount} ${I18N.t("podcast.followers")} · ${channel.episodeCount} ${I18N.t("podcast.episodes")}</p>
+          <div class="podcast-channel-actions">
+            ${
+              channel.isMine
+                ? `<button type="button" class="btn btn-gold" id="podcast-add-episode-btn">+ ${I18N.t("podcast.addEpisode")}</button>
+                   <button type="button" class="btn btn-secondary" id="podcast-edit-channel-btn">${I18N.t("podcast.editChannel")}</button>`
+                : `<button type="button" class="btn ${channel.isFollowing ? "btn-secondary" : "btn-gold"}" id="podcast-follow-btn">${
+                    channel.isFollowing ? I18N.t("podcast.following") : I18N.t("podcast.follow")
+                  }</button>`
+            }
+          </div>
+        </div>
+      </div>
+      ${channel.description ? `<p class="podcast-channel-description">${escapeHtml(channel.description)}</p>` : ""}
+      <div class="podcast-episode-list">${episodesHtml}</div>
+    </div>`;
+
+  const followBtn = document.getElementById("podcast-follow-btn");
+  if (followBtn) {
+    followBtn.addEventListener("click", async () => {
+      if (!state.user) {
+        location.hash = "#/login";
+        return;
+      }
+      followBtn.disabled = true;
+      try {
+        const res = await api("/api/podcasts/" + channel.id + "/follow", { method: "POST", auth: true });
+        channel.isFollowing = res.following;
+        channel.followerCount += res.following ? 1 : -1;
+        drawPodcastChannel();
+      } catch (e) {
+        showAppToast(e.message || I18N.t("common.error"));
+      }
+    });
+  }
+  const addEpisodeBtn = document.getElementById("podcast-add-episode-btn");
+  if (addEpisodeBtn) addEpisodeBtn.addEventListener("click", () => openNewEpisodeComposer(channel.id));
+  const editBtn = document.getElementById("podcast-edit-channel-btn");
+  if (editBtn) editBtn.addEventListener("click", () => openEditPodcastForm(channel));
+}
+
+async function renderPodcastEpisode(episodeId) {
+  viewEl.innerHTML = `<div class="podcast-episode-page"><p>${I18N.t("common.loading")}</p></div>`;
+  let episode;
+  try {
+    episode = await api("/api/podcast-episodes/" + episodeId, { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<div class="podcast-episode-page"><div class="empty-state">${I18N.t("podcast.notFound")}</div></div>`;
+    return;
+  }
+  drawPodcastEpisode(episode);
+  api("/api/podcast-episodes/" + episodeId + "/view", { method: "POST", auth: !!state.user }).catch(() => {});
+}
+
+function drawPodcastEpisode(episode) {
+  const channel = episode.channel;
+  const cover = episode.coverImage || (channel && channel.coverImage) || "";
+  const playerHtml =
+    episode.mediaType === "video"
+      ? `<video class="podcast-player-media" src="${episode.mediaUrl}" controls playsinline></video>`
+      : `<audio class="podcast-player-media podcast-player-audio" src="${episode.mediaUrl}" controls></audio>`;
+  viewEl.innerHTML = `
+    <div class="podcast-episode-page">
+      <a href="#/podcast/${channel ? channel.id : ""}" class="back-link">&larr; ${channel ? escapeHtml(channel.name) : I18N.t("podcast.libraryTitle")}</a>
+      <div class="podcast-player-cover" style="${cover ? `background-image:url('${cover}')` : ""}">${cover ? "" : podcastMediaIcon(episode.mediaType)}</div>
+      <h2 class="podcast-player-title">${escapeHtml(episode.title)}</h2>
+      <p class="podcast-player-channel">${channel ? escapeHtml(channel.name) : ""} · ${fmtDate(episode.createdAt)}</p>
+      ${playerHtml}
+      <div class="podcast-player-actions">
+        <button type="button" class="podcast-like-btn ${episode.likedByMe ? "active" : ""}" id="podcast-like-btn">&#9825; <span id="podcast-like-count">${episode.likeCount}</span></button>
+        <span class="podcast-view-count">${I18N.t("podcast.viewsIcon")} ${episode.viewCount}</span>
+      </div>
+      ${episode.description ? `<p class="podcast-player-description">${escapeHtml(episode.description)}</p>` : ""}
+    </div>`;
+
+  const likeBtn = document.getElementById("podcast-like-btn");
+  if (likeBtn) {
+    likeBtn.addEventListener("click", async () => {
+      if (!state.user) {
+        location.hash = "#/login";
+        return;
+      }
+      likeBtn.disabled = true;
+      try {
+        const res = await api("/api/podcast-episodes/" + episode.id + "/like", { method: "POST", auth: true });
+        episode.likedByMe = res.liked;
+        episode.likeCount += res.liked ? 1 : -1;
+        likeBtn.classList.toggle("active", episode.likedByMe);
+        document.getElementById("podcast-like-count").textContent = episode.likeCount;
+      } catch (e) {
+        showAppToast(e.message || I18N.t("common.error"));
+      }
+      likeBtn.disabled = false;
+    });
+  }
 }
 
 function wizardOpenSoundPicker() {
@@ -8725,6 +9345,7 @@ async function renderProfile(userId) {
         <div class="profile-actions" id="profile-actions">
           ${isMe ? `<button class="btn btn-outline" id="btn-edit-profile">${I18N.t("profile.editProfile")}</button>` : ""}
           ${isMe ? `<a class="btn btn-gold" href="#/post">${I18N.t("profile.postNewListing")}</a>` : ""}
+          ${isMe ? `<a class="btn btn-outline" href="#/podcasts">🎙️ ${I18N.t("podcast.eyebrow")}</a>` : ""}
           ${!isMe && profile.isPage && !isBlocked ? pageFollowMarkup(followStatus) : ""}
           ${!isMe && !isBlocked ? friendActionMarkup(friendStatus) : ""}
           ${!isMe && state.token && !isBlocked ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}

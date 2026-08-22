@@ -5171,6 +5171,399 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, adOut(updated[0]));
   }
 
+  // GET /api/users/me/media - the logged-in user's own moments + loops,
+  // trimmed to just what a picker needs. Built for the podcast episode
+  // composer's "turn one of my videos into an episode" option below, but
+  // generic enough to reuse anywhere a "pick one of my own clips" UI is
+  // needed later.
+  if (method === "GET" && pathname === "/api/users/me/media") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const [moments, loops] = await Promise.all([
+      db.select("mkt_moments", { user_id: "eq." + enc(me.id), order: "created_at.desc", limit: "40", select: "id,media_url,media_type,caption,title,created_at,is_long_video" }),
+      db.select("mkt_loops", { user_id: "eq." + enc(me.id), order: "created_at.desc", limit: "40", select: "id,media_url,media_type,caption,created_at" }),
+    ]);
+    const out = [
+      ...(moments || []).map((m) => ({
+        id: m.id,
+        source: m.is_long_video ? "video" : "moment",
+        mediaType: m.media_type,
+        label: m.title || m.caption || "",
+        createdAt: m.created_at,
+      })),
+      ...(loops || []).map((l) => ({
+        id: l.id,
+        source: "loop",
+        mediaType: l.media_type,
+        label: l.caption || "",
+        createdAt: l.created_at,
+      })),
+    ].sort((a, b) => b.createdAt - a.createdAt);
+    return sendJson(res, 200, out);
+  }
+
+  // ---- PODCASTS ----
+  // Creating a channel and publishing episodes is 100% free for every user -
+  // this is a reach/growth feature (get thousands of people creating and
+  // listening), not a paid-hosting one. Real creator monetization (tips,
+  // paid memberships, ad-revenue share - the things Spotify/YouTube offer
+  // their partners) is intentionally NOT built here yet: it needs its own
+  // payment-processor decision (see task #58, still open) and will ship
+  // later as an honest "coming soon" state, the same pattern already used
+  // for AI-cover-generation and Amazon/eBay Connect elsewhere in the wizard.
+  // An episode can be either a freshly uploaded audio/video file, or a reuse
+  // of one of the creator's own existing moments/loops/videos (media_url is
+  // simply copied over - no re-encoding), so the whole video ecosystem
+  // (Moments, Loops, Videos) can feed a podcast channel without re-uploading.
+  function podcastChannelOut(c) {
+    return {
+      id: c.id,
+      userId: c.user_id,
+      name: c.name,
+      description: c.description,
+      category: c.category,
+      coverImage: c.cover_image,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+      followerCount: c.follower_count,
+      episodeCount: c.episode_count,
+    };
+  }
+
+  function podcastEpisodeOut(e) {
+    return {
+      id: e.id,
+      channelId: e.channel_id,
+      title: e.title,
+      description: e.description,
+      mediaType: e.media_type,
+      mediaUrl: e.media_url,
+      sourceMomentId: e.source_moment_id,
+      coverImage: e.cover_image,
+      durationSeconds: e.duration_seconds,
+      createdAt: e.created_at,
+      status: e.status,
+      viewCount: e.view_count,
+      likeCount: e.like_count,
+    };
+  }
+
+  async function attachPodcastOwners(channels) {
+    const ownerIds = [...new Set(channels.map((c) => c.user_id))];
+    if (!ownerIds.length) return channels.map((c) => ({ ...podcastChannelOut(c), ownerName: "", ownerPhoto: null }));
+    const owners = await db.select("mkt_users", { id: "in.(" + ownerIds.map(enc).join(",") + ")", select: "id,name,photo" });
+    const ownerMap = {};
+    (owners || []).forEach((o) => (ownerMap[o.id] = o));
+    return channels.map((c) => ({
+      ...podcastChannelOut(c),
+      ownerName: (ownerMap[c.user_id] || {}).name || "",
+      ownerPhoto: (ownerMap[c.user_id] || {}).photo || null,
+    }));
+  }
+
+  // GET /api/podcasts/mine - the logged-in user's own channel, or null
+  if (method === "GET" && pathname === "/api/podcasts/mine") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("podcast_channels", { user_id: "eq." + enc(me.id), select: "*" });
+    return sendJson(res, 200, { channel: rows && rows[0] ? podcastChannelOut(rows[0]) : null });
+  }
+
+  // GET /api/podcasts?q=&category=&sort=popular|new - the Podcast Library
+  if (method === "GET" && pathname === "/api/podcasts") {
+    const params = { select: "*", limit: "40" };
+    const q = String(query.q || "").trim();
+    const category = String(query.category || "").trim();
+    if (category) params.category = "eq." + enc(category);
+    params.order = query.sort === "new" ? "created_at.desc" : "follower_count.desc,created_at.desc";
+    let rows = await db.select("podcast_channels", params);
+    if (q) {
+      const needle = q.toLowerCase();
+      rows = (rows || []).filter((c) => c.name.toLowerCase().includes(needle) || (c.description || "").toLowerCase().includes(needle));
+    }
+    return sendJson(res, 200, await attachPodcastOwners(rows || []));
+  }
+
+  // POST /api/podcasts - create my channel (one per account, always free)
+  if (method === "POST" && pathname === "/api/podcasts") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const existing = await db.select("podcast_channels", { user_id: "eq." + enc(me.id), select: "id" });
+    if (existing && existing[0]) return sendJson(res, 409, { error: "You already have a podcast channel" });
+    const body = await readBody(req);
+    const name = String(body.name || "").trim().slice(0, 80);
+    if (!name) return sendJson(res, 400, { error: "A podcast name is required" });
+    let coverImage = null;
+    if (body.coverImage && String(body.coverImage).startsWith("data:")) {
+      try {
+        coverImage = await sbStorageUpload("media", "podcasts/covers/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", body.coverImage);
+      } catch (e) {
+        return sendJson(res, 500, { error: "Could not upload cover image" });
+      }
+    }
+    const now = Date.now();
+    const channel = {
+      id: crypto.randomBytes(8).toString("hex"),
+      user_id: me.id,
+      name,
+      description: String(body.description || "").trim().slice(0, 500),
+      category: String(body.category || "").trim().slice(0, 40),
+      cover_image: coverImage,
+      created_at: now,
+      updated_at: now,
+      follower_count: 0,
+      episode_count: 0,
+    };
+    await db.insert("podcast_channels", channel);
+    return sendJson(res, 201, podcastChannelOut(channel));
+  }
+
+  // GET /api/podcasts/:id - channel detail (enriched with owner + my follow state)
+  const podcastChannelMatch = pathname.match(/^\/api\/podcasts\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && podcastChannelMatch) {
+    const rows = await db.select("podcast_channels", { id: "eq." + enc(podcastChannelMatch[1]), select: "*" });
+    const channel = rows && rows[0];
+    if (!channel) return sendJson(res, 404, { error: "Not found" });
+    const me = await getAuthUser(req);
+    const [owners, myFollow] = await Promise.all([
+      db.select("mkt_users", { id: "eq." + enc(channel.user_id), select: "id,name,photo" }),
+      me ? db.select("podcast_follows", { channel_id: "eq." + enc(channel.id), user_id: "eq." + enc(me.id), select: "id" }) : Promise.resolve([]),
+    ]);
+    const owner = (owners || [])[0] || {};
+    return sendJson(res, 200, {
+      ...podcastChannelOut(channel),
+      ownerName: owner.name || "",
+      ownerPhoto: owner.photo || null,
+      isMine: !!(me && me.id === channel.user_id),
+      isFollowing: !!(myFollow && myFollow[0]),
+    });
+  }
+
+  // PUT /api/podcasts/:id - update my channel
+  if (method === "PUT" && podcastChannelMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("podcast_channels", { id: "eq." + enc(podcastChannelMatch[1]), select: "*" });
+    const channel = rows && rows[0];
+    if (!channel) return sendJson(res, 404, { error: "Not found" });
+    if (channel.user_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    const body = await readBody(req);
+    const patch = { updated_at: Date.now() };
+    if (body.name !== undefined) {
+      const name = String(body.name).trim().slice(0, 80);
+      if (!name) return sendJson(res, 400, { error: "A podcast name is required" });
+      patch.name = name;
+    }
+    if (body.description !== undefined) patch.description = String(body.description).trim().slice(0, 500);
+    if (body.category !== undefined) patch.category = String(body.category).trim().slice(0, 40);
+    if (body.coverImage !== undefined && String(body.coverImage).startsWith("data:")) {
+      try {
+        patch.cover_image = await sbStorageUpload("media", "podcasts/covers/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", body.coverImage);
+      } catch (e) {
+        return sendJson(res, 500, { error: "Could not upload cover image" });
+      }
+    }
+    const updated = await db.update("podcast_channels", { id: "eq." + enc(channel.id) }, patch);
+    return sendJson(res, 200, podcastChannelOut(updated[0]));
+  }
+
+  // POST /api/podcasts/:id/follow - toggle follow/unfollow
+  const podcastFollowMatch = pathname.match(/^\/api\/podcasts\/([a-zA-Z0-9]+)\/follow$/);
+  if (method === "POST" && podcastFollowMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const channelId = podcastFollowMatch[1];
+    const existing = await db.select("podcast_follows", { channel_id: "eq." + enc(channelId), user_id: "eq." + enc(me.id), select: "id" });
+    if (existing && existing[0]) {
+      await db.remove("podcast_follows", { id: "eq." + enc(existing[0].id) });
+      await db.rpc("podcast_increment_counter", { p_table: "podcast_channels", p_id: channelId, p_column: "follower_count", p_delta: -1 });
+      return sendJson(res, 200, { following: false });
+    }
+    await db.insert("podcast_follows", {
+      id: crypto.randomBytes(8).toString("hex"),
+      channel_id: channelId,
+      user_id: me.id,
+      created_at: Date.now(),
+    });
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_channels", p_id: channelId, p_column: "follower_count", p_delta: 1 });
+    return sendJson(res, 200, { following: true });
+  }
+
+  // GET /api/podcasts/:id/episodes - a channel's episode list
+  const podcastEpisodesMatch = pathname.match(/^\/api\/podcasts\/([a-zA-Z0-9]+)\/episodes$/);
+  if (method === "GET" && podcastEpisodesMatch) {
+    const rows = await db.select("podcast_episodes", {
+      channel_id: "eq." + enc(podcastEpisodesMatch[1]),
+      status: "eq.published",
+      order: "created_at.desc",
+      select: "*",
+    });
+    return sendJson(res, 200, (rows || []).map(podcastEpisodeOut));
+  }
+
+  // POST /api/podcasts/:id/episodes - publish a new episode (owner only)
+  // Body is either { title, description, mediaType, media (data: URL) } for a
+  // fresh upload, or { title, description, sourceMomentId } to reuse an
+  // existing moment/loop/video the creator already owns.
+  if (method === "POST" && podcastEpisodesMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const channelRows = await db.select("podcast_channels", { id: "eq." + enc(podcastEpisodesMatch[1]), select: "*" });
+    const channel = channelRows && channelRows[0];
+    if (!channel) return sendJson(res, 404, { error: "Podcast not found" });
+    if (channel.user_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    const body = await readBody(req);
+    const title = String(body.title || "").trim().slice(0, 120);
+    if (!title) return sendJson(res, 400, { error: "An episode title is required" });
+
+    let mediaType, mediaUrl, durationSeconds = null, coverImage = null, sourceMomentId = null;
+
+    if (body.sourceMomentId) {
+      // Reuse an existing moment/loop/video the creator already owns -
+      // no re-encoding, just point the episode at the same media_url.
+      let source = (await db.select("mkt_moments", { id: "eq." + enc(body.sourceMomentId), select: "*" }))[0];
+      if (!source) source = (await db.select("mkt_loops", { id: "eq." + enc(body.sourceMomentId), select: "*" }))[0];
+      if (!source) return sendJson(res, 404, { error: "That video/moment/loop was not found" });
+      if (source.user_id !== me.id) return sendJson(res, 403, { error: "You can only turn your own videos/moments/loops into episodes" });
+      mediaType = source.media_type === "video" ? "video" : "audio";
+      mediaUrl = source.media_url;
+      sourceMomentId = source.id;
+      durationSeconds = source.trim_end_sec && source.trim_start_sec !== undefined ? source.trim_end_sec - source.trim_start_sec : null;
+    } else {
+      mediaType = body.mediaType === "video" ? "video" : "audio";
+      if (!body.media || !String(body.media).startsWith("data:")) {
+        return sendJson(res, 400, { error: "Audio or video file is required" });
+      }
+      const ext = mediaType === "video" ? ".mp4" : ".mp3";
+      try {
+        mediaUrl = await sbStorageUpload("media", "podcasts/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ext, body.media);
+      } catch (e) {
+        return sendJson(res, 500, { error: "Could not upload episode media" });
+      }
+      if (body.durationSeconds !== undefined) {
+        const d = Number(body.durationSeconds);
+        if (Number.isFinite(d) && d > 0) durationSeconds = d;
+      }
+    }
+    if (body.coverImage && String(body.coverImage).startsWith("data:")) {
+      try {
+        coverImage = await sbStorageUpload("media", "podcasts/covers/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", body.coverImage);
+      } catch (e) {
+        // Non-fatal - falls back to the channel's own cover client-side.
+      }
+    }
+    const episode = {
+      id: crypto.randomBytes(8).toString("hex"),
+      channel_id: channel.id,
+      title,
+      description: String(body.description || "").trim().slice(0, 1000),
+      media_type: mediaType,
+      media_url: mediaUrl,
+      source_moment_id: sourceMomentId,
+      cover_image: coverImage,
+      duration_seconds: durationSeconds,
+      created_at: Date.now(),
+      status: "published",
+      view_count: 0,
+      like_count: 0,
+    };
+    await db.insert("podcast_episodes", episode);
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_channels", p_id: channel.id, p_column: "episode_count", p_delta: 1 });
+    return sendJson(res, 201, podcastEpisodeOut(episode));
+  }
+
+  // GET /api/podcast-episodes/feed?sort=trending|new - cross-channel discovery
+  // feed for the Podcast Library's home tab.
+  if (method === "GET" && pathname === "/api/podcast-episodes/feed") {
+    const order = query.sort === "trending" ? "view_count.desc,created_at.desc" : "created_at.desc";
+    const rows = await db.select("podcast_episodes", { status: "eq.published", order, limit: "40", select: "*" });
+    const channelIds = [...new Set((rows || []).map((e) => e.channel_id))];
+    let channelMap = {};
+    if (channelIds.length) {
+      const channels = await db.select("podcast_channels", { id: "in.(" + channelIds.map(enc).join(",") + ")", select: "*" });
+      const enriched = await attachPodcastOwners(channels || []);
+      enriched.forEach((c) => (channelMap[c.id] = c));
+    }
+    return sendJson(
+      res,
+      200,
+      (rows || []).map((e) => ({ ...podcastEpisodeOut(e), channel: channelMap[e.channel_id] || null }))
+    );
+  }
+
+  // GET /api/podcast-episodes/:id - single episode detail
+  const podcastEpisodeMatch = pathname.match(/^\/api\/podcast-episodes\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && podcastEpisodeMatch) {
+    const rows = await db.select("podcast_episodes", { id: "eq." + enc(podcastEpisodeMatch[1]), select: "*" });
+    const episode = rows && rows[0];
+    if (!episode) return sendJson(res, 404, { error: "Not found" });
+    const me = await getAuthUser(req);
+    const [channelRows, myLike] = await Promise.all([
+      db.select("podcast_channels", { id: "eq." + enc(episode.channel_id), select: "*" }),
+      me ? db.select("podcast_episode_likes", { episode_id: "eq." + enc(episode.id), user_id: "eq." + enc(me.id), select: "id" }) : Promise.resolve([]),
+    ]);
+    const channel = (channelRows || [])[0];
+    const channelOut = channel ? (await attachPodcastOwners([channel]))[0] : null;
+    return sendJson(res, 200, {
+      ...podcastEpisodeOut(episode),
+      channel: channelOut,
+      likedByMe: !!(myLike && myLike[0]),
+    });
+  }
+
+  // DELETE /api/podcast-episodes/:id - owner only
+  if (method === "DELETE" && podcastEpisodeMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("podcast_episodes", { id: "eq." + enc(podcastEpisodeMatch[1]), select: "*" });
+    const episode = rows && rows[0];
+    if (!episode) return sendJson(res, 404, { error: "Not found" });
+    const channelRows = await db.select("podcast_channels", { id: "eq." + enc(episode.channel_id), select: "*" });
+    const channel = channelRows && channelRows[0];
+    if (!channel || channel.user_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    await db.remove("podcast_episodes", { id: "eq." + enc(episode.id) });
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_channels", p_id: channel.id, p_column: "episode_count", p_delta: -1 });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // POST /api/podcast-episodes/:id/view - plays count as views (like a
+  // moment/loop watch event, not deduplicated per-viewer - a replay is
+  // another view, same as YouTube/Spotify).
+  const podcastEpisodeViewMatch = pathname.match(/^\/api\/podcast-episodes\/([a-zA-Z0-9]+)\/view$/);
+  if (method === "POST" && podcastEpisodeViewMatch) {
+    const me = await getAuthUser(req);
+    const episodeId = podcastEpisodeViewMatch[1];
+    await db.insert("podcast_episode_views", {
+      episode_id: episodeId,
+      viewer_id: me ? me.id : null,
+      created_at: Date.now(),
+    });
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_episodes", p_id: episodeId, p_column: "view_count", p_delta: 1 });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // POST /api/podcast-episodes/:id/like - toggle like
+  const podcastEpisodeLikeMatch = pathname.match(/^\/api\/podcast-episodes\/([a-zA-Z0-9]+)\/like$/);
+  if (method === "POST" && podcastEpisodeLikeMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const episodeId = podcastEpisodeLikeMatch[1];
+    const existing = await db.select("podcast_episode_likes", { episode_id: "eq." + enc(episodeId), user_id: "eq." + enc(me.id), select: "id" });
+    if (existing && existing[0]) {
+      await db.remove("podcast_episode_likes", { id: "eq." + enc(existing[0].id) });
+      await db.rpc("podcast_increment_counter", { p_table: "podcast_episodes", p_id: episodeId, p_column: "like_count", p_delta: -1 });
+      return sendJson(res, 200, { liked: false });
+    }
+    await db.insert("podcast_episode_likes", {
+      id: crypto.randomBytes(8).toString("hex"),
+      episode_id: episodeId,
+      user_id: me.id,
+      created_at: Date.now(),
+    });
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_episodes", p_id: episodeId, p_column: "like_count", p_delta: 1 });
+    return sendJson(res, 200, { liked: true });
+  }
+
   // ---- ADMIN (role === 'admin' only, or the legacy OWNER_EMAIL account) ----
   if (pathname.startsWith("/api/admin/")) {
     const me = await getAuthUser(req);
