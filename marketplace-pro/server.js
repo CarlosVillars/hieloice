@@ -423,6 +423,45 @@ async function isBlockedEitherWay(userIdA, userIdB) {
   return !!(rows && rows.length);
 }
 
+// Platform-wide 18+ requirement (Carlos: "para utilizar nuestra plataforma
+// las personas deben ser mayores de edad"). This is self-attestation
+// (user-entered birthdate), not ID/KYC verification - a disclosed
+// limitation, not a guarantee. Every place that needs an age check should
+// recompute from mkt_users.birthdate via these helpers rather than trusting
+// any client-supplied "I'm 18+" flag.
+const MIN_AGE_YEARS = 18;
+
+function ageFromBirthdateMs(birthdateMs, nowMs) {
+  const now = new Date(nowMs);
+  const dob = new Date(birthdateMs);
+  let age = now.getUTCFullYear() - dob.getUTCFullYear();
+  const monthDiff = now.getUTCMonth() - dob.getUTCMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && now.getUTCDate() < dob.getUTCDate())) age--;
+  return age;
+}
+
+// Parses a strict "YYYY-MM-DD" date input into a UTC-midnight epoch-ms
+// timestamp, or null if invalid/out of sane bounds. Strict format avoids the
+// timezone drift that comes from loose `new Date(string)` parsing.
+function parseBirthdateInput(raw) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(raw || "").trim());
+  if (!m) return null;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (Number.isNaN(ms)) return null;
+  const now = Date.now();
+  if (ms > now) return null; // no future birthdates
+  if (now - ms > 120 * 365.25 * 24 * 60 * 60 * 1000) return null; // no implausible ages
+  return ms;
+}
+
+// True only if the user has a birthdate on file AND it computes to 18+.
+// Accounts created before this feature (or via Google/Facebook) will have
+// no birthdate yet, so this correctly returns false for them until they
+// complete the one-time #/confirm-age gate.
+function isAdultUser(user) {
+  return !!(user && user.birthdate && ageFromBirthdateMs(user.birthdate, Date.now()) >= MIN_AGE_YEARS);
+}
+
 async function findOrCreateOAuthUser({ provider, providerId, email, name, photo }) {
   const idField = provider === "google" ? "google_id" : "facebook_id";
   let rows = await db.select("mkt_users", { [idField]: "eq." + enc(providerId), select: "*" });
@@ -1043,7 +1082,7 @@ const CATEGORIES = [
   "art-photography", "travel", "rare-collectible", "other-books",
 ];
 
-const REPORT_REASONS = ["spam", "prohibited", "inappropriate", "fraud", "other"];
+const REPORT_REASONS = ["spam", "prohibited", "inappropriate", "fraud", "other", "harassment", "fake_profile", "underage_concern"];
 
 function productOut(p) {
   const { seller_id, allow_offers, allow_return, created_at, cover_is_video, video_duration_seconds, ...rest } = p;
@@ -1070,10 +1109,18 @@ async function handleApi(req, res, pathname, query) {
       return sendJson(res, 429, { error: "Too many registration attempts. Please try again later." });
     }
     const body = await readBody(req);
-    const { name, email, password, phone } = body;
+    const { name, email, password, phone, birthdate } = body;
     if (!name || !String(name).trim()) return sendJson(res, 400, { error: "Name is required" });
     if (!isEmail(email)) return sendJson(res, 400, { error: "A valid email is required" });
     if (!password || String(password).length < 6) return sendJson(res, 400, { error: "Password must be at least 6 characters" });
+
+    // Platform-wide 18+ requirement (Carlos's instruction: adults only,
+    // for the whole platform, not just Dating). Self-attestation only.
+    const birthdateMs = parseBirthdateInput(birthdate);
+    if (!birthdateMs) return sendJson(res, 400, { error: "A valid date of birth is required." });
+    if (ageFromBirthdateMs(birthdateMs, Date.now()) < MIN_AGE_YEARS) {
+      return sendJson(res, 403, { error: "You must be at least 18 years old to create a HieloIce account." });
+    }
 
     const emailLower = String(email).trim().toLowerCase();
     const existing = await db.select("mkt_users", { email: "eq." + enc(emailLower), select: "id" });
@@ -1090,6 +1137,7 @@ async function handleApi(req, res, pathname, query) {
       bio: "",
       location: "",
       phone: String(phone || "").trim().slice(0, 30),
+      birthdate: birthdateMs,
       created_at: Date.now(),
     };
     await db.insert("mkt_users", user);
@@ -1098,6 +1146,22 @@ async function handleApi(req, res, pathname, query) {
     await db.insert("mkt_sessions", { token, user_id: user.id, created_at: Date.now() });
 
     return sendJson(res, 201, { token, user: ownUser(user) });
+  }
+
+  // One-time "confirm your birthdate" gate for accounts that don't have one
+  // on file yet (Google/Facebook signups, or any pre-existing account from
+  // before this feature existed). Also reused by the Dating opt-in flow.
+  if (method === "PUT" && pathname === "/api/auth/birthdate") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const birthdateMs = parseBirthdateInput(body.birthdate);
+    if (!birthdateMs) return sendJson(res, 400, { error: "Enter a valid date of birth." });
+    if (ageFromBirthdateMs(birthdateMs, Date.now()) < MIN_AGE_YEARS) {
+      return sendJson(res, 403, { error: "You must be at least 18 years old to use HieloIce." });
+    }
+    const updated = await db.update("mkt_users", { id: "eq." + enc(me.id) }, { birthdate: birthdateMs });
+    return sendJson(res, 200, { user: ownUser(updated[0]) });
   }
 
   if (method === "POST" && pathname === "/api/auth/login") {
@@ -2629,16 +2693,23 @@ async function handleApi(req, res, pathname, query) {
     if (tag) params.push("tags=" + encodeURIComponent(tag));
     try {
       const data = await httpsRequestJson("GET", "https://api.jamendo.com/v3.0/tracks/?" + params.join("&"));
-      const tracks = (data.results || []).map((t) => ({
-        id: t.id,
-        name: t.name,
-        artist: t.artist_name,
-        durationSec: t.duration,
-        audioUrl: t.audio,
-        image: t.image || t.album_image || null,
-        licenseUrl: t.license_ccurl || null,
-        genres: (t.musicinfo && t.musicinfo.tags && t.musicinfo.tags.genres) || [],
-      }));
+      // Some Jamendo results come back with an empty/missing `audio` stream
+      // URL (licensing/CDN gaps on their end, not something we control) -
+      // those looked selectable in the library but produced no sound at all
+      // when played. Filtering them out here means every track the browser
+      // ever sees is guaranteed to actually have a working preview URL.
+      const tracks = (data.results || [])
+        .filter((t) => typeof t.audio === "string" && t.audio.trim().length > 0)
+        .map((t) => ({
+          id: t.id,
+          name: t.name,
+          artist: t.artist_name,
+          durationSec: t.duration,
+          audioUrl: t.audio,
+          image: t.image || t.album_image || null,
+          licenseUrl: t.license_ccurl || null,
+          genres: (t.musicinfo && t.musicinfo.tags && t.musicinfo.tags.genres) || [],
+        }));
       return sendJson(res, 200, { configured: true, tracks });
     } catch (e) {
       return sendJson(res, 200, { configured: true, tracks: [] });
@@ -5162,6 +5233,683 @@ async function handleApi(req, res, pathname, query) {
     if (body.sortOrder !== undefined) patch.sort_order = Number(body.sortOrder) || 0;
     const updated = await db.update("mkt_ads", { id: "eq." + enc(adMatch[1]) }, patch);
     return sendJson(res, 200, adOut(updated[0]));
+  }
+
+  // GET /api/users/me/media - the logged-in user's own moments + loops,
+  // trimmed to just what a picker needs. Built for the podcast episode
+  // composer's "turn one of my videos into an episode" option below, but
+  // generic enough to reuse anywhere a "pick one of my own clips" UI is
+  // needed later.
+  if (method === "GET" && pathname === "/api/users/me/media") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const [moments, loops] = await Promise.all([
+      db.select("mkt_moments", { user_id: "eq." + enc(me.id), order: "created_at.desc", limit: "40", select: "id,media_url,media_type,caption,title,created_at,is_long_video" }),
+      db.select("mkt_loops", { user_id: "eq." + enc(me.id), order: "created_at.desc", limit: "40", select: "id,media_url,media_type,caption,created_at" }),
+    ]);
+    const out = [
+      ...(moments || []).map((m) => ({
+        id: m.id,
+        source: m.is_long_video ? "video" : "moment",
+        mediaType: m.media_type,
+        label: m.title || m.caption || "",
+        createdAt: m.created_at,
+      })),
+      ...(loops || []).map((l) => ({
+        id: l.id,
+        source: "loop",
+        mediaType: l.media_type,
+        label: l.caption || "",
+        createdAt: l.created_at,
+      })),
+    ].sort((a, b) => b.createdAt - a.createdAt);
+    return sendJson(res, 200, out);
+  }
+
+  // ---- PODCASTS ----
+  // Creating a channel and publishing episodes is 100% free for every user -
+  // this is a reach/growth feature (get thousands of people creating and
+  // listening), not a paid-hosting one. Real creator monetization (tips,
+  // paid memberships, ad-revenue share - the things Spotify/YouTube offer
+  // their partners) is intentionally NOT built here yet: it needs its own
+  // payment-processor decision (see task #58, still open) and will ship
+  // later as an honest "coming soon" state, the same pattern already used
+  // for AI-cover-generation and Amazon/eBay Connect elsewhere in the wizard.
+  // An episode can be either a freshly uploaded audio/video file, or a reuse
+  // of one of the creator's own existing moments/loops/videos (media_url is
+  // simply copied over - no re-encoding), so the whole video ecosystem
+  // (Moments, Loops, Videos) can feed a podcast channel without re-uploading.
+  function podcastChannelOut(c) {
+    return {
+      id: c.id,
+      userId: c.user_id,
+      name: c.name,
+      description: c.description,
+      category: c.category,
+      coverImage: c.cover_image,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at,
+      followerCount: c.follower_count,
+      episodeCount: c.episode_count,
+    };
+  }
+
+  function podcastEpisodeOut(e) {
+    return {
+      id: e.id,
+      channelId: e.channel_id,
+      title: e.title,
+      description: e.description,
+      mediaType: e.media_type,
+      mediaUrl: e.media_url,
+      sourceMomentId: e.source_moment_id,
+      coverImage: e.cover_image,
+      durationSeconds: e.duration_seconds,
+      createdAt: e.created_at,
+      status: e.status,
+      viewCount: e.view_count,
+      likeCount: e.like_count,
+    };
+  }
+
+  async function attachPodcastOwners(channels) {
+    const ownerIds = [...new Set(channels.map((c) => c.user_id))];
+    if (!ownerIds.length) return channels.map((c) => ({ ...podcastChannelOut(c), ownerName: "", ownerPhoto: null }));
+    const owners = await db.select("mkt_users", { id: "in.(" + ownerIds.map(enc).join(",") + ")", select: "id,name,photo" });
+    const ownerMap = {};
+    (owners || []).forEach((o) => (ownerMap[o.id] = o));
+    return channels.map((c) => ({
+      ...podcastChannelOut(c),
+      ownerName: (ownerMap[c.user_id] || {}).name || "",
+      ownerPhoto: (ownerMap[c.user_id] || {}).photo || null,
+    }));
+  }
+
+  // GET /api/podcasts/mine - the logged-in user's own channel, or null
+  if (method === "GET" && pathname === "/api/podcasts/mine") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("podcast_channels", { user_id: "eq." + enc(me.id), select: "*" });
+    return sendJson(res, 200, { channel: rows && rows[0] ? podcastChannelOut(rows[0]) : null });
+  }
+
+  // GET /api/podcasts?q=&category=&sort=popular|new - the Podcast Library
+  if (method === "GET" && pathname === "/api/podcasts") {
+    const params = { select: "*", limit: "40" };
+    const q = String(query.q || "").trim();
+    const category = String(query.category || "").trim();
+    if (category) params.category = "eq." + enc(category);
+    params.order = query.sort === "new" ? "created_at.desc" : "follower_count.desc,created_at.desc";
+    let rows = await db.select("podcast_channels", params);
+    if (q) {
+      const needle = q.toLowerCase();
+      rows = (rows || []).filter((c) => c.name.toLowerCase().includes(needle) || (c.description || "").toLowerCase().includes(needle));
+    }
+    return sendJson(res, 200, await attachPodcastOwners(rows || []));
+  }
+
+  // POST /api/podcasts - create my channel (one per account, always free)
+  if (method === "POST" && pathname === "/api/podcasts") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const existing = await db.select("podcast_channels", { user_id: "eq." + enc(me.id), select: "id" });
+    if (existing && existing[0]) return sendJson(res, 409, { error: "You already have a podcast channel" });
+    const body = await readBody(req);
+    const name = String(body.name || "").trim().slice(0, 80);
+    if (!name) return sendJson(res, 400, { error: "A podcast name is required" });
+    let coverImage = null;
+    if (body.coverImage && String(body.coverImage).startsWith("data:")) {
+      try {
+        coverImage = await sbStorageUpload("media", "podcasts/covers/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", body.coverImage);
+      } catch (e) {
+        return sendJson(res, 500, { error: "Could not upload cover image" });
+      }
+    }
+    const now = Date.now();
+    const channel = {
+      id: crypto.randomBytes(8).toString("hex"),
+      user_id: me.id,
+      name,
+      description: String(body.description || "").trim().slice(0, 500),
+      category: String(body.category || "").trim().slice(0, 40),
+      cover_image: coverImage,
+      created_at: now,
+      updated_at: now,
+      follower_count: 0,
+      episode_count: 0,
+    };
+    await db.insert("podcast_channels", channel);
+    return sendJson(res, 201, podcastChannelOut(channel));
+  }
+
+  // GET /api/podcasts/:id - channel detail (enriched with owner + my follow state)
+  const podcastChannelMatch = pathname.match(/^\/api\/podcasts\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && podcastChannelMatch) {
+    const rows = await db.select("podcast_channels", { id: "eq." + enc(podcastChannelMatch[1]), select: "*" });
+    const channel = rows && rows[0];
+    if (!channel) return sendJson(res, 404, { error: "Not found" });
+    const me = await getAuthUser(req);
+    const [owners, myFollow] = await Promise.all([
+      db.select("mkt_users", { id: "eq." + enc(channel.user_id), select: "id,name,photo" }),
+      me ? db.select("podcast_follows", { channel_id: "eq." + enc(channel.id), user_id: "eq." + enc(me.id), select: "id" }) : Promise.resolve([]),
+    ]);
+    const owner = (owners || [])[0] || {};
+    return sendJson(res, 200, {
+      ...podcastChannelOut(channel),
+      ownerName: owner.name || "",
+      ownerPhoto: owner.photo || null,
+      isMine: !!(me && me.id === channel.user_id),
+      isFollowing: !!(myFollow && myFollow[0]),
+    });
+  }
+
+  // PUT /api/podcasts/:id - update my channel
+  if (method === "PUT" && podcastChannelMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("podcast_channels", { id: "eq." + enc(podcastChannelMatch[1]), select: "*" });
+    const channel = rows && rows[0];
+    if (!channel) return sendJson(res, 404, { error: "Not found" });
+    if (channel.user_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    const body = await readBody(req);
+    const patch = { updated_at: Date.now() };
+    if (body.name !== undefined) {
+      const name = String(body.name).trim().slice(0, 80);
+      if (!name) return sendJson(res, 400, { error: "A podcast name is required" });
+      patch.name = name;
+    }
+    if (body.description !== undefined) patch.description = String(body.description).trim().slice(0, 500);
+    if (body.category !== undefined) patch.category = String(body.category).trim().slice(0, 40);
+    if (body.coverImage !== undefined && String(body.coverImage).startsWith("data:")) {
+      try {
+        patch.cover_image = await sbStorageUpload("media", "podcasts/covers/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", body.coverImage);
+      } catch (e) {
+        return sendJson(res, 500, { error: "Could not upload cover image" });
+      }
+    }
+    const updated = await db.update("podcast_channels", { id: "eq." + enc(channel.id) }, patch);
+    return sendJson(res, 200, podcastChannelOut(updated[0]));
+  }
+
+  // POST /api/podcasts/:id/follow - toggle follow/unfollow
+  const podcastFollowMatch = pathname.match(/^\/api\/podcasts\/([a-zA-Z0-9]+)\/follow$/);
+  if (method === "POST" && podcastFollowMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const channelId = podcastFollowMatch[1];
+    const existing = await db.select("podcast_follows", { channel_id: "eq." + enc(channelId), user_id: "eq." + enc(me.id), select: "id" });
+    if (existing && existing[0]) {
+      await db.remove("podcast_follows", { id: "eq." + enc(existing[0].id) });
+      await db.rpc("podcast_increment_counter", { p_table: "podcast_channels", p_id: channelId, p_column: "follower_count", p_delta: -1 });
+      return sendJson(res, 200, { following: false });
+    }
+    await db.insert("podcast_follows", {
+      id: crypto.randomBytes(8).toString("hex"),
+      channel_id: channelId,
+      user_id: me.id,
+      created_at: Date.now(),
+    });
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_channels", p_id: channelId, p_column: "follower_count", p_delta: 1 });
+    return sendJson(res, 200, { following: true });
+  }
+
+  // GET /api/podcasts/:id/episodes - a channel's episode list
+  const podcastEpisodesMatch = pathname.match(/^\/api\/podcasts\/([a-zA-Z0-9]+)\/episodes$/);
+  if (method === "GET" && podcastEpisodesMatch) {
+    const rows = await db.select("podcast_episodes", {
+      channel_id: "eq." + enc(podcastEpisodesMatch[1]),
+      status: "eq.published",
+      order: "created_at.desc",
+      select: "*",
+    });
+    return sendJson(res, 200, (rows || []).map(podcastEpisodeOut));
+  }
+
+  // POST /api/podcasts/:id/episodes - publish a new episode (owner only)
+  // Body is either { title, description, mediaType, media (data: URL) } for a
+  // fresh upload, or { title, description, sourceMomentId } to reuse an
+  // existing moment/loop/video the creator already owns.
+  if (method === "POST" && podcastEpisodesMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const channelRows = await db.select("podcast_channels", { id: "eq." + enc(podcastEpisodesMatch[1]), select: "*" });
+    const channel = channelRows && channelRows[0];
+    if (!channel) return sendJson(res, 404, { error: "Podcast not found" });
+    if (channel.user_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    const body = await readBody(req);
+    const title = String(body.title || "").trim().slice(0, 120);
+    if (!title) return sendJson(res, 400, { error: "An episode title is required" });
+
+    let mediaType, mediaUrl, durationSeconds = null, coverImage = null, sourceMomentId = null;
+
+    if (body.sourceMomentId) {
+      // Reuse an existing moment/loop/video the creator already owns -
+      // no re-encoding, just point the episode at the same media_url.
+      let source = (await db.select("mkt_moments", { id: "eq." + enc(body.sourceMomentId), select: "*" }))[0];
+      if (!source) source = (await db.select("mkt_loops", { id: "eq." + enc(body.sourceMomentId), select: "*" }))[0];
+      if (!source) return sendJson(res, 404, { error: "That video/moment/loop was not found" });
+      if (source.user_id !== me.id) return sendJson(res, 403, { error: "You can only turn your own videos/moments/loops into episodes" });
+      mediaType = source.media_type === "video" ? "video" : "audio";
+      mediaUrl = source.media_url;
+      sourceMomentId = source.id;
+      durationSeconds = source.trim_end_sec && source.trim_start_sec !== undefined ? source.trim_end_sec - source.trim_start_sec : null;
+    } else {
+      mediaType = body.mediaType === "video" ? "video" : "audio";
+      if (!body.media || !String(body.media).startsWith("data:")) {
+        return sendJson(res, 400, { error: "Audio or video file is required" });
+      }
+      const ext = mediaType === "video" ? ".mp4" : ".mp3";
+      try {
+        mediaUrl = await sbStorageUpload("media", "podcasts/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ext, body.media);
+      } catch (e) {
+        return sendJson(res, 500, { error: "Could not upload episode media" });
+      }
+      if (body.durationSeconds !== undefined) {
+        const d = Number(body.durationSeconds);
+        if (Number.isFinite(d) && d > 0) durationSeconds = d;
+      }
+    }
+    if (body.coverImage && String(body.coverImage).startsWith("data:")) {
+      try {
+        coverImage = await sbStorageUpload("media", "podcasts/covers/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", body.coverImage);
+      } catch (e) {
+        // Non-fatal - falls back to the channel's own cover client-side.
+      }
+    }
+    const episode = {
+      id: crypto.randomBytes(8).toString("hex"),
+      channel_id: channel.id,
+      title,
+      description: String(body.description || "").trim().slice(0, 1000),
+      media_type: mediaType,
+      media_url: mediaUrl,
+      source_moment_id: sourceMomentId,
+      cover_image: coverImage,
+      duration_seconds: durationSeconds,
+      created_at: Date.now(),
+      status: "published",
+      view_count: 0,
+      like_count: 0,
+    };
+    await db.insert("podcast_episodes", episode);
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_channels", p_id: channel.id, p_column: "episode_count", p_delta: 1 });
+    return sendJson(res, 201, podcastEpisodeOut(episode));
+  }
+
+  // GET /api/podcast-episodes/feed?sort=trending|new - cross-channel discovery
+  // feed for the Podcast Library's home tab.
+  if (method === "GET" && pathname === "/api/podcast-episodes/feed") {
+    const order = query.sort === "trending" ? "view_count.desc,created_at.desc" : "created_at.desc";
+    const rows = await db.select("podcast_episodes", { status: "eq.published", order, limit: "40", select: "*" });
+    const channelIds = [...new Set((rows || []).map((e) => e.channel_id))];
+    let channelMap = {};
+    if (channelIds.length) {
+      const channels = await db.select("podcast_channels", { id: "in.(" + channelIds.map(enc).join(",") + ")", select: "*" });
+      const enriched = await attachPodcastOwners(channels || []);
+      enriched.forEach((c) => (channelMap[c.id] = c));
+    }
+    return sendJson(
+      res,
+      200,
+      (rows || []).map((e) => ({ ...podcastEpisodeOut(e), channel: channelMap[e.channel_id] || null }))
+    );
+  }
+
+  // GET /api/podcast-episodes/:id - single episode detail
+  const podcastEpisodeMatch = pathname.match(/^\/api\/podcast-episodes\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && podcastEpisodeMatch) {
+    const rows = await db.select("podcast_episodes", { id: "eq." + enc(podcastEpisodeMatch[1]), select: "*" });
+    const episode = rows && rows[0];
+    if (!episode) return sendJson(res, 404, { error: "Not found" });
+    const me = await getAuthUser(req);
+    const [channelRows, myLike] = await Promise.all([
+      db.select("podcast_channels", { id: "eq." + enc(episode.channel_id), select: "*" }),
+      me ? db.select("podcast_episode_likes", { episode_id: "eq." + enc(episode.id), user_id: "eq." + enc(me.id), select: "id" }) : Promise.resolve([]),
+    ]);
+    const channel = (channelRows || [])[0];
+    const channelOut = channel ? (await attachPodcastOwners([channel]))[0] : null;
+    return sendJson(res, 200, {
+      ...podcastEpisodeOut(episode),
+      channel: channelOut,
+      likedByMe: !!(myLike && myLike[0]),
+    });
+  }
+
+  // DELETE /api/podcast-episodes/:id - owner only
+  if (method === "DELETE" && podcastEpisodeMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("podcast_episodes", { id: "eq." + enc(podcastEpisodeMatch[1]), select: "*" });
+    const episode = rows && rows[0];
+    if (!episode) return sendJson(res, 404, { error: "Not found" });
+    const channelRows = await db.select("podcast_channels", { id: "eq." + enc(episode.channel_id), select: "*" });
+    const channel = channelRows && channelRows[0];
+    if (!channel || channel.user_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    await db.remove("podcast_episodes", { id: "eq." + enc(episode.id) });
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_channels", p_id: channel.id, p_column: "episode_count", p_delta: -1 });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // POST /api/podcast-episodes/:id/view - plays count as views (like a
+  // moment/loop watch event, not deduplicated per-viewer - a replay is
+  // another view, same as YouTube/Spotify).
+  const podcastEpisodeViewMatch = pathname.match(/^\/api\/podcast-episodes\/([a-zA-Z0-9]+)\/view$/);
+  if (method === "POST" && podcastEpisodeViewMatch) {
+    const me = await getAuthUser(req);
+    const episodeId = podcastEpisodeViewMatch[1];
+    await db.insert("podcast_episode_views", {
+      episode_id: episodeId,
+      viewer_id: me ? me.id : null,
+      created_at: Date.now(),
+    });
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_episodes", p_id: episodeId, p_column: "view_count", p_delta: 1 });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // POST /api/podcast-episodes/:id/like - toggle like
+  const podcastEpisodeLikeMatch = pathname.match(/^\/api\/podcast-episodes\/([a-zA-Z0-9]+)\/like$/);
+  if (method === "POST" && podcastEpisodeLikeMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const episodeId = podcastEpisodeLikeMatch[1];
+    const existing = await db.select("podcast_episode_likes", { episode_id: "eq." + enc(episodeId), user_id: "eq." + enc(me.id), select: "id" });
+    if (existing && existing[0]) {
+      await db.remove("podcast_episode_likes", { id: "eq." + enc(existing[0].id) });
+      await db.rpc("podcast_increment_counter", { p_table: "podcast_episodes", p_id: episodeId, p_column: "like_count", p_delta: -1 });
+      return sendJson(res, 200, { liked: false });
+    }
+    await db.insert("podcast_episode_likes", {
+      id: crypto.randomBytes(8).toString("hex"),
+      episode_id: episodeId,
+      user_id: me.id,
+      created_at: Date.now(),
+    });
+    await db.rpc("podcast_increment_counter", { p_table: "podcast_episodes", p_id: episodeId, p_column: "like_count", p_delta: 1 });
+    return sendJson(res, 200, { liked: true });
+  }
+
+  // ---- DATING ----
+  // Separate, opt-in profile (Carlos's explicit choice: not merged into the
+  // main HieloIce profile, off by default). Hard 18+ enforced on every
+  // route below by recomputing from mkt_users.birthdate - never trusted
+  // from the client. Blocking reuses the existing generic
+  // mkt_user_blocks/isBlockedEitherWay infrastructure and reporting reuses
+  // the existing POST /api/reports (targetType "user") - no new
+  // block/report endpoints needed for Dating specifically. Messaging
+  // between matches reuses the existing mkt_messages system
+  // (#/messages/:id), which already supports photo/video attachments.
+
+  function datingProfileOut(p) {
+    return {
+      userId: p.user_id,
+      bio: p.bio || "",
+      photos: p.photos || [],
+      interests: p.interests || [],
+      gender: p.gender || "",
+      seeking: p.seeking || [],
+      active: !!p.active,
+      hasLocation: typeof p.lat === "number" && typeof p.lng === "number",
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+    };
+  }
+
+  // Haversine distance in km between two lat/lng points.
+  function haversineKm(lat1, lng1, lat2, lng2) {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // Carlos's explicit choice: only approximate distance is ever sent to the
+  // client - raw lat/lng of other users must never be exposed, and even
+  // this rounds down into coarse buckets rather than a precise number.
+  function approximateDistanceLabel(km) {
+    if (km < 1) return "<1 km";
+    if (km < 50) return Math.round(km) + " km";
+    return "50+ km";
+  }
+
+  // GET /api/dating/profile - my own Dating profile (or null if never set up)
+  if (method === "GET" && pathname === "/api/dating/profile") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("dating_profiles", { user_id: "eq." + enc(me.id), select: "*" });
+    return sendJson(res, 200, {
+      profile: rows && rows[0] ? datingProfileOut(rows[0]) : null,
+      isAdult: isAdultUser(me),
+      needsBirthdate: !me.birthdate,
+    });
+  }
+
+  // PUT /api/dating/profile - create/update/activate my Dating profile.
+  // Body: { bio, photos: [dataUrl|url,...], interests: [], gender, seeking: [], lat, lng, active }
+  if (method === "PUT" && pathname === "/api/dating/profile") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!isAdultUser(me)) {
+      return sendJson(res, 403, { error: "You must confirm you are 18+ before using Dating.", needsBirthdate: !me.birthdate });
+    }
+    const body = await readBody(req);
+    const existingRows = await db.select("dating_profiles", { user_id: "eq." + enc(me.id), select: "*" });
+    const existing = existingRows && existingRows[0];
+
+    // Photos: keep already-hosted URLs as-is, upload new data: URLs to
+    // Storage - same incremental-photo pattern used elsewhere in the app.
+    let photos = existing ? existing.photos || [] : [];
+    if (Array.isArray(body.photos)) {
+      const uploaded = [];
+      for (const p of body.photos.slice(0, 6)) {
+        if (typeof p !== "string") continue;
+        if (p.startsWith("data:")) {
+          try {
+            uploaded.push(await sbStorageUpload("media", "dating/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", p));
+          } catch (e) {
+            // skip a photo that fails to upload rather than failing the whole save
+          }
+        } else {
+          uploaded.push(p.slice(0, 1000));
+        }
+      }
+      photos = uploaded;
+    }
+
+    const now = Date.now();
+    const patch = {
+      bio: String(body.bio || "").trim().slice(0, 500),
+      photos,
+      interests: Array.isArray(body.interests)
+        ? body.interests.map((s) => String(s).trim().slice(0, 40)).filter(Boolean).slice(0, 15)
+        : existing
+          ? existing.interests
+          : [],
+      gender: String(body.gender || (existing ? existing.gender : "") || "").slice(0, 30),
+      seeking: Array.isArray(body.seeking) ? body.seeking.map((s) => String(s).slice(0, 30)).slice(0, 5) : existing ? existing.seeking : [],
+      active: body.active !== undefined ? !!body.active : existing ? existing.active : true,
+      updated_at: now,
+    };
+    if (typeof body.lat === "number" && typeof body.lng === "number" && Number.isFinite(body.lat) && Number.isFinite(body.lng)) {
+      patch.lat = body.lat;
+      patch.lng = body.lng;
+    }
+
+    let saved;
+    if (existing) {
+      const updated = await db.update("dating_profiles", { user_id: "eq." + enc(me.id) }, patch);
+      saved = updated[0];
+    } else {
+      saved = { user_id: me.id, created_at: now, lat: null, lng: null, ...patch };
+      await db.insert("dating_profiles", saved);
+    }
+    return sendJson(res, 200, { profile: datingProfileOut(saved) });
+  }
+
+  // POST /api/dating/deactivate - turn Dating off (hide from discovery),
+  // keeps existing matches/data intact so re-activating restores everything.
+  if (method === "POST" && pathname === "/api/dating/deactivate") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    await db.update("dating_profiles", { user_id: "eq." + enc(me.id) }, { active: false, updated_at: Date.now() });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // GET /api/dating/discover - candidate cards to swipe on, ranked by
+  // shared interests. Excludes: myself, anyone already swiped, blocked
+  // (either direction), or already matched. Distance is always the coarse
+  // approximate label, never raw coordinates.
+  if (method === "GET" && pathname === "/api/dating/discover") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!isAdultUser(me)) return sendJson(res, 403, { error: "You must confirm you are 18+ before using Dating." });
+
+    const myRows = await db.select("dating_profiles", { user_id: "eq." + enc(me.id), select: "*" });
+    const myProfile = myRows && myRows[0];
+    if (!myProfile || !myProfile.active) return sendJson(res, 200, []);
+
+    const [swipedRows, blockedRows, matchedRows] = await Promise.all([
+      db.select("dating_swipes", { swiper_id: "eq." + enc(me.id), select: "target_id" }),
+      db.select("mkt_user_blocks", { or: "(blocker_id.eq." + enc(me.id) + ",blocked_id.eq." + enc(me.id) + ")", select: "blocker_id,blocked_id" }),
+      db.select("dating_matches", { or: "(user_a_id.eq." + enc(me.id) + ",user_b_id.eq." + enc(me.id) + ")", unmatched_at: "is.null", select: "user_a_id,user_b_id" }),
+    ]);
+    const excludeIds = new Set([me.id]);
+    (swipedRows || []).forEach((r) => excludeIds.add(r.target_id));
+    (blockedRows || []).forEach((r) => {
+      excludeIds.add(r.blocker_id);
+      excludeIds.add(r.blocked_id);
+    });
+    (matchedRows || []).forEach((r) => {
+      excludeIds.add(r.user_a_id);
+      excludeIds.add(r.user_b_id);
+    });
+
+    const candidateRows = await db.select("dating_profiles", { active: "eq.true", limit: "200", select: "*" });
+    const candidates = (candidateRows || []).filter((c) => !excludeIds.has(c.user_id));
+
+    const userIds = candidates.map((c) => c.user_id);
+    let userMap = {};
+    if (userIds.length) {
+      const users = await db.select("mkt_users", { id: "in.(" + userIds.map(enc).join(",") + ")", select: "id,name,photo,birthdate" });
+      (users || []).forEach((u) => (userMap[u.id] = u));
+    }
+
+    const myInterests = new Set((myProfile.interests || []).map((s) => String(s).toLowerCase()));
+    const scored = candidates
+      .map((c) => {
+        const u = userMap[c.user_id];
+        // Re-verify 18+ on the candidate too - never rely on a stored
+        // profile alone for this guarantee.
+        if (!u || !u.birthdate || ageFromBirthdateMs(u.birthdate, Date.now()) < MIN_AGE_YEARS) return null;
+        let distanceLabel = null;
+        if (typeof myProfile.lat === "number" && typeof myProfile.lng === "number" && typeof c.lat === "number" && typeof c.lng === "number") {
+          distanceLabel = approximateDistanceLabel(haversineKm(myProfile.lat, myProfile.lng, c.lat, c.lng));
+        }
+        const sharedInterestCount = (c.interests || []).filter((i) => myInterests.has(String(i).toLowerCase())).length;
+        return {
+          userId: c.user_id,
+          name: u.name,
+          bio: c.bio || "",
+          photos: c.photos && c.photos.length ? c.photos : u.photo ? [u.photo] : [],
+          interests: c.interests || [],
+          distance: distanceLabel,
+          sharedInterestCount,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.sharedInterestCount - a.sharedInterestCount);
+
+    return sendJson(res, 200, scored.slice(0, 30));
+  }
+
+  // POST /api/dating/swipe { targetId, direction: 'like'|'pass' }
+  // Creates a mutual match (and notification-worthy event) when both sides
+  // have liked each other.
+  if (method === "POST" && pathname === "/api/dating/swipe") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!isAdultUser(me)) return sendJson(res, 403, { error: "You must confirm you are 18+ before using Dating." });
+    const body = await readBody(req);
+    const targetId = String(body.targetId || "");
+    const direction = body.direction;
+    if (!targetId || !["like", "pass"].includes(direction)) return sendJson(res, 400, { error: "Invalid swipe" });
+    if (targetId === me.id) return sendJson(res, 400, { error: "Invalid target" });
+    if (await isBlockedEitherWay(me.id, targetId)) return sendJson(res, 403, { error: "Not available" });
+
+    const existing = await db.select("dating_swipes", { swiper_id: "eq." + enc(me.id), target_id: "eq." + enc(targetId), select: "id" });
+    if (existing && existing[0]) {
+      await db.update("dating_swipes", { id: "eq." + enc(existing[0].id) }, { direction, created_at: Date.now() });
+    } else {
+      await db.insert("dating_swipes", { id: crypto.randomBytes(8).toString("hex"), swiper_id: me.id, target_id: targetId, direction, created_at: Date.now() });
+    }
+
+    let matched = false;
+    let matchId = null;
+    if (direction === "like") {
+      const theirSwipe = await db.select("dating_swipes", { swiper_id: "eq." + enc(targetId), target_id: "eq." + enc(me.id), direction: "eq.like", select: "id" });
+      if (theirSwipe && theirSwipe[0]) {
+        const [a, b] = [me.id, targetId].sort();
+        const already = await db.select("dating_matches", { user_a_id: "eq." + enc(a), user_b_id: "eq." + enc(b), select: "id,unmatched_at" });
+        if (already && already[0] && !already[0].unmatched_at) {
+          matched = true;
+          matchId = already[0].id;
+        } else if (already && already[0]) {
+          // Re-matching after a prior unmatch: revive the same row.
+          await db.update("dating_matches", { id: "eq." + enc(already[0].id) }, { unmatched_at: null, unmatched_by: null, created_at: Date.now() });
+          matched = true;
+          matchId = already[0].id;
+        } else {
+          const match = { id: crypto.randomBytes(8).toString("hex"), user_a_id: a, user_b_id: b, created_at: Date.now(), unmatched_at: null, unmatched_by: null };
+          await db.insert("dating_matches", match);
+          matched = true;
+          matchId = match.id;
+        }
+      }
+    }
+    return sendJson(res, 200, { matched, matchId });
+  }
+
+  // GET /api/dating/matches - my active (not-unmatched) matches, with the
+  // other person's basic info, newest first.
+  if (method === "GET" && pathname === "/api/dating/matches") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("dating_matches", {
+      or: "(user_a_id.eq." + enc(me.id) + ",user_b_id.eq." + enc(me.id) + ")",
+      unmatched_at: "is.null",
+      order: "created_at.desc",
+      select: "*",
+    });
+    const otherIds = (rows || []).map((m) => (m.user_a_id === me.id ? m.user_b_id : m.user_a_id));
+    let userMap = {};
+    if (otherIds.length) {
+      const users = await db.select("mkt_users", { id: "in.(" + otherIds.map(enc).join(",") + ")", select: "id,name,photo" });
+      (users || []).forEach((u) => (userMap[u.id] = u));
+    }
+    const out = (rows || [])
+      .map((m) => {
+        const otherId = m.user_a_id === me.id ? m.user_b_id : m.user_a_id;
+        const u = userMap[otherId];
+        if (!u) return null;
+        return { matchId: m.id, userId: otherId, name: u.name, photo: u.photo, matchedAt: m.created_at };
+      })
+      .filter(Boolean);
+    return sendJson(res, 200, out);
+  }
+
+  // POST /api/dating/matches/:id/unmatch - either side can end a match at
+  // any time; this does not block or report the other person, just ends
+  // the connection (blocking/reporting are separate, existing actions).
+  const datingUnmatchMatch = pathname.match(/^\/api\/dating\/matches\/([a-zA-Z0-9]+)\/unmatch$/);
+  if (method === "POST" && datingUnmatchMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("dating_matches", { id: "eq." + enc(datingUnmatchMatch[1]), select: "*" });
+    const match = rows && rows[0];
+    if (!match) return sendJson(res, 404, { error: "Not found" });
+    if (match.user_a_id !== me.id && match.user_b_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    await db.update("dating_matches", { id: "eq." + enc(match.id) }, { unmatched_at: Date.now(), unmatched_by: me.id });
+    return sendJson(res, 200, { ok: true });
   }
 
   // ---- ADMIN (role === 'admin' only, or the legacy OWNER_EMAIL account) ----
