@@ -42,6 +42,13 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 // the Anthropic API. Both are no-ops (return a clear "unavailable" error)
 // if this key isn't configured, rather than crashing the server.
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+// Task #243 - Jamendo (jamendo.com) is a catalog of real, properly-licensed
+// royalty-free/Creative-Commons music that independent creators can legally
+// use, unlike a random third-party/commercial track. Free client_id, get one
+// at https://devportal.jamendo.com (sign up -> "Create a new application").
+// Until this is set, /api/music/search just answers { configured: false }
+// and the camera falls back to its own generated sound presets (task #203).
+const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID || "";
 if (!ANTHROPIC_API_KEY) {
   console.error("Missing ANTHROPIC_API_KEY - AI photo analysis and AI assistant disabled.");
 }
@@ -2592,11 +2599,90 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { ok: true });
   }
 
+  // ---- MUSIC (Jamendo royalty-free library, task #243) ----
+  // Proxies Jamendo's public catalog search so the camera can offer real,
+  // properly-licensed background music instead of only the generated tones
+  // from task #203. We proxy (rather than call Jamendo directly from the
+  // browser) so the client_id never has to live in public JS. Every track
+  // Jamendo returns here is Creative-Commons licensed for reuse; the client
+  // stores name/artist/licenseUrl and shows a credit line automatically
+  // (see wizardApplyJamendoTrack() in app.js) so attribution requirements
+  // are met without the creator having to think about it.
+  if (method === "GET" && pathname === "/api/music/search") {
+    if (!JAMENDO_CLIENT_ID) return sendJson(res, 200, { configured: false, tracks: [] });
+    const q = String(query.q || "").trim().slice(0, 80);
+    // Task: "que se despliegue una lista de toda la musica royalty free...
+    // para que la gente sepa" - the browsable #/music library page (see
+    // renderMusicLibrary() in app.js) passes a genre tag here so people can
+    // filter by style, not just free-text search. Jamendo's own vocabulary
+    // (its /tracks endpoint takes any of these directly as tags=).
+    const tag = String(query.tag || "").trim().slice(0, 40);
+    const limit = Math.min(60, Math.max(1, Number(query.limit) || 24));
+    const params = [
+      "client_id=" + encodeURIComponent(JAMENDO_CLIENT_ID),
+      "format=json",
+      "limit=" + limit,
+      "audioformat=mp32",
+      "include=musicinfo",
+      q ? "search=" + encodeURIComponent(q) : "boost=popularity_total",
+    ];
+    if (tag) params.push("tags=" + encodeURIComponent(tag));
+    try {
+      const data = await httpsRequestJson("GET", "https://api.jamendo.com/v3.0/tracks/?" + params.join("&"));
+      // Some Jamendo results come back with an empty/missing `audio` stream
+      // URL (licensing/CDN gaps on their end, not something we control) -
+      // those looked selectable in the library but produced no sound at all
+      // when played. Filtering them out here means every track the browser
+      // ever sees is guaranteed to actually have a working preview URL.
+      const tracks = (data.results || [])
+        .filter((t) => typeof t.audio === "string" && t.audio.trim().length > 0)
+        .map((t) => ({
+          id: t.id,
+          name: t.name,
+          artist: t.artist_name,
+          durationSec: t.duration,
+          audioUrl: t.audio,
+          image: t.image || t.album_image || null,
+          licenseUrl: t.license_ccurl || null,
+          genres: (t.musicinfo && t.musicinfo.tags && t.musicinfo.tags.genres) || [],
+        }));
+      return sendJson(res, 200, { configured: true, tracks });
+    } catch (e) {
+      return sendJson(res, 200, { configured: true, tracks: [] });
+    }
+  }
+
   // ---- USER PHOTOS (gallery) ----
 
   function photoOut(p) {
     const { user_id, created_at, ...rest } = p;
     return { ...rest, userId: user_id, createdAt: created_at };
+  }
+
+  // Task: "que se puedan ver las fotos de perfil y que se les pueda dar
+  // like y comentar" - mirrors attachMomentEngagement() above, one batched
+  // query per list instead of N+1 per-photo lookups.
+  async function attachPhotoEngagement(photoList, meId) {
+    if (!photoList || !photoList.length) return photoList;
+    const idsIn = "in.(" + photoList.map((p) => enc(p.id)).join(",") + ")";
+    const [likeRows, commentRows] = await Promise.all([
+      db.select("mkt_photo_likes", { photo_id: idsIn, select: "photo_id,user_id" }),
+      db.select("mkt_photo_comments", { photo_id: idsIn, select: "photo_id" }),
+    ]);
+    const likeCounts = {};
+    const likedSet = new Set();
+    for (const l of likeRows) {
+      likeCounts[l.photo_id] = (likeCounts[l.photo_id] || 0) + 1;
+      if (meId && l.user_id === meId) likedSet.add(l.photo_id);
+    }
+    const commentCounts = {};
+    for (const c of commentRows) commentCounts[c.photo_id] = (commentCounts[c.photo_id] || 0) + 1;
+    for (const p of photoList) {
+      p.likesCount = likeCounts[p.id] || 0;
+      p.likedByMe = likedSet.has(p.id);
+      p.commentsCount = commentCounts[p.id] || 0;
+    }
+    return photoList;
   }
 
   if (method === "POST" && pathname === "/api/users/me/photos") {
@@ -2625,12 +2711,15 @@ async function handleApi(req, res, pathname, query) {
 
   const userPhotosMatch = pathname.match(/^\/api\/users\/([a-zA-Z0-9]+)\/photos$/);
   if (method === "GET" && userPhotosMatch) {
+    const meForPhotos = await getAuthUser(req).catch(() => null);
     const photos = await db.select("mkt_user_photos", {
       user_id: "eq." + enc(userPhotosMatch[1]),
       order: "created_at.desc",
       select: "*",
     });
-    return sendJson(res, 200, photos.map(photoOut));
+    const out = photos.map(photoOut);
+    await attachPhotoEngagement(out, meForPhotos ? meForPhotos.id : null);
+    return sendJson(res, 200, out);
   }
 
   const photoMatch = pathname.match(/^\/api\/photos\/([a-zA-Z0-9]+)$/);
@@ -2642,7 +2731,138 @@ async function handleApi(req, res, pathname, query) {
     if (!p) return sendJson(res, 404, { error: "Photo not found" });
     if (p.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this photo" });
     await db.remove("mkt_user_photos", { id: "eq." + enc(p.id) });
+    await db.remove("mkt_photo_likes", { photo_id: "eq." + enc(p.id) });
+    await db.remove("mkt_photo_comments", { photo_id: "eq." + enc(p.id) });
     return sendJson(res, 200, { ok: true });
+  }
+
+  // Like toggle on a profile gallery photo - mirrors POST/DELETE
+  // /api/moments/:id/like above, separate table since photos aren't moments.
+  const photoLikeMatch = pathname.match(/^\/api\/photos\/([a-zA-Z0-9]+)\/like$/);
+  if (method === "POST" && photoLikeMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const existing = await db.select("mkt_photo_likes", {
+      photo_id: "eq." + enc(photoLikeMatch[1]),
+      user_id: "eq." + enc(me.id),
+      select: "id",
+    });
+    if (!existing || !existing[0]) {
+      await db.insert("mkt_photo_likes", {
+        id: crypto.randomBytes(8).toString("hex"),
+        photo_id: photoLikeMatch[1],
+        user_id: me.id,
+        created_at: Date.now(),
+      });
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+  if (method === "DELETE" && photoLikeMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    await db.remove("mkt_photo_likes", { photo_id: "eq." + enc(photoLikeMatch[1]), user_id: "eq." + enc(me.id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Public comments on a profile gallery photo - mirrors the moment comments
+  // block above (flat list + one level of replies via parent_comment_id).
+  const photoCommentsMatch = pathname.match(/^\/api\/photos\/([a-zA-Z0-9]+)\/comments$/);
+  if (method === "GET" && photoCommentsMatch) {
+    const rows = await db.select("mkt_photo_comments", {
+      photo_id: "eq." + enc(photoCommentsMatch[1]),
+      order: "created_at.asc",
+      select: "*",
+    });
+    if (!rows.length) return sendJson(res, 200, []);
+    const authorIds = [...new Set(rows.map((r) => r.user_id))];
+    const authors = await db.select("mkt_users", {
+      id: "in.(" + authorIds.map(enc).join(",") + ")",
+      select: "id,name,photo",
+    });
+    const out = rows.map((r) => {
+      const a = authors.find((x) => x.id === r.user_id);
+      return {
+        id: r.id,
+        photoId: r.photo_id,
+        userId: r.user_id,
+        userName: a ? a.name : "Unknown",
+        userPhoto: a ? a.photo : null,
+        parentCommentId: r.parent_comment_id || null,
+        text: r.text,
+        createdAt: r.created_at,
+      };
+    });
+    return sendJson(res, 200, out);
+  }
+  if (method === "POST" && photoCommentsMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const text = String(body.text || "").trim().slice(0, 500);
+    if (!text) return sendJson(res, 400, { error: "Comment text is required" });
+    let parentCommentId = null;
+    if (body.parentCommentId) {
+      const parentRows = await db.select("mkt_photo_comments", {
+        id: "eq." + enc(body.parentCommentId),
+        photo_id: "eq." + enc(photoCommentsMatch[1]),
+        select: "id",
+      });
+      if (parentRows && parentRows[0]) parentCommentId = body.parentCommentId;
+    }
+    const comment = {
+      id: crypto.randomBytes(8).toString("hex"),
+      photo_id: photoCommentsMatch[1],
+      user_id: me.id,
+      parent_comment_id: parentCommentId,
+      text,
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_photo_comments", comment);
+    return sendJson(res, 201, {
+      id: comment.id,
+      photoId: comment.photo_id,
+      userId: me.id,
+      userName: me.name,
+      userPhoto: me.photo || null,
+      parentCommentId: comment.parent_comment_id,
+      text: comment.text,
+      createdAt: comment.created_at,
+    });
+  }
+
+  const photoCommentDeleteMatch = pathname.match(/^\/api\/photos\/([a-zA-Z0-9]+)\/comments\/([a-zA-Z0-9]+)$/);
+  if (method === "DELETE" && photoCommentDeleteMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_photo_comments", { id: "eq." + enc(photoCommentDeleteMatch[2]), select: "user_id" });
+    const c = rows && rows[0];
+    if (!c) return sendJson(res, 404, { error: "Comment not found" });
+    if (c.user_id !== me.id) return sendJson(res, 403, { error: "You do not own this comment" });
+    await db.remove("mkt_photo_comments", { id: "eq." + enc(photoCommentDeleteMatch[2]) });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Lightweight engagement lookup for a single photo id. Unlike
+  // attachPhotoEngagement() above (batched for a list of real mkt_user_photos
+  // rows), this works for ANY id string - including synthetic ones like
+  // "profile-<userId>" or "cover-<userId>" that the frontend uses to let
+  // people like/comment on someone's profile picture without that picture
+  // needing its own row in mkt_user_photos. mkt_photo_likes/mkt_photo_comments
+  // never enforce a foreign key back to mkt_user_photos (see the other photo
+  // routes above), so this is safe with zero schema changes.
+  const photoEngagementMatch = pathname.match(/^\/api\/photos\/([a-zA-Z0-9-]+)\/engagement$/);
+  if (method === "GET" && photoEngagementMatch) {
+    const meForEngagement = await getAuthUser(req).catch(() => null);
+    const id = photoEngagementMatch[1];
+    const [likeRows, commentRows] = await Promise.all([
+      db.select("mkt_photo_likes", { photo_id: "eq." + enc(id), select: "user_id" }),
+      db.select("mkt_photo_comments", { photo_id: "eq." + enc(id), select: "id" }),
+    ]);
+    return sendJson(res, 200, {
+      likesCount: likeRows.length,
+      likedByMe: !!(meForEngagement && likeRows.some((l) => l.user_id === meForEngagement.id)),
+      commentsCount: commentRows.length,
+    });
   }
 
   // ---- FRIENDS ----
@@ -3370,6 +3590,27 @@ async function handleApi(req, res, pathname, query) {
       .slice(0, 20)
       .map((ov) => {
         if (!ov || typeof ov !== "object") return null;
+        // Task: Moment editor voice-over (a mic-only clip attached alongside
+        // the video, played back in sync client-side - see
+        // wireMomentVoiceoverSync() in app.js) and tagged products (shown as
+        // tappable pills, not baked into the video). Both ride in this same
+        // flexible overlays array rather than needing their own DB columns,
+        // but need their own validation - the generic text/sticker branch
+        // below would truncate a voice-over's data URL to 60 characters and
+        // render the garbled remainder as visible on-screen text.
+        if (ov.type === "voiceover") {
+          const value = String(ov.value || "");
+          if (!value.startsWith("data:audio/")) return null;
+          // ~8MB of base64 is a generous cap for a short voice note, not a
+          // way to smuggle large arbitrary payloads through this field.
+          if (value.length > 8 * 1024 * 1024) return null;
+          return { type: "voiceover", value };
+        }
+        if (ov.type === "product") {
+          const productId = String(ov.productId || "").slice(0, 64);
+          if (!productId) return null;
+          return { type: "product", productId, value: String(ov.value || "").slice(0, 120) };
+        }
         const value = String(ov.value || "").slice(0, 60);
         if (!value) return null;
         const type = ov.type === "sticker" ? "sticker" : "text";
@@ -3384,6 +3625,10 @@ async function handleApi(req, res, pathname, query) {
           yPct: Number.isFinite(yPct) ? Math.max(0, Math.min(100, yPct)) : 50,
         };
         if (type === "text") entry.color = typeof ov.color === "string" ? ov.color.slice(0, 20) : "#FFD84D";
+        if (ov.caption) {
+          entry.caption = true;
+          entry.captionStyle = typeof ov.captionStyle === "string" ? ov.captionStyle.slice(0, 20) : "classic";
+        }
         return entry;
       })
       .filter(Boolean);
