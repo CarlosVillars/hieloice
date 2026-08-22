@@ -737,6 +737,7 @@ async function router() {
     if (parts[0] === "book-club") return renderBookClubHome();
     if (parts[0] === "publish-book" && parts[1]) return renderPublishBookEditor(parts[1]);
     if (parts[0] === "publish-book") return renderPublishBookHome();
+    if (parts[0] === "music") return renderMusicLibrary(query);
     if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
@@ -1216,13 +1217,53 @@ function buildHomeFeedItems(groups) {
 // to render as a separate layer for them.
 function renderMediaOverlayLayer(overlays) {
   if (!overlays || !overlays.length) return "";
-  return `<div class="media-overlay-layer">${overlays
+  const textAndStickers = overlays.filter((ov) => ov.type === "text" || ov.type === "sticker");
+  const products = overlays.filter((ov) => ov.type === "product");
+  const voiceover = overlays.find((ov) => ov.type === "voiceover");
+  const itemsHtml = textAndStickers
     .map((ov) => {
       const sizeClass = "size-" + (ov.size || "md");
       const colorStyle = ov.type === "text" ? `color:${ov.color || "#FFD84D"};` : "";
-      return `<div class="media-overlay-item ${ov.type === "sticker" ? "sticker" : "text"} ${sizeClass}" style="left:${ov.xPct}%;top:${ov.yPct}%;${colorStyle}">${escapeHtml(ov.value || "")}</div>`;
+      const captionClass = ov.caption ? " media-overlay-caption media-overlay-caption-" + (ov.captionStyle || "classic") : "";
+      return `<div class="media-overlay-item ${ov.type === "sticker" ? "sticker" : "text"} ${sizeClass}${captionClass}" style="left:${ov.xPct}%;top:${ov.yPct}%;${colorStyle}">${escapeHtml(ov.value || "")}</div>`;
     })
-    .join("")}</div>`;
+    .join("");
+  // Task: tagged products (from the Moment editor's "Tag products" screen)
+  // show as a small row of tappable pills rather than a floating pin - no
+  // placement coordinates are collected in that screen, so a pin position
+  // would just be a guess.
+  const productsHtml = products.length
+    ? `<div class="media-overlay-products">${products
+        .map((p) => `<a class="media-overlay-product-pill" href="#/products/${encodeURIComponent(p.productId)}">&#127991;&#65039; ${escapeHtml(p.value || "")}</a>`)
+        .join("")}</div>`
+    : "";
+  // Voice-over: a hidden <audio> element, played in sync with the video by
+  // wireMomentVoiceoverSync() (called only where sound-on autoplay is
+  // expected, i.e. the full-screen moment viewer - not the muted/looping
+  // inline feed card, where autoplaying audio-with-sound would be jarring
+  // and browsers block it anyway).
+  const voiceoverHtml = voiceover ? `<audio class="media-overlay-voiceover" src="${voiceover.value}" preload="auto" loop></audio>` : "";
+  return `<div class="media-overlay-layer">${itemsHtml}${productsHtml}${voiceoverHtml}</div>`;
+}
+
+// Keeps a moment's voice-over <audio> element (see renderMediaOverlayLayer())
+// in rough sync with its <video> sibling: play/pause together, and re-seek
+// on manual scrubbing. Deliberately simple (no sample-accurate sync) - this
+// is a lightweight companion track, not a mixed-down audio master.
+function wireMomentVoiceoverSync(wrapEl) {
+  if (!wrapEl) return;
+  const video = wrapEl.querySelector("video");
+  const audio = wrapEl.querySelector(".media-overlay-voiceover");
+  if (!video || !audio) return;
+  audio.volume = 0.9;
+  video.addEventListener("play", () => {
+    try { audio.currentTime = video.currentTime; } catch (e) {}
+    audio.play().catch(() => {});
+  });
+  video.addEventListener("pause", () => audio.pause());
+  video.addEventListener("seeked", () => {
+    try { audio.currentTime = video.currentTime; } catch (e) {}
+  });
 }
 
 function feedMomentCardHtml(m) {
@@ -3998,6 +4039,31 @@ function renderPhotosGalleryTab(photos, isMe) {
   });
 }
 
+// ---------------- Simple image lightbox (enlarge only, no like/comment) ----------------
+// Used for the profile cover photo - unlike the profile picture, a cover
+// photo isn't something people are expected to like/comment on individually,
+// just view enlarged.
+function openImageLightboxSimple(url) {
+  if (!url) return;
+  const overlay = document.createElement("div");
+  overlay.className = "photo-lightbox-overlay simple-image-lightbox-overlay";
+  overlay.innerHTML = `
+    <div class="photo-lightbox-backdrop"></div>
+    <div class="photo-lightbox-panel simple-image-lightbox-panel">
+      <button class="photo-lightbox-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      <div class="photo-lightbox-image-wrap"><img class="photo-lightbox-image" src="${url}" /></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.body.style.overflow = "hidden";
+  function close() {
+    overlay.remove();
+    document.body.style.overflow = "";
+  }
+  overlay.querySelector(".photo-lightbox-backdrop").addEventListener("click", close);
+  overlay.querySelector(".photo-lightbox-close").addEventListener("click", close);
+}
+
 // ---------------- Photo lightbox: view full-size, like, comment ----------------
 // Mirrors the Moments comments-sheet pattern above (openMomentComments/
 // drawMomentComments) but for a single profile-gallery photo, whose engagement
@@ -4715,6 +4781,7 @@ function drawMomentViewer() {
     </div>
   `;
 
+  wireMomentVoiceoverSync(overlay.querySelector(".moment-viewer-media-wrap"));
   document.getElementById("moment-viewer-close").addEventListener("click", closeMomentsViewer);
   document.getElementById("moment-viewer-prev").addEventListener("click", () => stepMomentViewer(-1));
   document.getElementById("moment-viewer-next").addEventListener("click", () => stepMomentViewer(1));
@@ -5679,6 +5746,31 @@ const WIZARD_TEXT_COLORS = ["#FFFFFF", "#000000", "#FFD84D", "#FF3B30", "#34C759
 const WIZARD_OVERLAY_SIZE_STEPS = ["sm", "md", "lg"];
 const WIZARD_OVERLAY_SIZE_SCALE = { sm: 0.7, md: 1, lg: 1.4 };
 
+// Task: post-capture "Moment editor" toolbar (Audio / Text / Voice / Captions
+// / Stickers). Caption presets are just a styling flavor of the same "text"
+// overlay type the wizard already renders/bakes/drags (see
+// renderWizardOverlays()/bakeWizardOverlays()) - they only add a `caption:
+// true` + `captionStyle` flag so they can be told apart from free-floating
+// text and removed as a group. No new asset types, no schema changes.
+const WIZARD_CAPTION_STYLES = ["classic", "bold", "neon", "minimal"];
+
+// Mood/keyword search for the royalty-free (Jamendo) audio library. Jamendo's
+// own tag vocabulary is English, so a short bilingual map turns common
+// Spanish mood words into a search term that actually matches real tracks -
+// purely a client-side query hint, not a licensing/legal claim of any kind.
+const WIZARD_MOOD_CHIPS = [
+  { key: "happy", es: "Felicidad", en: "Happy", q: "happy" },
+  { key: "sad", es: "Melancolía", en: "Melancholy", q: "melancholic sad" },
+  { key: "energetic", es: "Energía", en: "Energetic", q: "energetic" },
+  { key: "calm", es: "Calma", en: "Calm", q: "calm relax" },
+  { key: "stress", es: "Estrés", en: "Tense", q: "tense dramatic" },
+  { key: "action", es: "Acción", en: "Action", q: "action epic" },
+  { key: "romance", es: "Romance", en: "Romantic", q: "romantic love" },
+  { key: "party", es: "Fiesta", en: "Party", q: "party dance" },
+  { key: "motivation", es: "Motivación", en: "Motivational", q: "motivational uplifting" },
+  { key: "nostalgia", es: "Nostalgia", en: "Nostalgic", q: "nostalgic" },
+];
+
 // Task #203 - procedurally-generated (Web Audio API oscillators, not
 // licensed/recorded audio - see playWizardSoundPreset()) background sound
 // presets offered from the create-wizard's "Add sound" pill.
@@ -5794,6 +5886,18 @@ function openCreateWizard(target) {
     // every time the user steps back and forward again.
     titleDraft: "", captionDraft: "", hashtagsDraft: "",
     linkedProductId: null, myProducts: null, finalMedia: null,
+    // Task: post-capture Moment editor overhaul (Audio/Text/Voice/Captions/
+    // Stickers toolbar, mood palette, song-segment picker, cover editor,
+    // location/AI-label/cross-post, and product tagging). All of this rides
+    // on top of the existing step machine (see createWizard.step above) via
+    // string sub-steps ("2b" customize, "3b" cover editor, "3c" tag products)
+    // rather than new integers, so back/forward through steps 1-4 keeps
+    // working exactly as before.
+    voiceoverDataUrl: null, voiceoverRecording: false,
+    songStartSec: 0,
+    coverImage: null, coverSource: "auto",
+    locationDraft: "", aiLabel: false, alsoPostLoop: false,
+    taggedProducts: [], productSearchResults: null, savedProductsCache: null, purchasedProductsCache: null,
   };
   const overlay = document.createElement("div");
   overlay.id = "create-wizard-overlay";
@@ -6170,6 +6274,768 @@ function wizardRenderJamendoResults(panel, tracks, configured) {
   });
 }
 
+// ---------------- Moment editor: Audio library (mood/keyword search) ----------------
+// Opened from the post-capture editor's "Audio" tool (step 2 toolbar) -
+// distinct from wizardOpenSoundPicker() above, which lives inside the
+// full-screen live-camera step and mixes a preset/track into a *live
+// recording*. This one lets you browse/search the same Jamendo catalog by
+// mood keyword on an already-captured or uploaded clip, then hands off to
+// the customize screen (color palette + song segment) via the "->" arrow.
+let wizardAudioLibraryState = { q: "", mood: "", tracks: [], loading: true, configured: true };
+
+function wizardCloseAudioLibrary() {
+  const panel = document.getElementById("wizard-audio-library-panel");
+  if (panel) panel.remove();
+}
+
+async function wizardAudioLibrarySearch() {
+  wizardAudioLibraryState.loading = true;
+  wizardDrawAudioLibrary();
+  const params = [];
+  if (wizardAudioLibraryState.q) params.push("q=" + encodeURIComponent(wizardAudioLibraryState.q));
+  params.push("limit=30");
+  try {
+    const data = await api("/api/music/search" + (params.length ? "?" + params.join("&") : ""));
+    wizardAudioLibraryState.tracks = data.tracks || [];
+    wizardAudioLibraryState.configured = data.configured !== false;
+  } catch (e) {
+    wizardAudioLibraryState.tracks = [];
+  }
+  wizardAudioLibraryState.loading = false;
+  wizardDrawAudioLibrary();
+}
+
+function wizardOpenAudioLibrary() {
+  wizardCloseAudioLibrary();
+  const host = document.querySelector(".wizard-box");
+  if (!host) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-audio-library-panel";
+  panel.id = "wizard-audio-library-panel";
+  host.appendChild(panel);
+  wizardAudioLibraryState = { q: "", mood: "", tracks: [], loading: true, configured: true };
+  wizardDrawAudioLibrary();
+  wizardAudioLibrarySearch();
+}
+
+function wizardAudioLibraryIsPlaying(track) {
+  return !!(track && wizardJamendoPreviewAudio && !wizardJamendoPreviewAudio.paused);
+}
+
+function wizardDrawAudioLibrary() {
+  const panel = document.getElementById("wizard-audio-library-panel");
+  if (!panel) return;
+  const { q, mood, tracks, loading, configured } = wizardAudioLibraryState;
+  const moodChips = WIZARD_MOOD_CHIPS.map(
+    (m) => `<button type="button" class="wizard-mood-chip ${mood === m.key ? "active" : ""}" data-mood="${m.key}">${I18N.lang === "es" ? m.es : m.en}</button>`
+  ).join("");
+  let bodyHtml;
+  if (!configured) {
+    bodyHtml = `<p class="wizard-jamendo-empty">${I18N.t("camera.soundPicker.jamendoNotConfigured")}</p>`;
+  } else if (loading) {
+    bodyHtml = `<p class="wizard-jamendo-empty">${I18N.t("common.loading")}</p>`;
+  } else if (!tracks.length) {
+    bodyHtml = `<p class="wizard-jamendo-empty">${I18N.t("camera.soundPicker.jamendoNoResults")}</p>`;
+  } else {
+    bodyHtml = `<div class="wizard-audio-library-grid">${tracks
+      .map(
+        (t) => `<button type="button" class="wizard-jamendo-track-btn ${createWizard.jamendoTrack && createWizard.jamendoTrack.id === t.id ? "active" : ""}" data-track-id="${t.id}">
+          ${t.image ? `<img class="wizard-jamendo-track-art" src="${t.image}" />` : `<span class="wizard-jamendo-track-art wizard-jamendo-track-art-empty">&#9835;</span>`}
+          <span class="wizard-jamendo-track-info"><span class="wizard-jamendo-track-name">${escapeHtml(t.name)}</span><span class="wizard-jamendo-track-artist">${escapeHtml(t.artist)}</span></span>
+        </button>`
+      )
+      .join("")}</div>`;
+  }
+  const selected = createWizard.jamendoTrack;
+  panel.innerHTML = `
+    <div class="wizard-audio-library-head">
+      <p class="wizard-audio-library-title">${I18N.t("create.audioLibraryTitle")}</p>
+      <button type="button" class="wizard-audio-library-close" id="wizard-audio-library-close" aria-label="${I18N.t("common.close")}">&times;</button>
+    </div>
+    <form class="wizard-jamendo-search-row" id="wizard-audio-search-form">
+      <input type="text" id="wizard-audio-search-input" value="${escapeHtml(q)}" placeholder="${I18N.t("create.audioSearchByKeywords")}" />
+      <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+    </form>
+    <div class="wizard-mood-chip-row">${moodChips}</div>
+    <div class="wizard-audio-library-body">${bodyHtml}</div>
+    ${
+      selected
+        ? `<div class="wizard-audio-selected-bar">
+            <button type="button" class="wizard-audio-selected-play" id="wizard-audio-selected-play" aria-label="${I18N.t("music.play")}">${wizardAudioLibraryIsPlaying(selected) ? "&#9724;&#65039;" : "&#9654;&#65039;"}</button>
+            <span class="wizard-audio-selected-info">
+              <span class="wizard-audio-selected-name">${escapeHtml(selected.name)}</span>
+              <span class="wizard-audio-selected-artist">${escapeHtml(selected.artist)}</span>
+            </span>
+            <button type="button" class="wizard-audio-selected-next" id="wizard-audio-selected-next" aria-label="${I18N.t("create.next")}">&#8594;</button>
+          </div>`
+        : ""
+    }
+  `;
+  document.getElementById("wizard-audio-library-close").addEventListener("click", wizardCloseAudioLibrary);
+  document.getElementById("wizard-audio-search-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    wizardAudioLibraryState.q = document.getElementById("wizard-audio-search-input").value.trim();
+    wizardAudioLibraryState.mood = "";
+    wizardAudioLibrarySearch();
+  });
+  panel.querySelectorAll(".wizard-mood-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const chip = WIZARD_MOOD_CHIPS.find((m) => m.key === btn.dataset.mood);
+      if (!chip) return;
+      wizardAudioLibraryState.mood = chip.key;
+      wizardAudioLibraryState.q = chip.q;
+      wizardAudioLibrarySearch();
+    });
+  });
+  panel.querySelectorAll(".wizard-jamendo-track-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const track = tracks.find((t) => String(t.id) === btn.dataset.trackId);
+      if (!track) return;
+      await wizardSelectJamendoTrack(track, null);
+      createWizard.songStartSec = 0;
+      wizardDrawAudioLibrary();
+    });
+  });
+  const playBtn = document.getElementById("wizard-audio-selected-play");
+  if (playBtn) {
+    playBtn.addEventListener("click", () => {
+      if (wizardAudioLibraryIsPlaying(selected)) {
+        if (wizardJamendoPreviewAudio) wizardJamendoPreviewAudio.pause();
+        wizardJamendoPreviewAudio = null;
+      } else {
+        wizardPreviewJamendoTrack(selected);
+      }
+      setTimeout(wizardDrawAudioLibrary, 80);
+    });
+  }
+  const nextBtn = document.getElementById("wizard-audio-selected-next");
+  if (nextBtn) {
+    nextBtn.addEventListener("click", () => {
+      wizardCloseAudioLibrary();
+      wizardOpenCustomizeStep();
+    });
+  }
+}
+
+// ---------------- Moment editor: Voice-over recorder ----------------
+// Records a short mic-only clip (MediaRecorder) that travels with the moment
+// as metadata, not baked into the video pixels - so it needs no server-side
+// re-encoding. Saved as a "voiceover" overlay item alongside text/stickers.
+let wizardVoiceRecorder = null;
+let wizardVoiceChunks = [];
+let wizardVoiceStream = null;
+
+function wizardCloseVoicePanel() {
+  const panel = document.getElementById("wizard-voice-panel");
+  if (panel) panel.remove();
+  if (wizardVoiceRecorder && wizardVoiceRecorder.state !== "inactive") {
+    try { wizardVoiceRecorder.stop(); } catch (e) {}
+  }
+  if (wizardVoiceStream) {
+    wizardVoiceStream.getTracks().forEach((t) => t.stop());
+    wizardVoiceStream = null;
+  }
+  wizardVoiceRecorder = null;
+}
+
+function wizardOpenVoicePanel() {
+  const existing = document.getElementById("wizard-voice-panel");
+  if (existing) { wizardCloseVoicePanel(); return; }
+  const host = document.querySelector(".wizard-box");
+  if (!host) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-voice-panel";
+  panel.id = "wizard-voice-panel";
+  host.appendChild(panel);
+  wizardDrawVoicePanel(false);
+}
+
+function wizardDrawVoicePanel(recording) {
+  const panel = document.getElementById("wizard-voice-panel");
+  if (!panel) return;
+  const hasClip = !!createWizard.voiceoverDataUrl;
+  panel.innerHTML = `
+    <p class="wizard-voice-title">${I18N.t("create.voiceoverTitle")}</p>
+    <p class="field-hint">${I18N.t("create.voiceoverHint")}</p>
+    ${hasClip ? `<audio controls src="${createWizard.voiceoverDataUrl}" class="wizard-voice-audio"></audio>` : ""}
+    <div class="wizard-voice-controls">
+      <button type="button" class="wizard-voice-record-btn ${recording ? "recording" : ""}" id="wizard-voice-record-btn">
+        ${recording ? I18N.t("create.voiceoverStop") : hasClip ? I18N.t("create.voiceoverReRecord") : I18N.t("create.voiceoverStart")}
+      </button>
+      ${hasClip && !recording ? `<button type="button" class="wizard-voice-remove-btn" id="wizard-voice-remove-btn">${I18N.t("create.voiceoverRemove")}</button>` : ""}
+    </div>
+    <button type="button" class="wizard-sound-picker-close" id="wizard-voice-close">${I18N.t("common.close")}</button>
+  `;
+  document.getElementById("wizard-voice-close").addEventListener("click", wizardCloseVoicePanel);
+  const removeBtn = document.getElementById("wizard-voice-remove-btn");
+  if (removeBtn) {
+    removeBtn.addEventListener("click", () => {
+      createWizard.voiceoverDataUrl = null;
+      wizardDrawVoicePanel(false);
+    });
+  }
+  document.getElementById("wizard-voice-record-btn").addEventListener("click", async () => {
+    if (recording) {
+      if (wizardVoiceRecorder && wizardVoiceRecorder.state !== "inactive") wizardVoiceRecorder.stop();
+      return;
+    }
+    try {
+      wizardVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      wizardShowToast(I18N.t("create.voiceoverMicError"));
+      return;
+    }
+    wizardVoiceChunks = [];
+    try {
+      wizardVoiceRecorder = new MediaRecorder(wizardVoiceStream);
+    } catch (e) {
+      wizardShowToast(I18N.t("create.voiceoverMicError"));
+      return;
+    }
+    wizardVoiceRecorder.ondataavailable = (e) => { if (e.data && e.data.size) wizardVoiceChunks.push(e.data); };
+    wizardVoiceRecorder.onstop = () => {
+      const blob = new Blob(wizardVoiceChunks, { type: "audio/webm" });
+      const reader = new FileReader();
+      reader.onload = () => {
+        createWizard.voiceoverDataUrl = reader.result;
+        wizardDrawVoicePanel(false);
+      };
+      reader.readAsDataURL(blob);
+      if (wizardVoiceStream) {
+        wizardVoiceStream.getTracks().forEach((t) => t.stop());
+        wizardVoiceStream = null;
+      }
+    };
+    wizardVoiceRecorder.start();
+    wizardDrawVoicePanel(true);
+    setTimeout(() => {
+      if (wizardVoiceRecorder && wizardVoiceRecorder.state !== "inactive") wizardVoiceRecorder.stop();
+    }, 60000);
+  });
+}
+
+// ---------------- Moment editor: Captions ----------------
+// A caption is a "text" overlay (same renderer/baker/drag as free-form text -
+// see renderWizardOverlays()) flagged caption:true with a captionStyle, so it
+// reads as an on-screen subtitle rather than a decorative label, and can be
+// bulk-removed separately from regular text.
+function wizardOpenCaptionsPanel() {
+  const existing = document.getElementById("wizard-captions-panel");
+  if (existing) { existing.remove(); return; }
+  const host = document.querySelector(".wizard-box");
+  if (!host) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-captions-panel";
+  panel.id = "wizard-captions-panel";
+  const hasCaptions = createWizard.overlays.some((o) => o.caption);
+  panel.innerHTML = `
+    <p class="wizard-voice-title">${I18N.t("create.captionsTitle")}</p>
+    <textarea id="wizard-captions-input" maxlength="80" rows="2" placeholder="${I18N.t("create.captionsPlaceholder")}"></textarea>
+    <div class="wizard-caption-style-row">
+      ${WIZARD_CAPTION_STYLES.map((s, i) => `<button type="button" class="wizard-caption-style-btn wizard-caption-style-${s} ${i === 0 ? "active" : ""}" data-style="${s}">${I18N.t("create.captionStyle_" + s)}</button>`).join("")}
+    </div>
+    <div class="action-row">
+      ${hasCaptions ? `<button type="button" class="btn btn-secondary" id="wizard-captions-remove-all">${I18N.t("create.captionsRemoveAll")}</button>` : `<button type="button" class="btn btn-secondary" id="wizard-captions-cancel">${I18N.t("common.cancel")}</button>`}
+      <button type="button" class="btn btn-primary" id="wizard-captions-add">${I18N.t("create.captionsAdd")}</button>
+    </div>
+  `;
+  host.appendChild(panel);
+  let chosenStyle = WIZARD_CAPTION_STYLES[0];
+  panel.querySelectorAll(".wizard-caption-style-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      chosenStyle = btn.dataset.style;
+      panel.querySelectorAll(".wizard-caption-style-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    });
+  });
+  const cancelBtn = document.getElementById("wizard-captions-cancel");
+  if (cancelBtn) cancelBtn.addEventListener("click", () => panel.remove());
+  const removeAllBtn = document.getElementById("wizard-captions-remove-all");
+  if (removeAllBtn) {
+    removeAllBtn.addEventListener("click", () => {
+      createWizard.overlays = createWizard.overlays.filter((o) => !o.caption);
+      renderWizardOverlays(true);
+      panel.remove();
+    });
+  }
+  document.getElementById("wizard-captions-add").addEventListener("click", () => {
+    const val = document.getElementById("wizard-captions-input").value.trim();
+    panel.remove();
+    if (!val) return;
+    createWizard.overlays.push({
+      id: "c" + Date.now(),
+      type: "text",
+      value: val.slice(0, 80),
+      color: chosenStyle === "bold" ? "#FFD84D" : chosenStyle === "neon" ? "#34C759" : "#FFFFFF",
+      size: "md", xPct: 50, yPct: 82,
+      caption: true, captionStyle: chosenStyle,
+    });
+    renderWizardOverlays(true);
+  });
+}
+
+// ---------------- Moment editor: Customize step ("2b") ----------------
+// Shown only when the creator picked audio and/or captions in step 2 - a
+// recap of those choices plus a mood color palette (reuses the same filter
+// system as CREATE_WIZARD_FILTERS/createWizardFilterRow) and, if a Jamendo
+// track is attached, a simple start-time picker for which ~15s window of the
+// song to feature (createWizard.songStartSec - read by the feed player and
+// by buildWizardRecordingStream() when the clip is actually re-recorded live).
+function wizardOpenCustomizeStep() {
+  createWizard.step = "2b";
+  drawCreateWizard();
+}
+
+function drawWizardCustomizeStep(overlay) {
+  const hasAudio = !!createWizard.jamendoTrack;
+  const hasCaptions = createWizard.overlays.some((o) => o.caption);
+  const maxStart = hasAudio ? Math.max(0, Math.floor((createWizard.jamendoTrack.durationSec || 30) - 15)) : 0;
+  overlay.className = "modal-overlay create-wizard-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box wizard-box">
+      <h2 class="section-heading">${I18N.t("create.customizeTitle")}</h2>
+      <div class="wizard-preview-wrap wizard-preview-small">
+        ${
+          createWizard.mediaType === "video"
+            ? `<video class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" muted></video>`
+            : `<img class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" />`
+        }
+      </div>
+      <div class="wizard-customize-chips">
+        ${hasAudio ? `<span class="wizard-customize-chip">&#9835; ${escapeHtml(createWizard.jamendoTrack.name)}</span>` : ""}
+        ${hasCaptions ? `<span class="wizard-customize-chip">${I18N.t("create.captionsTitle")}</span>` : ""}
+      </div>
+      <p class="field-hint" style="text-align:center;margin-top:10px;">${I18N.t("create.moodPaletteLabel")}</p>
+      ${createWizardFilterRow()}
+      ${
+        hasAudio
+          ? `<div class="wizard-song-trim">
+              <p class="field-hint">${I18N.t("create.songTrimLabel")}</p>
+              <input type="range" id="wizard-song-start" min="0" max="${maxStart}" step="1" value="${Math.min(createWizard.songStartSec || 0, maxStart)}" />
+              <div class="wizard-song-trim-row">
+                <span id="wizard-song-start-label">${wizardFormatTime((createWizard.songStartSec || 0) * 1000)} – ${wizardFormatTime(((createWizard.songStartSec || 0) + 15) * 1000)}</span>
+                <button type="button" class="wizard-song-trim-play" id="wizard-song-trim-play">&#9654;&#65039;</button>
+              </div>
+            </div>`
+          : ""
+      }
+      <div class="action-row" style="margin-top:14px;">
+        <button type="button" class="btn btn-secondary" id="wizard-captions-edit-btn">${I18N.t("create.captionsEdit")}</button>
+      </div>
+      <div class="action-row">
+        <button class="btn btn-secondary" id="wizard-customize-back">${I18N.t("create.back")}</button>
+        <button class="btn btn-primary" id="wizard-customize-next">${I18N.t("create.next")}</button>
+      </div>
+    </div>
+  `;
+  wireCreateWizardFilterRow(() => {
+    const media = overlay.querySelector(".wizard-preview-media");
+    if (media) media.style.filter = createWizardFilterCss(createWizard.filter);
+  });
+  document.getElementById("wizard-captions-edit-btn").addEventListener("click", wizardOpenCaptionsPanel);
+  const startSlider = document.getElementById("wizard-song-start");
+  if (startSlider) {
+    startSlider.addEventListener("input", () => {
+      createWizard.songStartSec = parseInt(startSlider.value, 10) || 0;
+      const label = document.getElementById("wizard-song-start-label");
+      if (label) label.textContent = wizardFormatTime(createWizard.songStartSec * 1000) + " – " + wizardFormatTime((createWizard.songStartSec + 15) * 1000);
+    });
+  }
+  const trimPlayBtn = document.getElementById("wizard-song-trim-play");
+  if (trimPlayBtn) {
+    trimPlayBtn.addEventListener("click", () => {
+      if (!createWizard.jamendoTrack) return;
+      try {
+        const audio = new Audio(createWizard.jamendoTrack.audioUrl);
+        audio.currentTime = createWizard.songStartSec || 0;
+        audio.volume = 0.7;
+        audio.play().catch(() => {});
+        setTimeout(() => audio.pause(), 6000);
+      } catch (e) {}
+    });
+  }
+  document.getElementById("wizard-customize-back").addEventListener("click", () => {
+    createWizard.step = 2;
+    drawCreateWizard();
+  });
+  document.getElementById("wizard-customize-next").addEventListener("click", () => {
+    createWizard.step = 3;
+    drawCreateWizard();
+  });
+}
+
+// ---------------- Moment editor: Cover editor ("3b", video only) ----------------
+// Lets the creator pick what shows as the video's cover/thumbnail: a frame
+// grabbed straight out of the clip (via a hidden <video>+<canvas>, entirely
+// client-side, no server round-trip), or an image from their own camera
+// roll. "Generate with AI" is left as an honest, clearly-labeled "coming
+// soon" - there is no image-generation provider wired into this app, and a
+// button that silently does nothing (or worse, fails) would be worse than
+// not having it.
+function drawWizardCoverEditor(overlay) {
+  overlay.className = "modal-overlay create-wizard-overlay";
+  const cover = createWizard.coverImage || createWizard.rawDataUrl;
+  overlay.innerHTML = `
+    <div class="modal-box wizard-box">
+      <div class="wizard-cover-editor-head">
+        <h2 class="section-heading">${I18N.t("create.editCover")}</h2>
+        <button type="button" class="btn btn-primary btn-ai-suggest-sm" id="wizard-cover-done">${I18N.t("create.done")}</button>
+      </div>
+      <p class="field-hint">${I18N.t("create.editCoverHint")}</p>
+      <div class="wizard-cover-preview-wrap"><img class="wizard-cover-preview" id="wizard-cover-preview" src="${cover}" /></div>
+      ${
+        createWizard.mediaType === "video"
+          ? `<div class="wizard-cover-scrub-row">
+               <input type="range" id="wizard-cover-scrub" min="0" max="100" step="1" value="0" />
+             </div>
+             <video id="wizard-cover-source-video" src="${createWizard.rawDataUrl}" style="display:none;" muted playsinline></video>
+             <canvas id="wizard-cover-canvas" style="display:none;"></canvas>`
+          : ""
+      }
+      <div class="wizard-cover-actions">
+        <label class="btn btn-secondary wizard-cover-upload-btn">
+          ${I18N.t("create.editCoverFromRoll")}
+          <input type="file" id="wizard-cover-file" accept="image/*" style="display:none;" />
+        </label>
+        <button type="button" class="btn btn-secondary" id="wizard-cover-ai">${I18N.t("create.editCoverAi")}</button>
+      </div>
+      <p class="field-hint" id="wizard-cover-ai-msg" style="display:none;">${I18N.t("create.editCoverAiComingSoon")}</p>
+    </div>
+  `;
+  document.getElementById("wizard-cover-done").addEventListener("click", () => {
+    createWizard.step = 3;
+    drawCreateWizard();
+  });
+  const scrub = document.getElementById("wizard-cover-scrub");
+  const sourceVideo = document.getElementById("wizard-cover-source-video");
+  const canvas = document.getElementById("wizard-cover-canvas");
+  const previewImg = document.getElementById("wizard-cover-preview");
+  if (scrub && sourceVideo && canvas) {
+    sourceVideo.addEventListener("loadedmetadata", () => {
+      canvas.width = sourceVideo.videoWidth || 360;
+      canvas.height = sourceVideo.videoHeight || 640;
+    });
+    let seeking = false;
+    scrub.addEventListener("input", () => {
+      const dur = sourceVideo.duration;
+      if (!dur || !Number.isFinite(dur)) return;
+      sourceVideo.currentTime = (parseInt(scrub.value, 10) / 100) * dur;
+      seeking = true;
+    });
+    sourceVideo.addEventListener("seeked", () => {
+      if (!seeking) return;
+      seeking = false;
+      try {
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+        const frameUrl = canvas.toDataURL("image/jpeg", 0.85);
+        createWizard.coverImage = frameUrl;
+        createWizard.coverSource = "frame";
+        if (previewImg) previewImg.src = frameUrl;
+      } catch (e) {}
+    });
+  }
+  const fileInput = document.getElementById("wizard-cover-file");
+  if (fileInput) {
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        createWizard.coverImage = reader.result;
+        createWizard.coverSource = "roll";
+        if (previewImg) previewImg.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  document.getElementById("wizard-cover-ai").addEventListener("click", () => {
+    const msg = document.getElementById("wizard-cover-ai-msg");
+    if (msg) msg.style.display = "block";
+  });
+}
+
+// ---------------- Moment editor: Tag products ("3c") ----------------
+// Search the marketplace, or pick from the creator's own saved products
+// (GET /api/saved) or accepted-offer purchases (GET /api/offers/mine) - the
+// closest thing this app has to "order history" (there's no separate orders
+// table; an accepted offer is how a sale is recorded). "Connect" is an
+// honest placeholder for the Amazon/eBay integrations Carlos wants to add
+// later - no such integration exists yet, so it's clearly marked as coming
+// soon rather than a dead button pretending to work.
+async function wizardOpenTagProducts() {
+  createWizard.step = "3c";
+  drawCreateWizard();
+}
+
+async function wizardTagProductsSearch(tab, q) {
+  if (tab === "search") {
+    if (!q) return [];
+    try {
+      const data = await api("/api/products?q=" + encodeURIComponent(q));
+      return (data.products || data || []).slice(0, 20).map((p) => ({ id: p.id, title: p.title, price: p.price, photo: p.photos && p.photos[0] }));
+    } catch (e) {
+      return [];
+    }
+  }
+  if (tab === "saved") {
+    if (createWizard.savedProductsCache) return createWizard.savedProductsCache;
+    try {
+      const rows = await api("/api/saved", { auth: true });
+      const out = (rows || []).map((r) => ({ id: r.productId, title: r.productTitle, price: r.productPrice, photo: r.productPhoto }));
+      createWizard.savedProductsCache = out;
+      return out;
+    } catch (e) {
+      return [];
+    }
+  }
+  if (tab === "purchased") {
+    if (createWizard.purchasedProductsCache) return createWizard.purchasedProductsCache;
+    try {
+      const rows = await api("/api/offers/mine", { auth: true });
+      const out = (rows || [])
+        .filter((r) => r.status === "accepted")
+        .map((r) => ({ id: r.productId, title: r.productTitle, price: null, photo: null }));
+      createWizard.purchasedProductsCache = out;
+      return out;
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
+}
+
+function drawWizardTagProducts(overlay) {
+  overlay.className = "modal-overlay create-wizard-overlay";
+  const activeTab = createWizard._tagProductsTab || "search";
+  const q = createWizard._tagProductsQuery || "";
+  overlay.innerHTML = `
+    <div class="modal-box wizard-box">
+      <h2 class="section-heading">${I18N.t("create.tagProducts")}</h2>
+      <div class="wizard-tag-products-tabs">
+        <button type="button" class="tab-btn ${activeTab === "search" ? "active" : ""}" data-tab="search">${I18N.t("create.tagProductsSearch")}</button>
+        <button type="button" class="tab-btn ${activeTab === "saved" ? "active" : ""}" data-tab="saved">${I18N.t("profile.savedTab")}</button>
+        <button type="button" class="tab-btn ${activeTab === "purchased" ? "active" : ""}" data-tab="purchased">${I18N.t("create.tagProductsPurchased")}</button>
+      </div>
+      ${
+        activeTab === "search"
+          ? `<form class="wizard-jamendo-search-row" id="wizard-tag-search-form">
+               <input type="text" id="wizard-tag-search-input" value="${escapeHtml(q)}" placeholder="${I18N.t("create.tagProductsSearchPlaceholder")}" />
+               <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+             </form>`
+          : ""
+      }
+      <div id="wizard-tag-products-list"><p>${I18N.t("common.loading")}</p></div>
+      ${
+        createWizard.taggedProducts.length
+          ? `<div class="wizard-tag-products-chosen">
+               <p class="field-hint">${I18N.t("create.tagProductsChosen")}</p>
+               ${createWizard.taggedProducts
+                 .map((p) => `<span class="wizard-tag-product-chip" data-id="${p.id}">${escapeHtml(p.title)} <button type="button" data-remove="${p.id}">&times;</button></span>`)
+                 .join("")}
+             </div>`
+          : ""
+      }
+      <div class="wizard-connect-shops">
+        <p class="field-hint">${I18N.t("create.connectShopsHint")}</p>
+        <div class="wizard-connect-shops-row">
+          <button type="button" class="wizard-connect-shop-btn" disabled>Amazon <em>${I18N.t("create.comingSoon")}</em></button>
+          <button type="button" class="wizard-connect-shop-btn" disabled>eBay <em>${I18N.t("create.comingSoon")}</em></button>
+        </div>
+      </div>
+      <div class="action-row">
+        <button class="btn btn-secondary" id="wizard-tag-back">${I18N.t("create.back")}</button>
+        <button class="btn btn-primary" id="wizard-tag-done">${I18N.t("create.done")}</button>
+      </div>
+    </div>
+  `;
+  const listEl = document.getElementById("wizard-tag-products-list");
+  async function loadList() {
+    listEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    const items = await wizardTagProductsSearch(activeTab, q);
+    if (!items.length) {
+      listEl.innerHTML = `<p class="wizard-jamendo-empty">${activeTab === "search" && !q ? I18N.t("create.tagProductsSearchHint") : I18N.t("camera.soundPicker.jamendoNoResults")}</p>`;
+      return;
+    }
+    listEl.innerHTML = items
+      .map((p) => {
+        const already = createWizard.taggedProducts.some((t) => t.id === p.id);
+        return `<div class="wizard-tag-product-row" data-id="${p.id}">
+          ${p.photo ? `<img class="wizard-tag-product-photo" src="${p.photo}" />` : `<span class="wizard-tag-product-photo wizard-tag-product-photo-empty">&#128218;</span>`}
+          <span class="wizard-tag-product-info"><span class="wizard-tag-product-title">${escapeHtml(p.title || "")}</span>${p.price ? `<span class="wizard-tag-product-price">${fmtPrice(p.price)}</span>` : ""}</span>
+          <button type="button" class="wizard-tag-product-add-btn" data-add="${p.id}" ${already ? "disabled" : ""}>${already ? "✓" : "+"}</button>
+        </div>`;
+      })
+      .join("");
+    listEl.querySelectorAll("[data-add]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const item = items.find((p) => String(p.id) === btn.dataset.add);
+        if (!item || createWizard.taggedProducts.some((t) => t.id === item.id)) return;
+        createWizard.taggedProducts.push(item);
+        drawWizardTagProducts(overlay);
+      });
+    });
+  }
+  loadList();
+  document.querySelectorAll(".wizard-tag-products-tabs .tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard._tagProductsTab = btn.dataset.tab;
+      drawWizardTagProducts(overlay);
+    });
+  });
+  const searchForm = document.getElementById("wizard-tag-search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      createWizard._tagProductsQuery = document.getElementById("wizard-tag-search-input").value.trim();
+      drawWizardTagProducts(overlay);
+    });
+  }
+  overlay.querySelectorAll("[data-remove]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard.taggedProducts = createWizard.taggedProducts.filter((p) => p.id !== btn.dataset.remove);
+      drawWizardTagProducts(overlay);
+    });
+  });
+  document.getElementById("wizard-tag-back").addEventListener("click", () => {
+    createWizard.step = 3;
+    drawCreateWizard();
+  });
+  document.getElementById("wizard-tag-done").addEventListener("click", () => {
+    createWizard.step = 3;
+    drawCreateWizard();
+  });
+}
+
+// ---------------- Music Library ("#/music") ----------------
+// Standalone, browsable/searchable page over the same Jamendo catalog the
+// camera's sound picker uses (see wizardSearchJamendo() above) - so people
+// who aren't mid-recording can still see what royalty-free music the app
+// offers: real track names, artists, and genres, not just "some music".
+// Every track here is Creative-Commons licensed for reuse (see licenseUrl).
+const MUSIC_LIBRARY_GENRES = ["pop", "rock", "electronic", "hiphop", "jazz", "classical", "ambient", "folk", "cinematic", "lounge", "reggae", "metal"];
+let musicLibraryState = { q: "", genre: "", tracks: [], loading: true, configured: true, playingId: null };
+let musicLibraryPreviewAudio = null;
+
+function stopMusicLibraryPreview() {
+  if (musicLibraryPreviewAudio) {
+    musicLibraryPreviewAudio.pause();
+    musicLibraryPreviewAudio = null;
+  }
+  musicLibraryState.playingId = null;
+}
+
+async function renderMusicLibrary(query) {
+  musicLibraryState = { q: "", genre: (query && query.genre) || "", tracks: [], loading: true, configured: true, playingId: null };
+  drawMusicLibrary();
+  await musicLibrarySearch();
+}
+
+async function musicLibrarySearch() {
+  musicLibraryState.loading = true;
+  drawMusicLibrary();
+  const params = [];
+  if (musicLibraryState.q) params.push("q=" + encodeURIComponent(musicLibraryState.q));
+  if (musicLibraryState.genre) params.push("tag=" + encodeURIComponent(musicLibraryState.genre));
+  params.push("limit=48");
+  try {
+    const data = await api("/api/music/search" + (params.length ? "?" + params.join("&") : ""));
+    musicLibraryState.tracks = data.tracks || [];
+    musicLibraryState.configured = data.configured !== false;
+  } catch (e) {
+    musicLibraryState.tracks = [];
+  }
+  musicLibraryState.loading = false;
+  drawMusicLibrary();
+}
+
+function drawMusicLibrary() {
+  const { q, genre, tracks, loading, configured, playingId } = musicLibraryState;
+  const genreChips = MUSIC_LIBRARY_GENRES.map(
+    (g) => `<button type="button" class="music-genre-chip ${genre === g ? "active" : ""}" data-genre="${g}">${I18N.t("music.genre." + g)}</button>`
+  ).join("");
+
+  let bodyHtml;
+  if (!configured) {
+    bodyHtml = `<div class="empty-state">${I18N.t("camera.soundPicker.jamendoNotConfigured")}</div>`;
+  } else if (loading) {
+    bodyHtml = `<p>${I18N.t("common.loading")}</p>`;
+  } else if (!tracks.length) {
+    bodyHtml = `<div class="empty-state">${I18N.t("camera.soundPicker.jamendoNoResults")}</div>`;
+  } else {
+    bodyHtml = `<div class="music-grid">${tracks
+      .map(
+        (t) => `
+      <div class="music-card" data-track-id="${t.id}">
+        ${t.image ? `<img class="music-card-art" src="${t.image}" />` : `<span class="music-card-art music-card-art-empty">&#9835;</span>`}
+        <div class="music-card-info">
+          <p class="music-card-name">${escapeHtml(t.name)}</p>
+          <p class="music-card-artist">${escapeHtml(t.artist)}</p>
+          ${t.genres && t.genres.length ? `<p class="music-card-genres">${t.genres.map((g) => escapeHtml(g)).join(" · ")}</p>` : ""}
+        </div>
+        <button type="button" class="music-card-play-btn" data-track-id="${t.id}" aria-label="${I18N.t("music.play")}">${playingId === t.id ? "&#9724;&#65039;" : "&#9654;&#65039;"}</button>
+      </div>`
+      )
+      .join("")}</div>`;
+  }
+
+  viewEl.innerHTML = `
+    <div class="music-library-page">
+      <p class="music-library-eyebrow">${I18N.t("music.eyebrow")}</p>
+      <h2 class="music-library-title">${I18N.t("music.title")}</h2>
+      <p class="music-library-subtitle">${I18N.t("music.subtitle")}</p>
+      <form class="music-search-row" id="music-search-form">
+        <input type="text" id="music-search-input" value="${escapeHtml(q)}" placeholder="${I18N.t("camera.soundPicker.jamendoSearchPlaceholder")}" />
+        <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+      </form>
+      <div class="music-genre-row">
+        <button type="button" class="music-genre-chip ${!genre ? "active" : ""}" data-genre="">${I18N.t("music.allGenres")}</button>
+        ${genreChips}
+      </div>
+      ${bodyHtml}
+    </div>`;
+
+  const form = document.getElementById("music-search-form");
+  if (form) {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      musicLibraryState.q = document.getElementById("music-search-input").value.trim();
+      stopMusicLibraryPreview();
+      musicLibrarySearch();
+    });
+  }
+  document.querySelectorAll(".music-genre-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      musicLibraryState.genre = btn.dataset.genre;
+      stopMusicLibraryPreview();
+      musicLibrarySearch();
+    });
+  });
+  document.querySelectorAll(".music-card-play-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const track = musicLibraryState.tracks.find((t) => String(t.id) === btn.dataset.trackId);
+      if (!track) return;
+      if (musicLibraryState.playingId === track.id) {
+        stopMusicLibraryPreview();
+        drawMusicLibrary();
+        return;
+      }
+      stopMusicLibraryPreview();
+      try {
+        const audio = new Audio(track.audioUrl);
+        audio.volume = 0.7;
+        audio.addEventListener("ended", () => {
+          musicLibraryState.playingId = null;
+          drawMusicLibrary();
+        });
+        audio.play().catch(() => {});
+        musicLibraryPreviewAudio = audio;
+        musicLibraryState.playingId = track.id;
+      } catch (e) {}
+      drawMusicLibrary();
+    });
+  });
+}
+
 function wizardOpenSoundPicker() {
   const existing = document.getElementById("wizard-sound-picker");
   if (existing) {
@@ -6189,6 +7055,7 @@ function wizardOpenSoundPicker() {
       ).join("")}
     </div>
     <p class="wizard-jamendo-title">&#127925; ${I18N.t("camera.soundPicker.jamendoTitle")}</p>
+    <a href="#/music" target="_blank" rel="noopener" class="wizard-jamendo-browse-link">${I18N.t("music.title")} &rarr;</a>
     <form class="wizard-jamendo-search-row" id="wizard-jamendo-search-form">
       <input type="text" id="wizard-jamendo-search-input" placeholder="${I18N.t("camera.soundPicker.jamendoSearchPlaceholder")}" />
       <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
@@ -6723,7 +7590,7 @@ function renderWizardOverlays(interactive) {
   wrap.querySelectorAll(".wizard-overlay-item").forEach((el) => el.remove());
   createWizard.overlays.forEach((ov) => {
     const el = document.createElement("div");
-    el.className = "wizard-overlay-item " + ov.type + " size-" + (ov.size || "md");
+    el.className = "wizard-overlay-item " + ov.type + " size-" + (ov.size || "md") + (ov.caption ? " wizard-overlay-caption wizard-overlay-caption-" + (ov.captionStyle || "classic") : "");
     el.style.left = ov.xPct + "%";
     el.style.top = ov.yPct + "%";
     const contentSpan = document.createElement("span");
@@ -6945,13 +7812,21 @@ function drawCreateWizard() {
     return;
   }
 
+  if (createWizard.step === "2b") {
+    drawWizardCustomizeStep(overlay);
+    return;
+  }
+
   if (createWizard.step === 2) {
     overlay.className = "modal-overlay create-wizard-overlay";
     overlay.innerHTML = `
       <div class="modal-box wizard-box">
         <h2 class="section-heading">${I18N.t(createWizard.target === "loop" ? "create.step2TitleLoop" : createWizard.target === "video" ? "create.step2TitleVideo" : "create.step2Title")}</h2>
         <div class="wizard-edit-toolbar">
+          <button class="wizard-edit-tool-btn ${createWizard.jamendoTrack ? "active" : ""}" id="wizard-add-audio-btn" title="${I18N.t("create.tool_audio")}">&#9835;</button>
           <button class="wizard-edit-tool-btn" id="wizard-add-text-btn" title="${I18N.t("create.addText")}">Aa</button>
+          <button class="wizard-edit-tool-btn ${createWizard.voiceoverDataUrl ? "active" : ""}" id="wizard-add-voice-btn" title="${I18N.t("create.tool_voice")}">&#127908;</button>
+          <button class="wizard-edit-tool-btn ${createWizard.overlays.some((o) => o.caption) ? "active" : ""}" id="wizard-add-captions-btn" title="${I18N.t("create.tool_captions")}">CC</button>
           <button class="wizard-edit-tool-btn" id="wizard-add-sticker-btn" title="${I18N.t("create.addSticker")}">&#128512;</button>
         </div>
         <div class="wizard-preview-wrap" id="wizard-preview-wrap">
@@ -6981,7 +7856,10 @@ function drawCreateWizard() {
       if (img) img.style.filter = createWizardFilterCss(createWizard.filter);
       else if (vid) vid.style.filter = createWizardFilterCss(createWizard.filter);
     });
+    document.getElementById("wizard-add-audio-btn").addEventListener("click", wizardOpenAudioLibrary);
     document.getElementById("wizard-add-text-btn").addEventListener("click", drawWizardTextComposer);
+    document.getElementById("wizard-add-voice-btn").addEventListener("click", wizardOpenVoicePanel);
+    document.getElementById("wizard-add-captions-btn").addEventListener("click", wizardOpenCaptionsPanel);
     document.getElementById("wizard-add-sticker-btn").addEventListener("click", drawWizardStickerPicker);
     document.getElementById("wizard-back").addEventListener("click", () => {
       createWizard.step = 1;
@@ -6999,18 +7877,44 @@ function drawCreateWizard() {
       drawCreateWizard();
     });
     document.getElementById("wizard-next").addEventListener("click", () => {
-      createWizard.step = 3;
+      // Task: only detour through the customize screen (mood palette + song
+      // segment) when there's actually something to customize - a picked
+      // Jamendo track or at least one caption. Otherwise go straight to
+      // step 3 like before, so the common "no music, no captions" path isn't
+      // slowed down by an extra empty screen.
+      const hasAudio = !!createWizard.jamendoTrack;
+      const hasCaptions = createWizard.overlays.some((o) => o.caption);
+      createWizard.step = hasAudio || hasCaptions ? "2b" : 3;
       drawCreateWizard();
     });
+    return;
+  }
+
+  if (createWizard.step === "3b") {
+    drawWizardCoverEditor(overlay);
+    return;
+  }
+
+  if (createWizard.step === "3c") {
+    drawWizardTagProducts(overlay);
     return;
   }
 
   // step 3: title (video only) + caption + hashtags + next/publish
   if (createWizard.step === 3) {
   const isVideoStep3 = createWizard.target === "video";
+  const coverThumb = createWizard.coverImage || createWizard.rawDataUrl;
   overlay.innerHTML = `
     <div class="modal-box wizard-box">
       <h2 class="section-heading">${I18N.t("create.step3Title")}</h2>
+      ${
+        createWizard.mediaType === "video"
+          ? `<div class="wizard-cover-row" id="wizard-edit-cover-btn">
+               <img class="wizard-cover-thumb" src="${coverThumb}" />
+               <span class="wizard-cover-edit-label">${I18N.t("create.editCover")}</span>
+             </div>`
+          : ""
+      }
       <div class="wizard-preview-wrap wizard-preview-small">
         ${
           createWizard.mediaType === "video"
@@ -7055,6 +7959,25 @@ function drawCreateWizard() {
         <label>${I18N.t("create.hashtagsLabel")}</label>
         <input type="text" id="wizard-hashtags" placeholder="${I18N.t("create.hashtagsPlaceholder")}" value="${escapeHtml(createWizard.hashtagsDraft || "")}" />
       </div>
+      <div class="form-group">
+        <label>${I18N.t("create.locationLabel")}</label>
+        <input type="text" id="wizard-location" placeholder="${I18N.t("create.locationPlaceholder")}" value="${escapeHtml(createWizard.locationDraft || "")}" />
+      </div>
+      <label class="wizard-checkbox-row">
+        <input type="checkbox" id="wizard-ai-label" ${createWizard.aiLabel ? "checked" : ""} />
+        ${I18N.t("create.aiLabelToggle")}
+      </label>
+      ${
+        createWizard.target !== "loop"
+          ? `<label class="wizard-checkbox-row">
+               <input type="checkbox" id="wizard-also-loop" ${createWizard.alsoPostLoop ? "checked" : ""} />
+               ${I18N.t("create.alsoPostLoop")}
+             </label>`
+          : ""
+      }
+      <button type="button" class="wizard-tag-products-btn" id="wizard-open-tag-products">
+        &#127991;&#65039; ${I18N.t("create.tagProducts")}${createWizard.taggedProducts.length ? ` (${createWizard.taggedProducts.length})` : ""}
+      </button>
       <div class="action-row">
         <button class="btn btn-secondary" id="wizard-back2">${I18N.t("create.back")}</button>
         <button class="btn btn-primary" id="wizard-publish">${I18N.t(isVideoStep3 ? "create.next" : "create.publish")}</button>
@@ -7072,6 +7995,40 @@ function drawCreateWizard() {
   const countEl = document.getElementById("wizard-caption-count");
   captionEl.addEventListener("input", () => {
     countEl.textContent = String(captionEl.value.length);
+  });
+
+  // Reading every field back into createWizard.*Draft before navigating away
+  // to the cover editor ("3b") or tag-products ("3c") sub-screens - both
+  // replace this step's whole markup, so whatever wasn't saved would
+  // otherwise be lost when the creator comes back to step 3.
+  function wizardPersistStep3Drafts() {
+    createWizard.captionDraft = captionEl.value;
+    const hashtagsInput = document.getElementById("wizard-hashtags");
+    if (hashtagsInput) createWizard.hashtagsDraft = hashtagsInput.value;
+    const locationInput = document.getElementById("wizard-location");
+    if (locationInput) createWizard.locationDraft = locationInput.value;
+    const aiLabelInput = document.getElementById("wizard-ai-label");
+    if (aiLabelInput) createWizard.aiLabel = aiLabelInput.checked;
+    const loopInput = document.getElementById("wizard-also-loop");
+    if (loopInput) createWizard.alsoPostLoop = loopInput.checked;
+    if (isVideoStep3) {
+      const titleInput = document.getElementById("wizard-video-title");
+      if (titleInput) createWizard.titleDraft = titleInput.value;
+    }
+  }
+
+  const editCoverBtn = document.getElementById("wizard-edit-cover-btn");
+  if (editCoverBtn) {
+    editCoverBtn.addEventListener("click", () => {
+      wizardPersistStep3Drafts();
+      createWizard.step = "3b";
+      drawCreateWizard();
+    });
+  }
+  document.getElementById("wizard-open-tag-products").addEventListener("click", () => {
+    wizardPersistStep3Drafts();
+    createWizard.step = "3c";
+    drawCreateWizard();
   });
 
   // AI-suggest is only offered for photo captures: the wizard never
@@ -7179,13 +8136,14 @@ function drawCreateWizard() {
           finalMedia = await bakeWizardOverlays(finalMedia, createWizard.overlays);
         }
       }
-      const hashtagsRaw = document.getElementById("wizard-hashtags").value.trim();
+      wizardPersistStep3Drafts();
+      const hashtagsRaw = createWizard.hashtagsDraft.trim();
       const hashtags = hashtagsRaw
         .split(/[\s,]+/)
         .filter(Boolean)
         .map((h) => (h.startsWith("#") ? h : "#" + h))
         .join(" ");
-      const captionText = captionEl.value.trim();
+      const captionText = createWizard.captionDraft.trim();
       // Task #243 - a Jamendo track always came from a real Creative-Commons
       // license, and most CC licenses require attribution. Rather than make
       // the creator remember to credit it, we append the credit line
@@ -7193,9 +8151,28 @@ function drawCreateWizard() {
       const musicCredit = createWizard.jamendoTrack
         ? "\n\u{1F3B5} " + createWizard.jamendoTrack.name + " — " + createWizard.jamendoTrack.artist + " (Jamendo, CC)"
         : "";
-      const fullCaption = (hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText) + musicCredit;
+      const locationLine = createWizard.locationDraft.trim() ? "\n\u{1F4CD} " + createWizard.locationDraft.trim() : "";
+      const aiLabelLine = createWizard.aiLabel ? "\n\u{2728} " + I18N.t("create.aiLabelCredit") : "";
+      const fullCaption = (hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText) + musicCredit + locationLine + aiLabelLine;
       createWizard.captionDraft = captionText;
       createWizard.hashtagsDraft = hashtagsRaw;
+
+      // Voice-over and tagged products both ride along as overlay metadata
+      // (see wizardOpenVoicePanel()/wizardOpenTagProducts()) - only videos
+      // send overlay metadata at all (see the `overlays:` line below), so
+      // they're spliced in here rather than kept as permanent entries in
+      // createWizard.overlays (which also drives the draggable on-screen
+      // overlay editor and shouldn't show a "voiceover" or "product" pin as
+      // a draggable text/sticker).
+      let overlaysToSend = createWizard.overlays.filter((o) => o.type === "text" || o.type === "sticker");
+      if (createWizard.voiceoverDataUrl) {
+        overlaysToSend = overlaysToSend.concat([{ id: "voice1", type: "voiceover", value: createWizard.voiceoverDataUrl }]);
+      }
+      if (createWizard.taggedProducts.length) {
+        overlaysToSend = overlaysToSend.concat(
+          createWizard.taggedProducts.map((p) => ({ id: "prod-" + p.id, type: "product", productId: p.id, value: p.title }))
+        );
+      }
 
       // Videos hub (task #231) - title + caption/hashtags are ready, but
       // publishing waits for one more optional step: "link to one of your
@@ -7241,9 +8218,27 @@ function drawCreateWizard() {
             // Task #204 - only videos send overlay metadata; photo overlays
             // are already baked into `finalMedia`'s pixels above and would
             // just be drawn twice if sent again here.
-            overlays: createWizard.mediaType === "video" ? createWizard.overlays : undefined,
+            overlays: createWizard.mediaType === "video" ? overlaysToSend : undefined,
           },
         });
+        // "Also post to Loops" cross-post - fires a second, independent
+        // publish to the 24h Loops feed with the same finished media/caption.
+        // Best-effort: if it fails, the Moment above already succeeded, so we
+        // only warn rather than block/rollback anything.
+        if (createWizard.alsoPostLoop && createWizard.target === "moment") {
+          try {
+            await api("/api/loops", {
+              method: "POST",
+              auth: true,
+              body: {
+                mediaType: createWizard.mediaType === "video" ? "video" : "photo",
+                media: finalMedia,
+                caption: fullCaption,
+                durationSeconds: createWizard.durationSeconds,
+              },
+            });
+          } catch (e) {}
+        }
       }
       msgEl.textContent = I18N.t(isLoop ? "loops.posted" : "moments.posted");
       msgEl.className = "form-msg ok";
@@ -7699,6 +8694,7 @@ async function renderProfile(userId) {
   viewEl.innerHTML = `
     <div class="profile-cover-wrap">
       <div class="profile-cover" id="profile-cover" style="${profile.coverPhoto ? `background-image:url('${profile.coverPhoto}')` : ""}">
+        ${profile.coverPhoto ? `<button type="button" class="profile-cover-expand-btn" id="profile-cover-expand" aria-label="${I18N.t("profile.viewCoverPhoto")}"></button>` : ""}
         ${
           isMe
             ? `<div class="profile-cover-controls">
@@ -7713,7 +8709,7 @@ async function renderProfile(userId) {
         <div class="profile-avatar-wrap">
           ${
             profile.photo
-              ? `<img class="profile-avatar" src="${profile.photo}" />`
+              ? `<img class="profile-avatar" id="profile-avatar-img" src="${profile.photo}" style="cursor:pointer;" />`
               : `<div class="profile-avatar-placeholder">${initials(profile.name)}</div>`
           }
         </div>
@@ -7884,6 +8880,28 @@ async function renderProfile(userId) {
       if (btn.dataset.tab === "ads" && isMe && state.user && state.user.isOwner) await renderAdsManager();
     });
   });
+
+  // Task: tap the cover photo to see it enlarged; tap the profile picture to
+  // see it enlarged AND like/comment on it (reuses the existing photo
+  // lightbox + mkt_photo_likes/mkt_photo_comments - see openPhotoLightbox()
+  // and GET /api/photos/:id/engagement in server.js - with a synthetic
+  // "profile-<userId>" id since the profile picture itself isn't a row in
+  // mkt_user_photos). Available to any viewer, not just the profile owner.
+  const coverExpandBtn = document.getElementById("profile-cover-expand");
+  if (coverExpandBtn) {
+    coverExpandBtn.addEventListener("click", () => openImageLightboxSimple(profile.coverPhoto));
+  }
+  const avatarImg = document.getElementById("profile-avatar-img");
+  if (avatarImg) {
+    avatarImg.addEventListener("click", async () => {
+      const syntheticId = "profile-" + profile.id;
+      let engagement = { likesCount: 0, likedByMe: false, commentsCount: 0 };
+      try {
+        engagement = await api("/api/photos/" + syntheticId + "/engagement", { auth: !!state.token });
+      } catch (e) {}
+      openPhotoLightbox({ id: syntheticId, url: profile.photo, ...engagement });
+    });
+  }
 
   if (isMe) {
     document.getElementById("btn-edit-profile").addEventListener("click", () =>
