@@ -249,10 +249,14 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   font-size: 14px;
   font-weight: 600;
 }
-/* The icon-only links (Book Club, notifications bell) are bigger glyphs so
-   they visually fill the leftover space at the end of the row instead of
-   leaving it looking empty next to "PUBLISH A BOOK". */
-#nav-book-club, #nav-notifications {
+/* The icon-only links (Book Club, Podcasts, Messages, notifications bell)
+   are all bigger glyphs, at the same size as each other, so they visually
+   fill the leftover space at the end of the row instead of leaving it
+   looking empty next to "PUBLISH A BOOK" - and so Messages/Podcasts don't
+   look small/out of place next to Book Club/the bell. flex-wrap: nowrap +
+   overflow-x: auto on .topbar-nav (above) is what keeps all of them on this
+   one row instead of breaking to a second line. */
+#nav-book-club, #nav-podcasts, #nav-messages, #nav-notifications {
   font-size: 24px;
   line-height: 1;
 }
