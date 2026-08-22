@@ -521,6 +521,29 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .wizard-jamendo-track-info { min-width: 0; display: flex; flex-direction: column; }
 .wizard-jamendo-track-name { color: #fff; font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wizard-jamendo-track-artist { color: rgba(255,255,255,0.65); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wizard-jamendo-browse-link { display: block; text-align: center; font-size: 11px; color: var(--gold); margin: -4px 0 2px; text-decoration: underline; }
+
+/* Task: browsable/searchable "#/music" page so people can see the whole
+   royalty-free catalog (names, artists, genres) without opening the camera. */
+.music-library-page { max-width: 760px; margin: 0 auto; padding: 0 4px; }
+.music-library-eyebrow { color: var(--gold); font-size: 12px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 4px; text-align: center; }
+.music-library-title { font-size: 24px; font-weight: 800; margin: 0 0 8px; text-align: center; color: var(--text-primary); }
+.music-library-subtitle { font-size: 14px; color: var(--text-secondary); text-align: center; max-width: 520px; margin: 0 auto 18px; }
+.music-search-row { display: flex; gap: 8px; margin-bottom: 14px; }
+.music-search-row input { flex: 1; border: 1px solid var(--border-color); border-radius: 999px; padding: 10px 16px; font-size: 14px; background: var(--bg-surface); color: var(--text-primary); }
+.music-search-row button { border: none; background: var(--gold); color: var(--gold-text-on); border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 700; cursor: pointer; }
+.music-genre-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 20px; }
+.music-genre-chip { border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-secondary); border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.music-genre-chip.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+.music-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.music-card { display: flex; align-items: center; gap: 10px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 10px; }
+.music-card-art { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; flex-shrink: 0; }
+.music-card-art-empty { display: flex; align-items: center; justify-content: center; background: var(--bg-surface-alt); color: var(--text-muted); font-size: 18px; }
+.music-card-info { flex: 1; min-width: 0; }
+.music-card-name { font-size: 13px; font-weight: 700; color: var(--text-primary); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-card-artist { font-size: 12px; color: var(--text-secondary); margin: 1px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-card-genres { font-size: 10.5px; color: var(--text-muted); margin: 2px 0 0; text-transform: capitalize; }
+.music-card-play-btn { border: none; background: var(--bg-surface-alt); color: var(--gold); width: 34px; height: 34px; border-radius: 50%; font-size: 13px; flex-shrink: 0; cursor: pointer; }
 
 /* Right-side labeled options rail, full-screen vertical-video-app layout with our own icon glyphs */
 .wizard-fs-rail {
@@ -2026,3 +2049,151 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .wizard-link-product-info { display: flex; flex-direction: column; gap: 2px; }
 .wizard-link-product-title { font-size: 13px; font-weight: 600; }
 .wizard-link-product-price { font-size: 12px; color: var(--text-muted); }
+
+/* ---- Moment editor overhaul: Audio/Text/Voice/Captions/Stickers toolbar,
+   mood palette + song segment, cover editor, product tagging ---- */
+.wizard-edit-toolbar { flex-wrap: wrap; }
+.wizard-edit-tool-btn.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+
+/* Audio library panel (step 2 -> "Audio" tool) */
+.wizard-audio-library-panel {
+  position: absolute; inset: 0; z-index: 5; background: rgba(15,15,15,0.97);
+  display: flex; flex-direction: column; gap: 10px; padding: 14px; overflow-y: auto;
+}
+.wizard-audio-library-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wizard-audio-library-title { color: #fff; font-size: 14px; font-weight: 800; margin: 0; text-align: center; flex: 1; }
+.wizard-audio-library-head-spacer { width: 30px; flex-shrink: 0; }
+.wizard-audio-library-back {
+  display: flex; align-items: center; gap: 4px; border-radius: 999px; border: none; background: rgba(255,255,255,0.14);
+  color: #fff; font-size: 12.5px; font-weight: 700; cursor: pointer; padding: 7px 12px 7px 10px; flex-shrink: 0;
+}
+.wizard-mood-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.wizard-mood-chip {
+  border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.08); color: #fff;
+  border-radius: 999px; padding: 5px 12px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.wizard-mood-chip.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+.wizard-audio-library-body { flex: 1; overflow-y: auto; }
+.wizard-audio-library-grid { display: flex; flex-direction: column; gap: 6px; }
+.wizard-audio-selected-bar {
+  position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px;
+  background: rgba(255,216,77,0.12); border: 1px solid var(--gold); border-radius: 12px; padding: 8px 10px;
+}
+.wizard-audio-selected-play, .wizard-audio-selected-next {
+  width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--gold); color: var(--gold-text-on);
+  font-size: 14px; cursor: pointer; flex-shrink: 0;
+}
+.wizard-audio-selected-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wizard-audio-selected-name { color: #fff; font-size: 12.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wizard-audio-selected-artist { color: rgba(255,255,255,0.65); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Voice-over recorder panel */
+.wizard-voice-panel, .wizard-captions-panel {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 6;
+  background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 16px;
+  padding: 16px; width: min(90%, 340px); box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+}
+.wizard-voice-title { font-size: 14px; font-weight: 800; margin: 0 0 4px; color: var(--text-primary); }
+.wizard-voice-audio { width: 100%; margin: 8px 0; }
+.wizard-voice-controls { display: flex; gap: 8px; margin: 10px 0; }
+.wizard-voice-record-btn {
+  flex: 1; border: none; background: var(--gold); color: var(--gold-text-on); border-radius: 10px;
+  padding: 10px; font-weight: 700; font-size: 13px; cursor: pointer;
+}
+.wizard-voice-record-btn.recording { background: var(--danger, #E5484D); color: #fff; }
+.wizard-voice-remove-btn { border: 1px solid var(--border-color); background: none; color: var(--text-secondary); border-radius: 10px; padding: 10px 14px; font-size: 13px; cursor: pointer; }
+
+/* Captions composer + preset styles (shared by the wizard's draggable
+   overlay editor AND the read-only feed/moment-viewer playback layer) */
+.wizard-caption-style-row { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+.wizard-caption-style-btn {
+  border: 1px solid var(--border-color); background: var(--bg-surface-alt); color: var(--text-secondary);
+  border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.wizard-caption-style-btn.active { border-color: var(--gold); color: var(--gold); }
+.wizard-overlay-item.wizard-overlay-caption .wizard-overlay-content,
+.media-overlay-item.media-overlay-caption {
+  background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 6px; display: inline-block;
+}
+.wizard-overlay-item.wizard-overlay-caption-bold .wizard-overlay-content,
+.media-overlay-item.media-overlay-caption-bold { background: rgba(0,0,0,0.75); text-transform: uppercase; letter-spacing: 0.02em; }
+.wizard-overlay-item.wizard-overlay-caption-neon .wizard-overlay-content,
+.media-overlay-item.media-overlay-caption-neon { background: rgba(0,0,0,0.55); text-shadow: 0 0 8px currentColor; }
+.wizard-overlay-item.wizard-overlay-caption-minimal .wizard-overlay-content,
+.media-overlay-item.media-overlay-caption-minimal { background: none; text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
+
+/* Customize step ("2b"): mood palette recap + song segment picker */
+.wizard-customize-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin: 10px 0; }
+.wizard-customize-chip {
+  background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 999px;
+  padding: 5px 12px; font-size: 12px; font-weight: 600; color: var(--text-primary);
+}
+.wizard-song-trim { margin: 14px 0; }
+.wizard-song-trim input[type="range"] { width: 100%; accent-color: var(--gold); }
+.wizard-song-trim-row { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+.wizard-song-trim-row span { font-size: 12px; color: var(--text-secondary); }
+.wizard-song-trim-play { border: none; background: var(--bg-surface-alt); color: var(--gold); width: 30px; height: 30px; border-radius: 50%; cursor: pointer; }
+
+/* Cover row inside step 3 + full cover editor ("3b") */
+.wizard-cover-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; cursor: pointer; }
+.wizard-cover-thumb { width: 52px; height: 68px; border-radius: 8px; object-fit: cover; border: 1px solid var(--border-color); }
+.wizard-cover-edit-label { font-size: 13px; font-weight: 700; color: var(--gold); text-decoration: underline; }
+.wizard-cover-editor-head { display: flex; align-items: center; justify-content: space-between; }
+.wizard-cover-preview-wrap { display: flex; justify-content: center; margin: 12px 0; }
+.wizard-cover-preview { max-width: 100%; max-height: 320px; border-radius: 12px; object-fit: contain; background: #000; }
+.wizard-cover-scrub-row { margin: 6px 0 14px; }
+.wizard-cover-scrub-row input[type="range"] { width: 100%; accent-color: var(--gold); }
+.wizard-cover-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.wizard-cover-upload-btn { position: relative; cursor: pointer; text-align: center; }
+
+/* Step 3 additions: location, AI label, cross-post to Loops, tag products */
+.wizard-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); margin: 8px 0; cursor: pointer; }
+.wizard-tag-products-btn {
+  display: block; width: 100%; text-align: left; border: 1px solid var(--border-color); background: var(--bg-surface-alt);
+  color: var(--text-primary); border-radius: 10px; padding: 12px 14px; font-size: 13px; font-weight: 600; margin: 8px 0; cursor: pointer;
+}
+
+/* Tag products screen ("3c") */
+.wizard-tag-products-tabs { margin-bottom: 10px; }
+.wizard-tag-product-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.wizard-tag-product-row:last-child { border-bottom: none; }
+.wizard-tag-product-photo { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; flex-shrink: 0; }
+.wizard-tag-product-photo-empty { display: flex; align-items: center; justify-content: center; background: var(--bg-surface-alt); color: var(--text-muted); font-size: 16px; }
+.wizard-tag-product-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wizard-tag-product-title { font-size: 13px; font-weight: 700; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wizard-tag-product-price { font-size: 12px; color: var(--text-muted); }
+.wizard-tag-product-add-btn {
+  width: 30px; height: 30px; border-radius: 50%; border: none; background: var(--gold); color: var(--gold-text-on);
+  font-size: 16px; font-weight: 800; cursor: pointer; flex-shrink: 0;
+}
+.wizard-tag-product-add-btn:disabled { background: var(--bg-surface-alt); color: var(--text-muted); }
+.wizard-tag-products-chosen { margin: 10px 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.wizard-tag-product-chip {
+  display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface-alt); border: 1px solid var(--border-color);
+  border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 12px; color: var(--text-primary);
+}
+.wizard-tag-product-chip button { border: none; background: none; color: var(--text-muted); font-size: 15px; cursor: pointer; padding: 0 4px; }
+.wizard-connect-shops { margin: 14px 0; border-top: 1px solid var(--border-color); padding-top: 12px; }
+.wizard-connect-shops-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.wizard-connect-shop-btn {
+  flex: 1; border: 1px dashed var(--border-color); background: var(--bg-surface-alt); color: var(--text-muted);
+  border-radius: 10px; padding: 10px; font-size: 13px; font-weight: 700; cursor: default; display: flex; flex-direction: column; gap: 2px; align-items: center;
+}
+.wizard-connect-shop-btn em { font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--gold); }
+
+/* Playback: tagged products as tappable pills under the video, and the
+   hidden voice-over <audio> element (see renderMediaOverlayLayer() /
+   wireMomentVoiceoverSync() in app.js) */
+.media-overlay-products {
+  position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px;
+  pointer-events: auto; z-index: 3;
+}
+.media-overlay-product-pill {
+  background: rgba(0,0,0,0.65); color: #fff; border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 700;
+  text-decoration: none; backdrop-filter: blur(2px);
+}
+.media-overlay-voiceover { display: none; }
+
+/* Profile: cover photo enlarge button + profile picture click cursor */
+.profile-cover-expand-btn { position: absolute; inset: 0; border: none; background: none; cursor: pointer; }
+.simple-image-lightbox-panel .photo-lightbox-image-wrap { max-height: 80vh; }
