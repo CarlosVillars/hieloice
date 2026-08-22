@@ -423,6 +423,45 @@ async function isBlockedEitherWay(userIdA, userIdB) {
   return !!(rows && rows.length);
 }
 
+// Platform-wide 18+ requirement (Carlos: "para utilizar nuestra plataforma
+// las personas deben ser mayores de edad"). This is self-attestation
+// (user-entered birthdate), not ID/KYC verification - a disclosed
+// limitation, not a guarantee. Every place that needs an age check should
+// recompute from mkt_users.birthdate via these helpers rather than trusting
+// any client-supplied "I'm 18+" flag.
+const MIN_AGE_YEARS = 18;
+
+function ageFromBirthdateMs(birthdateMs, nowMs) {
+  const now = new Date(nowMs);
+  const dob = new Date(birthdateMs);
+  let age = now.getUTCFullYear() - dob.getUTCFullYear();
+  const monthDiff = now.getUTCMonth() - dob.getUTCMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && now.getUTCDate() < dob.getUTCDate())) age--;
+  return age;
+}
+
+// Parses a strict "YYYY-MM-DD" date input into a UTC-midnight epoch-ms
+// timestamp, or null if invalid/out of sane bounds. Strict format avoids the
+// timezone drift that comes from loose `new Date(string)` parsing.
+function parseBirthdateInput(raw) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(raw || "").trim());
+  if (!m) return null;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (Number.isNaN(ms)) return null;
+  const now = Date.now();
+  if (ms > now) return null; // no future birthdates
+  if (now - ms > 120 * 365.25 * 24 * 60 * 60 * 1000) return null; // no implausible ages
+  return ms;
+}
+
+// True only if the user has a birthdate on file AND it computes to 18+.
+// Accounts created before this feature (or via Google/Facebook) will have
+// no birthdate yet, so this correctly returns false for them until they
+// complete the one-time #/confirm-age gate.
+function isAdultUser(user) {
+  return !!(user && user.birthdate && ageFromBirthdateMs(user.birthdate, Date.now()) >= MIN_AGE_YEARS);
+}
+
 async function findOrCreateOAuthUser({ provider, providerId, email, name, photo }) {
   const idField = provider === "google" ? "google_id" : "facebook_id";
   let rows = await db.select("mkt_users", { [idField]: "eq." + enc(providerId), select: "*" });
@@ -1043,7 +1082,7 @@ const CATEGORIES = [
   "art-photography", "travel", "rare-collectible", "other-books",
 ];
 
-const REPORT_REASONS = ["spam", "prohibited", "inappropriate", "fraud", "other"];
+const REPORT_REASONS = ["spam", "prohibited", "inappropriate", "fraud", "other", "harassment", "fake_profile", "underage_concern"];
 
 function productOut(p) {
   const { seller_id, allow_offers, allow_return, created_at, cover_is_video, video_duration_seconds, ...rest } = p;
@@ -1070,10 +1109,18 @@ async function handleApi(req, res, pathname, query) {
       return sendJson(res, 429, { error: "Too many registration attempts. Please try again later." });
     }
     const body = await readBody(req);
-    const { name, email, password, phone } = body;
+    const { name, email, password, phone, birthdate } = body;
     if (!name || !String(name).trim()) return sendJson(res, 400, { error: "Name is required" });
     if (!isEmail(email)) return sendJson(res, 400, { error: "A valid email is required" });
     if (!password || String(password).length < 6) return sendJson(res, 400, { error: "Password must be at least 6 characters" });
+
+    // Platform-wide 18+ requirement (Carlos's instruction: adults only,
+    // for the whole platform, not just Dating). Self-attestation only.
+    const birthdateMs = parseBirthdateInput(birthdate);
+    if (!birthdateMs) return sendJson(res, 400, { error: "A valid date of birth is required." });
+    if (ageFromBirthdateMs(birthdateMs, Date.now()) < MIN_AGE_YEARS) {
+      return sendJson(res, 403, { error: "You must be at least 18 years old to create a HieloIce account." });
+    }
 
     const emailLower = String(email).trim().toLowerCase();
     const existing = await db.select("mkt_users", { email: "eq." + enc(emailLower), select: "id" });
@@ -1090,6 +1137,7 @@ async function handleApi(req, res, pathname, query) {
       bio: "",
       location: "",
       phone: String(phone || "").trim().slice(0, 30),
+      birthdate: birthdateMs,
       created_at: Date.now(),
     };
     await db.insert("mkt_users", user);
@@ -1098,6 +1146,22 @@ async function handleApi(req, res, pathname, query) {
     await db.insert("mkt_sessions", { token, user_id: user.id, created_at: Date.now() });
 
     return sendJson(res, 201, { token, user: ownUser(user) });
+  }
+
+  // One-time "confirm your birthdate" gate for accounts that don't have one
+  // on file yet (Google/Facebook signups, or any pre-existing account from
+  // before this feature existed). Also reused by the Dating opt-in flow.
+  if (method === "PUT" && pathname === "/api/auth/birthdate") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const birthdateMs = parseBirthdateInput(body.birthdate);
+    if (!birthdateMs) return sendJson(res, 400, { error: "Enter a valid date of birth." });
+    if (ageFromBirthdateMs(birthdateMs, Date.now()) < MIN_AGE_YEARS) {
+      return sendJson(res, 403, { error: "You must be at least 18 years old to use HieloIce." });
+    }
+    const updated = await db.update("mkt_users", { id: "eq." + enc(me.id) }, { birthdate: birthdateMs });
+    return sendJson(res, 200, { user: ownUser(updated[0]) });
   }
 
   if (method === "POST" && pathname === "/api/auth/login") {
@@ -5562,6 +5626,290 @@ async function handleApi(req, res, pathname, query) {
     });
     await db.rpc("podcast_increment_counter", { p_table: "podcast_episodes", p_id: episodeId, p_column: "like_count", p_delta: 1 });
     return sendJson(res, 200, { liked: true });
+  }
+
+  // ---- DATING ----
+  // Separate, opt-in profile (Carlos's explicit choice: not merged into the
+  // main HieloIce profile, off by default). Hard 18+ enforced on every
+  // route below by recomputing from mkt_users.birthdate - never trusted
+  // from the client. Blocking reuses the existing generic
+  // mkt_user_blocks/isBlockedEitherWay infrastructure and reporting reuses
+  // the existing POST /api/reports (targetType "user") - no new
+  // block/report endpoints needed for Dating specifically. Messaging
+  // between matches reuses the existing mkt_messages system
+  // (#/messages/:id), which already supports photo/video attachments.
+
+  function datingProfileOut(p) {
+    return {
+      userId: p.user_id,
+      bio: p.bio || "",
+      photos: p.photos || [],
+      interests: p.interests || [],
+      gender: p.gender || "",
+      seeking: p.seeking || [],
+      active: !!p.active,
+      hasLocation: typeof p.lat === "number" && typeof p.lng === "number",
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+    };
+  }
+
+  // Haversine distance in km between two lat/lng points.
+  function haversineKm(lat1, lng1, lat2, lng2) {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // Carlos's explicit choice: only approximate distance is ever sent to the
+  // client - raw lat/lng of other users must never be exposed, and even
+  // this rounds down into coarse buckets rather than a precise number.
+  function approximateDistanceLabel(km) {
+    if (km < 1) return "<1 km";
+    if (km < 50) return Math.round(km) + " km";
+    return "50+ km";
+  }
+
+  // GET /api/dating/profile - my own Dating profile (or null if never set up)
+  if (method === "GET" && pathname === "/api/dating/profile") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("dating_profiles", { user_id: "eq." + enc(me.id), select: "*" });
+    return sendJson(res, 200, {
+      profile: rows && rows[0] ? datingProfileOut(rows[0]) : null,
+      isAdult: isAdultUser(me),
+      needsBirthdate: !me.birthdate,
+    });
+  }
+
+  // PUT /api/dating/profile - create/update/activate my Dating profile.
+  // Body: { bio, photos: [dataUrl|url,...], interests: [], gender, seeking: [], lat, lng, active }
+  if (method === "PUT" && pathname === "/api/dating/profile") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!isAdultUser(me)) {
+      return sendJson(res, 403, { error: "You must confirm you are 18+ before using Dating.", needsBirthdate: !me.birthdate });
+    }
+    const body = await readBody(req);
+    const existingRows = await db.select("dating_profiles", { user_id: "eq." + enc(me.id), select: "*" });
+    const existing = existingRows && existingRows[0];
+
+    // Photos: keep already-hosted URLs as-is, upload new data: URLs to
+    // Storage - same incremental-photo pattern used elsewhere in the app.
+    let photos = existing ? existing.photos || [] : [];
+    if (Array.isArray(body.photos)) {
+      const uploaded = [];
+      for (const p of body.photos.slice(0, 6)) {
+        if (typeof p !== "string") continue;
+        if (p.startsWith("data:")) {
+          try {
+            uploaded.push(await sbStorageUpload("media", "dating/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", p));
+          } catch (e) {
+            // skip a photo that fails to upload rather than failing the whole save
+          }
+        } else {
+          uploaded.push(p.slice(0, 1000));
+        }
+      }
+      photos = uploaded;
+    }
+
+    const now = Date.now();
+    const patch = {
+      bio: String(body.bio || "").trim().slice(0, 500),
+      photos,
+      interests: Array.isArray(body.interests)
+        ? body.interests.map((s) => String(s).trim().slice(0, 40)).filter(Boolean).slice(0, 15)
+        : existing
+          ? existing.interests
+          : [],
+      gender: String(body.gender || (existing ? existing.gender : "") || "").slice(0, 30),
+      seeking: Array.isArray(body.seeking) ? body.seeking.map((s) => String(s).slice(0, 30)).slice(0, 5) : existing ? existing.seeking : [],
+      active: body.active !== undefined ? !!body.active : existing ? existing.active : true,
+      updated_at: now,
+    };
+    if (typeof body.lat === "number" && typeof body.lng === "number" && Number.isFinite(body.lat) && Number.isFinite(body.lng)) {
+      patch.lat = body.lat;
+      patch.lng = body.lng;
+    }
+
+    let saved;
+    if (existing) {
+      const updated = await db.update("dating_profiles", { user_id: "eq." + enc(me.id) }, patch);
+      saved = updated[0];
+    } else {
+      saved = { user_id: me.id, created_at: now, lat: null, lng: null, ...patch };
+      await db.insert("dating_profiles", saved);
+    }
+    return sendJson(res, 200, { profile: datingProfileOut(saved) });
+  }
+
+  // POST /api/dating/deactivate - turn Dating off (hide from discovery),
+  // keeps existing matches/data intact so re-activating restores everything.
+  if (method === "POST" && pathname === "/api/dating/deactivate") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    await db.update("dating_profiles", { user_id: "eq." + enc(me.id) }, { active: false, updated_at: Date.now() });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // GET /api/dating/discover - candidate cards to swipe on, ranked by
+  // shared interests. Excludes: myself, anyone already swiped, blocked
+  // (either direction), or already matched. Distance is always the coarse
+  // approximate label, never raw coordinates.
+  if (method === "GET" && pathname === "/api/dating/discover") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!isAdultUser(me)) return sendJson(res, 403, { error: "You must confirm you are 18+ before using Dating." });
+
+    const myRows = await db.select("dating_profiles", { user_id: "eq." + enc(me.id), select: "*" });
+    const myProfile = myRows && myRows[0];
+    if (!myProfile || !myProfile.active) return sendJson(res, 200, []);
+
+    const [swipedRows, blockedRows, matchedRows] = await Promise.all([
+      db.select("dating_swipes", { swiper_id: "eq." + enc(me.id), select: "target_id" }),
+      db.select("mkt_user_blocks", { or: "(blocker_id.eq." + enc(me.id) + ",blocked_id.eq." + enc(me.id) + ")", select: "blocker_id,blocked_id" }),
+      db.select("dating_matches", { or: "(user_a_id.eq." + enc(me.id) + ",user_b_id.eq." + enc(me.id) + ")", unmatched_at: "is.null", select: "user_a_id,user_b_id" }),
+    ]);
+    const excludeIds = new Set([me.id]);
+    (swipedRows || []).forEach((r) => excludeIds.add(r.target_id));
+    (blockedRows || []).forEach((r) => {
+      excludeIds.add(r.blocker_id);
+      excludeIds.add(r.blocked_id);
+    });
+    (matchedRows || []).forEach((r) => {
+      excludeIds.add(r.user_a_id);
+      excludeIds.add(r.user_b_id);
+    });
+
+    const candidateRows = await db.select("dating_profiles", { active: "eq.true", limit: "200", select: "*" });
+    const candidates = (candidateRows || []).filter((c) => !excludeIds.has(c.user_id));
+
+    const userIds = candidates.map((c) => c.user_id);
+    let userMap = {};
+    if (userIds.length) {
+      const users = await db.select("mkt_users", { id: "in.(" + userIds.map(enc).join(",") + ")", select: "id,name,photo,birthdate" });
+      (users || []).forEach((u) => (userMap[u.id] = u));
+    }
+
+    const myInterests = new Set((myProfile.interests || []).map((s) => String(s).toLowerCase()));
+    const scored = candidates
+      .map((c) => {
+        const u = userMap[c.user_id];
+        // Re-verify 18+ on the candidate too - never rely on a stored
+        // profile alone for this guarantee.
+        if (!u || !u.birthdate || ageFromBirthdateMs(u.birthdate, Date.now()) < MIN_AGE_YEARS) return null;
+        let distanceLabel = null;
+        if (typeof myProfile.lat === "number" && typeof myProfile.lng === "number" && typeof c.lat === "number" && typeof c.lng === "number") {
+          distanceLabel = approximateDistanceLabel(haversineKm(myProfile.lat, myProfile.lng, c.lat, c.lng));
+        }
+        const sharedInterestCount = (c.interests || []).filter((i) => myInterests.has(String(i).toLowerCase())).length;
+        return {
+          userId: c.user_id,
+          name: u.name,
+          bio: c.bio || "",
+          photos: c.photos && c.photos.length ? c.photos : u.photo ? [u.photo] : [],
+          interests: c.interests || [],
+          distance: distanceLabel,
+          sharedInterestCount,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.sharedInterestCount - a.sharedInterestCount);
+
+    return sendJson(res, 200, scored.slice(0, 30));
+  }
+
+  // POST /api/dating/swipe { targetId, direction: 'like'|'pass' }
+  // Creates a mutual match (and notification-worthy event) when both sides
+  // have liked each other.
+  if (method === "POST" && pathname === "/api/dating/swipe") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!isAdultUser(me)) return sendJson(res, 403, { error: "You must confirm you are 18+ before using Dating." });
+    const body = await readBody(req);
+    const targetId = String(body.targetId || "");
+    const direction = body.direction;
+    if (!targetId || !["like", "pass"].includes(direction)) return sendJson(res, 400, { error: "Invalid swipe" });
+    if (targetId === me.id) return sendJson(res, 400, { error: "Invalid target" });
+    if (await isBlockedEitherWay(me.id, targetId)) return sendJson(res, 403, { error: "Not available" });
+
+    const existing = await db.select("dating_swipes", { swiper_id: "eq." + enc(me.id), target_id: "eq." + enc(targetId), select: "id" });
+    if (existing && existing[0]) {
+      await db.update("dating_swipes", { id: "eq." + enc(existing[0].id) }, { direction, created_at: Date.now() });
+    } else {
+      await db.insert("dating_swipes", { id: crypto.randomBytes(8).toString("hex"), swiper_id: me.id, target_id: targetId, direction, created_at: Date.now() });
+    }
+
+    let matched = false;
+    let matchId = null;
+    if (direction === "like") {
+      const theirSwipe = await db.select("dating_swipes", { swiper_id: "eq." + enc(targetId), target_id: "eq." + enc(me.id), direction: "eq.like", select: "id" });
+      if (theirSwipe && theirSwipe[0]) {
+        const [a, b] = [me.id, targetId].sort();
+        const already = await db.select("dating_matches", { user_a_id: "eq." + enc(a), user_b_id: "eq." + enc(b), select: "id,unmatched_at" });
+        if (already && already[0] && !already[0].unmatched_at) {
+          matched = true;
+          matchId = already[0].id;
+        } else if (already && already[0]) {
+          // Re-matching after a prior unmatch: revive the same row.
+          await db.update("dating_matches", { id: "eq." + enc(already[0].id) }, { unmatched_at: null, unmatched_by: null, created_at: Date.now() });
+          matched = true;
+          matchId = already[0].id;
+        } else {
+          const match = { id: crypto.randomBytes(8).toString("hex"), user_a_id: a, user_b_id: b, created_at: Date.now(), unmatched_at: null, unmatched_by: null };
+          await db.insert("dating_matches", match);
+          matched = true;
+          matchId = match.id;
+        }
+      }
+    }
+    return sendJson(res, 200, { matched, matchId });
+  }
+
+  // GET /api/dating/matches - my active (not-unmatched) matches, with the
+  // other person's basic info, newest first.
+  if (method === "GET" && pathname === "/api/dating/matches") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("dating_matches", {
+      or: "(user_a_id.eq." + enc(me.id) + ",user_b_id.eq." + enc(me.id) + ")",
+      unmatched_at: "is.null",
+      order: "created_at.desc",
+      select: "*",
+    });
+    const otherIds = (rows || []).map((m) => (m.user_a_id === me.id ? m.user_b_id : m.user_a_id));
+    let userMap = {};
+    if (otherIds.length) {
+      const users = await db.select("mkt_users", { id: "in.(" + otherIds.map(enc).join(",") + ")", select: "id,name,photo" });
+      (users || []).forEach((u) => (userMap[u.id] = u));
+    }
+    const out = (rows || [])
+      .map((m) => {
+        const otherId = m.user_a_id === me.id ? m.user_b_id : m.user_a_id;
+        const u = userMap[otherId];
+        if (!u) return null;
+        return { matchId: m.id, userId: otherId, name: u.name, photo: u.photo, matchedAt: m.created_at };
+      })
+      .filter(Boolean);
+    return sendJson(res, 200, out);
+  }
+
+  // POST /api/dating/matches/:id/unmatch - either side can end a match at
+  // any time; this does not block or report the other person, just ends
+  // the connection (blocking/reporting are separate, existing actions).
+  const datingUnmatchMatch = pathname.match(/^\/api\/dating\/matches\/([a-zA-Z0-9]+)\/unmatch$/);
+  if (method === "POST" && datingUnmatchMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("dating_matches", { id: "eq." + enc(datingUnmatchMatch[1]), select: "*" });
+    const match = rows && rows[0];
+    if (!match) return sendJson(res, 404, { error: "Not found" });
+    if (match.user_a_id !== me.id && match.user_b_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    await db.update("dating_matches", { id: "eq." + enc(match.id) }, { unmatched_at: Date.now(), unmatched_by: me.id });
+    return sendJson(res, 200, { ok: true });
   }
 
   // ---- ADMIN (role === 'admin' only, or the legacy OWNER_EMAIL account) ----

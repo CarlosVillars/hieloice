@@ -733,13 +733,34 @@ function parseHash() {
   return { parts, query };
 }
 
+// Routes reachable even if a logged-in user hasn't confirmed a birthdate yet
+// (the confirm-age page itself, plus anything needed to log out / view
+// legal pages / delete the account rather than being trapped).
+const AGE_GATE_EXEMPT_ROUTES = new Set(["confirm-age", "login", "register", "delete-account", "terms", "privacy", "dating-terms"]);
+
 async function router() {
   const { parts, query } = parseHash();
   window.scrollTo(0, 0);
   updateGlobalSearchPlaceholder();
 
+  // Platform-wide 18+ requirement (Carlos: adults only, whole platform).
+  // Any logged-in account missing a birthdate - pre-existing accounts from
+  // before this feature, or Google/Facebook signups which skip the
+  // register form - must confirm it once before doing anything else.
+  if (state.user && !state.user.birthdate && !AGE_GATE_EXEMPT_ROUTES.has(parts[0])) {
+    location.hash = "#/confirm-age";
+    return renderConfirmAge();
+  }
+
   try {
     if (parts.length === 0) return renderHome();
+    if (parts[0] === "confirm-age") return renderConfirmAge();
+    if (parts[0] === "terms") return renderTerms();
+    if (parts[0] === "privacy") return renderPrivacy();
+    if (parts[0] === "dating-terms") return renderDatingTerms();
+    if (parts[0] === "dating" && parts[1] === "matches") return renderDatingMatches();
+    if (parts[0] === "dating" && parts[1] === "setup") return renderDatingSetup();
+    if (parts[0] === "dating") return renderDatingSwipe();
     if (parts[0] === "marketplace") return renderMarketplaceHome();
     if (parts[0] === "friends") return renderFriendsPage();
     if (parts[0] === "clips") return renderClips();
@@ -1812,6 +1833,8 @@ function openReportModal(targetType, targetId) {
           <option value="prohibited">${I18N.t("report.reasonProhibited")}</option>
           <option value="inappropriate">${I18N.t("report.reasonInappropriate")}</option>
           <option value="fraud">${I18N.t("report.reasonFraud")}</option>
+          ${targetType === "user" ? `<option value="harassment">${I18N.t("report.reasonHarassment")}</option>` : ""}
+          ${targetType === "user" ? `<option value="fake_profile">${I18N.t("report.reasonFakeProfile")}</option>` : ""}
           <option value="other">${I18N.t("report.reasonOther")}</option>
         </select>
       </div>
@@ -1911,6 +1934,11 @@ function renderRegister() {
         <label>${I18N.t("auth.phone")}</label>
         <input type="tel" id="reg-phone" placeholder="+1 555 555 5555" />
       </div>
+      <div class="form-group">
+        <label>${I18N.t("auth.birthdate")}</label>
+        <input type="date" id="reg-birthdate" />
+        <p class="form-field-hint">${I18N.t("auth.birthdateHint")}</p>
+      </div>
       <button class="btn btn-primary" id="reg-submit" style="width:100%;">${I18N.t("auth.submitRegister")}</button>
       <p class="form-msg" id="reg-msg"></p>
       <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
@@ -1924,15 +1952,55 @@ function renderRegister() {
     const email = document.getElementById("reg-email").value;
     const password = document.getElementById("reg-password").value;
     const phone = document.getElementById("reg-phone").value;
+    const birthdate = document.getElementById("reg-birthdate").value;
     const msgEl = document.getElementById("reg-msg");
     try {
-      const data = await api("/api/auth/register", { method: "POST", body: { name, email, password, phone } });
+      const data = await api("/api/auth/register", { method: "POST", body: { name, email, password, phone, birthdate } });
       setAuth(data.token, data.user);
       location.hash = "#/";
     } catch (e) {
       msgEl.textContent = e.message;
       msgEl.className = "form-msg error";
     }
+  });
+}
+
+// One-time gate for logged-in accounts that don't have a birthdate on file
+// yet (Google/Facebook signups, or pre-existing accounts from before this
+// requirement existed). Blocks every other route until confirmed - see the
+// AGE_GATE_EXEMPT_ROUTES check in router(). Self-attestation only, same
+// disclosed limitation as the registration-form check.
+function renderConfirmAge() {
+  viewEl.innerHTML = `
+    <div class="form-panel">
+      <h2 class="section-heading">${I18N.t("auth.confirmAgeTitle")}</h2>
+      <p class="form-field-hint">${I18N.t("auth.confirmAgeBody")}</p>
+      <div class="form-group">
+        <label>${I18N.t("auth.birthdate")}</label>
+        <input type="date" id="confirm-age-birthdate" />
+      </div>
+      <button class="btn btn-primary" id="confirm-age-submit" style="width:100%;">${I18N.t("common.continue")}</button>
+      <p class="form-msg" id="confirm-age-msg"></p>
+      <p class="form-footer-link"><a href="#" id="confirm-age-logout">${I18N.t("nav.logout")}</a></p>
+    </div>
+  `;
+  document.getElementById("confirm-age-submit").addEventListener("click", async () => {
+    const birthdate = document.getElementById("confirm-age-birthdate").value;
+    const msgEl = document.getElementById("confirm-age-msg");
+    try {
+      const data = await api("/api/auth/birthdate", { method: "PUT", auth: true, body: { birthdate } });
+      setAuth(state.token, data.user);
+      location.hash = "#/";
+      router();
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  });
+  document.getElementById("confirm-age-logout").addEventListener("click", (e) => {
+    e.preventDefault();
+    setAuth(null, null);
+    location.hash = "#/login";
   });
 }
 
@@ -2766,6 +2834,7 @@ async function renderFriendsPage() {
     <div class="friends-search-tabs">
       <button class="friends-search-tab ${friendsPageTab === "friends" ? "active" : ""}" data-tab="friends">${I18N.t("friendsPage.tabFriends")}</button>
       <button class="friends-search-tab ${friendsPageTab === "people" ? "active" : ""}" data-tab="people">${I18N.t("friendsPage.tabPeople")}</button>
+      <a class="friends-search-tab friends-search-tab-dating" href="#/dating">💘 ${I18N.t("friendsPage.tabDating")}</a>
     </div>
     <input type="text" id="friends-search-input" class="friends-search-input" placeholder="${friendsPageTab === "people" ? I18N.t("friendsPage.searchPeoplePlaceholder") : I18N.t("friendsPage.searchFriendsPlaceholder")}" />
     <div id="friends-page-body"><p>${I18N.t("common.loading")}</p></div>
@@ -11940,6 +12009,765 @@ async function renderAdminUsers() {
     if (e.key === "Enter") load(e.target.value.trim());
   });
   load("");
+}
+
+// ---------------- Legal pages (Terms & Conditions / Privacy Policy) ----------------
+// These were previously drafted but never wired into the router - the
+// footer links pointed at #/terms and #/privacy with no matching route, so
+// they silently rendered "page not found". Fixed by writing real bilingual
+// content covering the platform as it exists today and wiring it up here.
+// As with the Dating safety addendum, this is AI-drafted legal content and
+// should still be reviewed by a licensed attorney for the jurisdictions
+// HieloIce operates in before being treated as final/binding.
+
+function legalLastUpdated() {
+  const d = new Date();
+  const months = I18N.lang === "es"
+    ? ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    : ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  return I18N.lang === "es"
+    ? `Ultima actualizacion: ${d.getDate()} de ${months[d.getMonth()]} de ${d.getFullYear()}`
+    : `Last updated: ${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+function termsContent() {
+  if (I18N.lang === "es") {
+    return {
+      title: "Terminos y Condiciones de HieloIce",
+      sections: [
+        ["1. Aceptacion de estos terminos",
+         "Al crear una cuenta o usar HieloIce (el sitio web, la aplicacion movil y todas sus funciones, incluyendo el Marketplace, Moments, Loops, Videos, Book Club, Comunidades, Podcasts y Dating), aceptas estos Terminos y Condiciones y nuestra Politica de Privacidad. Si no estas de acuerdo, no debes usar la plataforma."],
+        ["2. Elegibilidad",
+         "HieloIce es solo para personas mayores de 18 anos. Confirmamos tu edad mediante la fecha de nacimiento que proporcionas al registrarte o al confirmarla despues; esto es una declaracion propia y no una verificacion de identidad por terceros. Si descubrimos que una cuenta pertenece a un menor de edad, la suspenderemos."],
+        ["3. Tu cuenta",
+         "Eres responsable de mantener segura tu contrasena y de toda la actividad en tu cuenta. Debes proporcionar informacion veraz al registrarte. No se permite crear multiples cuentas para evadir una suspension o para manipular funciones como calificaciones, reportes o el algoritmo de recomendacion."],
+        ["4. El Marketplace de libros usados",
+         "El Marketplace conecta a compradores y vendedores de libros usados directamente entre si. HieloIce no es parte de estas transacciones, no garantiza la condicion, autenticidad o entrega de ningun articulo, y actualmente no procesa pagos entre usuarios ni ofrece proteccion de pago tipo garantia (escrow) - los acuerdos de pago y envio se realizan directamente entre comprador y vendedor bajo su propio riesgo. Esta prohibido publicar articulos ilegales, robados o falsificados."],
+        ["5. Funciones sociales",
+         "Moments, Loops, Videos, Book Club, Comunidades y Podcasts te permiten publicar y compartir contenido con otros usuarios. Eres responsable del contenido que publicas y debes tener los derechos necesarios sobre el. Nos reservamos el derecho de eliminar contenido que viole estas reglas o nuestras politicas de la comunidad."],
+        ["6. HieloIce Dating",
+         "Dating es una funcion separada y opcional dentro de HieloIce, sujeta a su propia adenda de Seguridad y Terminos que puedes leer en cualquier momento desde la seccion de Dating. Al activar Dating, tambien aceptas esos terminos adicionales."],
+        ["7. Contenido que publicas",
+         "Conservas la propiedad de las fotos, videos, textos y demas contenido que publicas. Al subirlos, nos otorgas una licencia para almacenarlos, mostrarlos y distribuirlos dentro de la plataforma segun la configuracion de privacidad que elijas. No publiques contenido que no tengas derecho a compartir, que infrinja derechos de autor, o que involucre a menores de edad de forma inapropiada."],
+        ["8. Conducta prohibida",
+         "Esta prohibido: acosar, amenazar o discriminar a otros usuarios; publicar contenido ilegal, fraudulento o enganoso; suplantar la identidad de otra persona o entidad; usar bots, scraping u otras herramientas automatizadas no autorizadas; intentar acceder a cuentas ajenas o a partes no publicas de la plataforma; y cualquier otra actividad que viole la ley aplicable."],
+        ["9. Reportes, bloqueo y cumplimiento",
+         "Puedes reportar o bloquear a otros usuarios y publicaciones desde la plataforma. Revisamos los reportes y podemos advertir, suspender o eliminar permanentemente cuentas que violen estas reglas, sin previo aviso en casos graves."],
+        ["10. Propiedad intelectual",
+         "El nombre HieloIce, su logotipo y el diseno de la plataforma son propiedad de HieloIce. No se permite copiar, imitar o usar nuestra marca sin autorizacion. HieloIce tampoco permite el uso de iconos, simbolos, imagenes o marcas registradas de otras empresas o plataformas dentro del servicio."],
+        ["11. Exencion de garantias y limitacion de responsabilidad",
+         "HieloIce se ofrece \"tal cual\", sin garantias de ningun tipo. No garantizamos que la plataforma este libre de errores o interrupciones, ni la veracidad, seguridad o legalidad del contenido publicado por los usuarios. En la maxima medida permitida por la ley, HieloIce no sera responsable por danos indirectos, incidentales o consecuentes derivados del uso de la plataforma."],
+        ["12. Terminacion",
+         "Podemos suspender o eliminar tu cuenta si violas estos terminos. Puedes eliminar tu cuenta en cualquier momento desde la pagina de eliminacion de cuenta."],
+        ["13. Cambios a estos terminos",
+         "Podemos actualizar estos terminos a medida que la plataforma evolucione. Los cambios importantes se comunicaran dentro de la aplicacion. El uso continuado de HieloIce despues de un cambio implica tu aceptacion de los nuevos terminos."],
+        ["14. Ley aplicable",
+         "Estos terminos se rigen por las leyes aplicables segun la jurisdiccion de operacion de HieloIce. [Nota interna: esta seccion debe completarse con el asesoramiento de un abogado con licencia segun donde se constituya y opere la empresa.]"],
+        ["15. Contacto",
+         "Si tienes preguntas sobre estos terminos, escribenos a info@hieloice.com."],
+      ],
+    };
+  }
+  return {
+    title: "HieloIce Terms & Conditions",
+    sections: [
+      ["1. Acceptance of these terms",
+       "By creating an account or using HieloIce (the website, mobile app, and all its features, including the Marketplace, Moments, Loops, Videos, Book Club, Communities, Podcasts, and Dating), you agree to these Terms & Conditions and our Privacy Policy. If you don't agree, you may not use the platform."],
+      ["2. Eligibility",
+       "HieloIce is for adults 18 and older only. We confirm your age from the birthdate you provide when registering or when later confirming it; this is self-attestation, not third-party identity verification. If we discover an account belongs to a minor, we will suspend it."],
+      ["3. Your account",
+       "You're responsible for keeping your password secure and for all activity on your account. You must provide truthful information when registering. Creating multiple accounts to evade a suspension or manipulate features like ratings, reports, or the recommendation algorithm is not allowed."],
+      ["4. The used-book Marketplace",
+       "The Marketplace connects buyers and sellers of used books directly with each other. HieloIce is not a party to these transactions, does not guarantee the condition, authenticity, or delivery of any item, and does not currently process payments between users or offer escrow-style payment protection - payment and shipping arrangements happen directly between buyer and seller at their own risk. Posting illegal, stolen, or counterfeit items is prohibited."],
+      ["5. Social features",
+       "Moments, Loops, Videos, Book Club, Communities, and Podcasts let you post and share content with other users. You're responsible for the content you post and must have the necessary rights to it. We reserve the right to remove content that violates these rules or our community guidelines."],
+      ["6. HieloIce Dating",
+       "Dating is a separate, opt-in feature within HieloIce, subject to its own Safety & Terms addendum, which you can read at any time from the Dating section. Activating Dating means you also agree to those additional terms."],
+      ["7. Content you post",
+       "You keep ownership of the photos, videos, text, and other content you post. By uploading it, you grant us a license to store, display, and distribute it within the platform according to the privacy settings you choose. Don't post content you don't have the right to share, that infringes copyright, or that inappropriately involves minors."],
+      ["8. Prohibited conduct",
+       "Prohibited: harassing, threatening, or discriminating against other users; posting illegal, fraudulent, or misleading content; impersonating another person or entity; using bots, scraping, or other unauthorized automated tools; attempting to access other users' accounts or non-public parts of the platform; and any other activity that violates applicable law."],
+      ["9. Reporting, blocking, and enforcement",
+       "You can report or block other users and posts from within the platform. We review reports and may warn, suspend, or permanently remove accounts that violate these rules, without prior notice in serious cases."],
+      ["10. Intellectual property",
+       "The HieloIce name, logo, and platform design are the property of HieloIce. Copying, imitating, or using our brand without authorization is not permitted. HieloIce likewise does not permit the use of icons, symbols, images, or trademarks belonging to other companies or platforms within the service."],
+      ["11. Disclaimer of warranties and limitation of liability",
+       "HieloIce is provided \"as is\", without warranties of any kind. We don't guarantee the platform will be error-free or uninterrupted, or the truthfulness, safety, or legality of content posted by users. To the maximum extent permitted by law, HieloIce will not be liable for indirect, incidental, or consequential damages arising from use of the platform."],
+      ["12. Termination",
+       "We may suspend or remove your account if you violate these terms. You can delete your account at any time from the account deletion page."],
+      ["13. Changes to these terms",
+       "We may update these terms as the platform evolves. Material changes will be communicated within the app. Continued use of HieloIce after a change means you accept the new terms."],
+      ["14. Governing law",
+       "These terms are governed by applicable law based on HieloIce's operating jurisdiction. [Internal note: this section should be completed with advice from a licensed attorney based on where the company is incorporated and operates.]"],
+      ["15. Contact",
+       "If you have questions about these terms, email us at info@hieloice.com."],
+    ],
+  };
+}
+
+function privacyContent() {
+  if (I18N.lang === "es") {
+    return {
+      title: "Politica de Privacidad de HieloIce",
+      sections: [
+        ["1. Informacion que recopilamos",
+         "Recopilamos la informacion que nos proporcionas directamente: nombre, correo electronico, telefono (opcional), fecha de nacimiento, fotos y videos que subes, mensajes que envias, y la informacion de tu perfil de Dating si lo activas (incluyendo ubicacion aproximada, con tu permiso). Tambien recopilamos informacion de uso automaticamente, como paginas visitadas y acciones dentro de la app, para mejorar la plataforma."],
+        ["2. Como usamos tu informacion",
+         "Usamos tu informacion para operar la plataforma (mostrar tu perfil, procesar publicaciones, conectar amigos, calcular distancias aproximadas en Dating), para verificar que tienes al menos 18 anos, para enviarte notificaciones que elijas recibir, para prevenir fraude y abuso, y para mejorar nuestras funciones."],
+        ["3. Como compartimos tu informacion",
+         "No vendemos tu informacion personal. Compartimos datos unicamente con proveedores de servicio que nos ayudan a operar HieloIce (por ejemplo, Supabase para la base de datos y almacenamiento, Render para el alojamiento del sitio, Jamendo para la biblioteca de musica libre de regalias, y Google o Facebook si eliges iniciar sesion con ellos), y cuando la ley lo exige."],
+        ["4. Tus opciones y derechos",
+         "Puedes editar tu perfil y tu informacion en cualquier momento. Puedes desactivar tu perfil de Dating sin perder tus matches ni tu informacion. Puedes eliminar tu cuenta por completo desde la pagina de eliminacion de cuenta, lo cual borra tu informacion personal segun lo descrito alli. Puedes ajustar tus preferencias de notificaciones desde tu perfil."],
+        ["5. Retencion de datos",
+         "Conservamos tu informacion mientras tu cuenta este activa. Si eliminas tu cuenta, eliminamos o anonimizamos tu informacion personal, salvo lo que debamos conservar por obligaciones legales o para prevenir fraude."],
+        ["6. Privacidad de menores",
+         "HieloIce es una plataforma solo para personas mayores de 18 anos. No recopilamos intencionalmente informacion de menores de edad. Si tienes motivos para creer que un menor de edad esta usando la plataforma, contactanos de inmediato a info@hieloice.com."],
+        ["7. Seguridad",
+         "Tomamos medidas razonables para proteger tu informacion, incluyendo el uso de conexiones cifradas (HTTPS) y control de acceso a nuestra base de datos. Ningun sistema es completamente seguro, por lo que no podemos garantizar una seguridad absoluta."],
+        ["8. Ubicacion en Dating",
+         "Si activas Dating y compartes tu ubicacion, la usamos unicamente para calcular una distancia aproximada entre tu y otros usuarios de Dating. Nunca mostramos tu ubicacion exacta ni tu direccion a otros usuarios."],
+        ["9. Cambios a esta politica",
+         "Podemos actualizar esta politica de privacidad de vez en cuando. Los cambios importantes se comunicaran dentro de la aplicacion."],
+        ["10. Contacto",
+         "Si tienes preguntas sobre esta politica de privacidad o quieres ejercer tus derechos sobre tu informacion, escribenos a info@hieloice.com."],
+      ],
+    };
+  }
+  return {
+    title: "HieloIce Privacy Policy",
+    sections: [
+      ["1. Information we collect",
+       "We collect information you provide directly: name, email, phone (optional), date of birth, photos and videos you upload, messages you send, and your Dating profile information if you activate it (including approximate location, with your permission). We also automatically collect usage information, like pages visited and in-app actions, to improve the platform."],
+      ["2. How we use your information",
+       "We use your information to operate the platform (display your profile, process posts, connect friends, compute approximate distances in Dating), to verify you're at least 18, to send you notifications you choose to receive, to prevent fraud and abuse, and to improve our features."],
+      ["3. How we share your information",
+       "We do not sell your personal information. We share data only with service providers that help us run HieloIce (for example, Supabase for database and storage, Render for site hosting, Jamendo for the royalty-free music library, and Google or Facebook if you choose to sign in with them), and when required by law."],
+      ["4. Your choices and rights",
+       "You can edit your profile and information at any time. You can deactivate your Dating profile without losing your matches or information. You can delete your account entirely from the account deletion page, which erases your personal information as described there. You can adjust your notification preferences from your profile."],
+      ["5. Data retention",
+       "We keep your information while your account is active. If you delete your account, we delete or anonymize your personal information, except what we must retain for legal obligations or to prevent fraud."],
+      ["6. Children's privacy",
+       "HieloIce is a platform for adults 18 and older only. We do not knowingly collect information from minors. If you have reason to believe a minor is using the platform, contact us immediately at info@hieloice.com."],
+      ["7. Security",
+       "We take reasonable measures to protect your information, including encrypted connections (HTTPS) and access controls on our database. No system is completely secure, so we cannot guarantee absolute security."],
+      ["8. Location in Dating",
+       "If you activate Dating and share your location, we use it only to compute an approximate distance between you and other Dating users. We never show your exact location or address to other users."],
+      ["9. Changes to this policy",
+       "We may update this privacy policy from time to time. Material changes will be communicated within the app."],
+      ["10. Contact",
+       "If you have questions about this privacy policy or want to exercise your rights over your information, email us at info@hieloice.com."],
+    ],
+  };
+}
+
+function renderTerms() {
+  const content = termsContent();
+  viewEl.innerHTML = `
+    <div class="form-panel legal-page">
+      <h2 class="section-heading">${escapeHtml(content.title)}</h2>
+      <p class="legal-updated">${escapeHtml(legalLastUpdated())}</p>
+      ${content.sections
+        .map(([heading, body]) => `<h3 class="legal-heading">${escapeHtml(heading)}</h3><p class="legal-body">${escapeHtml(body)}</p>`)
+        .join("")}
+      <a class="form-footer-link" href="#/">${I18N.t("common.goHome")}</a>
+    </div>
+  `;
+}
+
+function renderPrivacy() {
+  const content = privacyContent();
+  viewEl.innerHTML = `
+    <div class="form-panel legal-page">
+      <h2 class="section-heading">${escapeHtml(content.title)}</h2>
+      <p class="legal-updated">${escapeHtml(legalLastUpdated())}</p>
+      ${content.sections
+        .map(([heading, body]) => `<h3 class="legal-heading">${escapeHtml(heading)}</h3><p class="legal-body">${escapeHtml(body)}</p>`)
+        .join("")}
+      <a class="form-footer-link" href="#/">${I18N.t("common.goHome")}</a>
+    </div>
+  `;
+}
+
+// ---------------- Dating ----------------
+// Tinder/Bumble-style opt-in feature (Carlos's explicit spec): heart+arrow
+// icon inside Friends, swipe right = like / swipe left = pass,
+// location + shared-interest matching, block/unmatch, safety-first, matches
+// exchange photos/video/messages through the existing #/messages system.
+// Separate from the main HieloIce profile - off by default (dating_profiles
+// is its own opt-in row, not part of mkt_users). Every screen here assumes
+// the platform-wide 18+ gate (see AGE_GATE_EXEMPT_ROUTES / renderConfirmAge
+// above) has already run before this code can be reached; the server
+// independently re-verifies age on every request regardless.
+
+const DATING_SAFETY_ACK_KEY = "datingSafetyAckV1";
+const datingDeckState = { candidates: [], index: 0 };
+
+// Bilingual draft of the Dating-specific safety/terms addendum (Carlos's
+// explicit choice: build the technical feature AND draft this for a real
+// attorney to review before public launch - not a substitute for one).
+// Kept as a plain-language draft, not final legal copy.
+function datingTermsContent() {
+  if (I18N.lang === "es") {
+    return {
+      title: "Terminos y Seguridad de HieloIce Dating",
+      notice:
+        "BORRADOR - Este documento es un borrador preparado para HieloIce y aun no ha sido revisado ni aprobado por un abogado. No debe publicarse ni considerarse vinculante hasta que un abogado con licencia lo revise y apruebe.",
+      sections: [
+        [
+          "1. Elegibilidad y edad",
+          "HieloIce Dating es solo para personas mayores de 18 anos. Confirmamos tu edad con la fecha de nacimiento que proporcionaste al crear tu cuenta o al confirmarla despues. No realizamos verificacion de identidad, antecedentes penales, estado civil ni verificacion de edad por terceros. Si tienes motivos para creer que un usuario es menor de edad, reportalo de inmediato usando la funcion de Reportar.",
+        ],
+        [
+          "2. Como funciona el emparejamiento",
+          "Dating es un perfil separado y opcional, apagado por defecto, distinto de tu perfil principal de HieloIce. Cuando lo activas, otros usuarios con Dating activo pueden verte segun intereses compartidos y una distancia aproximada (nunca tu ubicacion exacta ni tu direccion). Deslizar a la derecha indica interes (\"like\"); deslizar a la izquierda indica que no (\"pass\"). Si dos personas se dan like mutuamente, se crea un match y pueden enviarse mensajes.",
+        ],
+        [
+          "3. Tu seguridad al conocer gente",
+          "Reunete por primera vez en un lugar publico. Avisa a un amigo o familiar donde vas y con quien. No compartas informacion financiera, contrasenas ni documentos de identidad. Nunca envies dinero a alguien que conociste en la plataforma, sin importar la historia que te cuenten - esto es una senal comun de fraude. Confia en tu instinto: si algo se siente mal, puedes bloquear, reportar o dejar de responder en cualquier momento.",
+        ],
+        [
+          "4. Conducta prohibida",
+          "Esta prohibido: acosar o enviar contenido no solicitado explicito; suplantar la identidad de otra persona; usar Dating con fines comerciales, publicitarios o de reclutamiento; solicitar dinero, regalos o informacion financiera; publicar o enviar contenido ilegal; contactar o intentar contactar a menores de edad. Violar estas reglas puede resultar en suspension o eliminacion permanente de la cuenta.",
+        ],
+        [
+          "5. Contenido que compartes",
+          "Las fotos, videos, mensajes e informacion que compartes en Dating siguen siendo tuyos. Al subirlos, autorizas a HieloIce a mostrarlos dentro de la plataforma a las personas con las que interactuas (por ejemplo, tus fotos de perfil a otros usuarios, o los mensajes al destinatario de un match). No subas contenido que no tengas derecho a compartir, ni contenido que involucre a menores de edad.",
+        ],
+        [
+          "6. Bloquear, deshacer match y reportar",
+          "Puedes bloquear o deshacer el match con cualquier persona en cualquier momento desde tu lista de matches. Bloquear a alguien impide todo contacto futuro en ambas direcciones. Puedes reportar a un usuario por acoso, perfil falso, contenido inapropiado u otras razones; nuestro equipo revisa los reportes y puede suspender cuentas que violen estas reglas.",
+        ],
+        [
+          "7. Sin garantias",
+          "HieloIce no verifica la identidad, antecedentes, intenciones ni veracidad de la informacion de ningun usuario de Dating. No garantizamos la seguridad de ningun encuentro o interaccion, en linea o en persona. Usas Dating bajo tu propio riesgo y criterio.",
+        ],
+        [
+          "8. Datos que usamos para Dating",
+          "Para mostrarte personas cercanas, usamos tu ubicacion (con tu permiso) para calcular una distancia aproximada - nunca compartimos tu ubicacion exacta ni tu direccion con otros usuarios. Puedes desactivar Dating en cualquier momento desde la configuracion de tu perfil de Dating; esto oculta tu perfil de la busqueda mientras conserva tus matches e informacion.",
+        ],
+        [
+          "9. Vigencia y cambios",
+          "Podemos actualizar este documento a medida que la funcion evolucione. Los cambios importantes se comunicaran dentro de la aplicacion.",
+        ],
+      ],
+    };
+  }
+  return {
+    title: "HieloIce Dating Safety & Terms",
+    notice:
+      "DRAFT - This document is a draft prepared for HieloIce and has not yet been reviewed or approved by an attorney. It should not be published or treated as binding until reviewed and approved by a licensed attorney.",
+    sections: [
+      [
+        "1. Eligibility and age",
+        "HieloIce Dating is for adults 18 and older only. We confirm your age from the birthdate you provided when creating your account or when later confirming it. We do not perform identity verification, criminal background checks, marital-status checks, or third-party age verification. If you have reason to believe a user is a minor, report them immediately using the Report feature.",
+      ],
+      [
+        "2. How matching works",
+        "Dating is a separate, opt-in profile, off by default, distinct from your main HieloIce profile. Once activated, other users with Dating active can see you based on shared interests and an approximate distance (never your exact location or address). Swiping right indicates interest (\"like\"); swiping left means no (\"pass\"). When two people like each other, a match is created and they can message each other.",
+      ],
+      [
+        "3. Your safety when meeting people",
+        "Meet for the first time in a public place. Tell a friend or family member where you're going and with whom. Don't share financial information, passwords, or identity documents. Never send money to someone you met on the platform, no matter what story they tell you - this is a common sign of fraud. Trust your instincts: if something feels wrong, you can block, report, or stop responding at any time.",
+      ],
+      [
+        "4. Prohibited conduct",
+        "Prohibited: harassment or sending unsolicited explicit content; impersonating another person; using Dating for commercial, advertising, or recruiting purposes; soliciting money, gifts, or financial information; posting or sending unlawful content; contacting or attempting to contact minors. Violating these rules may result in account suspension or permanent removal.",
+      ],
+      [
+        "5. Content you share",
+        "Photos, videos, messages, and information you share on Dating remain yours. By uploading them, you authorize HieloIce to display them within the platform to the people you interact with (for example, your profile photos to other users, or messages to a match recipient). Do not upload content you don't have the right to share, or content involving minors.",
+      ],
+      [
+        "6. Blocking, unmatching, and reporting",
+        "You can block or unmatch anyone at any time from your matches list. Blocking someone prevents all future contact in both directions. You can report a user for harassment, a fake profile, inappropriate content, or other reasons; our team reviews reports and may suspend accounts that violate these rules.",
+      ],
+      [
+        "7. No guarantees",
+        "HieloIce does not verify the identity, background, intentions, or truthfulness of any Dating user's information. We do not guarantee the safety of any encounter or interaction, online or in person. You use Dating at your own risk and discretion.",
+      ],
+      [
+        "8. Data we use for Dating",
+        "To show you nearby people, we use your location (with your permission) to compute an approximate distance - we never share your exact location or address with other users. You can deactivate Dating at any time from your Dating profile settings; this hides your profile from discovery while keeping your matches and information intact.",
+      ],
+      [
+        "9. Updates",
+        "We may update this document as the feature evolves. Material changes will be communicated within the app.",
+      ],
+    ],
+  };
+}
+
+function renderDatingTerms() {
+  const content = datingTermsContent();
+  viewEl.innerHTML = `
+    <div class="form-panel dating-terms-page">
+      <div class="dating-terms-draft-banner">${escapeHtml(content.notice)}</div>
+      <h2 class="section-heading">💘 ${escapeHtml(content.title)}</h2>
+      ${content.sections
+        .map(
+          ([heading, body]) => `
+        <h3 class="dating-terms-heading">${escapeHtml(heading)}</h3>
+        <p class="dating-terms-body">${escapeHtml(body)}</p>`
+        )
+        .join("")}
+      <a class="form-footer-link" href="#/dating">${I18N.t("common.goBack")}</a>
+    </div>
+  `;
+}
+
+async function renderDatingSwipe() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let data;
+  try {
+    data = await api("/api/dating/profile", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!data.profile || !data.profile.active) return renderDatingIntro();
+  return renderDatingDeck();
+}
+
+function renderDatingIntro() {
+  viewEl.innerHTML = `
+    <div class="dating-intro">
+      <div class="dating-intro-icon">💘</div>
+      <h2 class="section-heading">${I18N.t("dating.introTitle")}</h2>
+      <p class="dating-intro-body">${I18N.t("dating.introBody")}</p>
+      <div class="dating-safety-box">
+        <h3>${I18N.t("dating.safetyTitle")}</h3>
+        <ul class="dating-safety-list">
+          <li>${I18N.t("dating.safety1")}</li>
+          <li>${I18N.t("dating.safety2")}</li>
+          <li>${I18N.t("dating.safety3")}</li>
+          <li>${I18N.t("dating.safety4")}</li>
+          <li>${I18N.t("dating.safety5")}</li>
+        </ul>
+      </div>
+      <p class="form-field-hint"><a href="#/dating-terms">${I18N.t("dating.readFullSafetyTerms")}</a></p>
+      <button class="btn btn-primary" id="dating-intro-continue" style="width:100%;">${I18N.t("dating.introCta")}</button>
+      <a class="form-footer-link" href="#/friends">${I18N.t("common.goBack")}</a>
+    </div>
+  `;
+  document.getElementById("dating-intro-continue").addEventListener("click", () => {
+    localStorage.setItem(DATING_SAFETY_ACK_KEY, "1");
+    location.hash = "#/dating/setup";
+  });
+}
+
+async function datingFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function renderDatingSetup() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let data;
+  try {
+    data = await api("/api/dating/profile", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const profile = data.profile || { bio: "", photos: [], interests: [], gender: "", seeking: [], active: false, hasLocation: false };
+  const setupPhotos = profile.photos.slice();
+  let setupLat = null;
+  let setupLng = null;
+  let locationStatus = profile.hasLocation ? I18N.t("dating.locationSaved") : I18N.t("dating.locationNotSet");
+
+  viewEl.innerHTML = `
+    <div class="form-panel dating-setup-panel">
+      <h2 class="section-heading">💘 ${I18N.t("dating.setupTitle")}</h2>
+      <p class="form-field-hint">${I18N.t("dating.setupHint")}</p>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.photosLabel")}</label>
+        <div class="dating-photo-grid" id="dating-photo-grid"></div>
+        <input type="file" id="dating-photo-input" accept="image/*" multiple style="display:none;" />
+        <button type="button" class="btn btn-outline" id="dating-photo-add-btn">${I18N.t("dating.addPhoto")}</button>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.bioLabel")}</label>
+        <textarea id="dating-bio" rows="3" maxlength="500">${escapeHtml(profile.bio || "")}</textarea>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.interestsLabel")}</label>
+        <input type="text" id="dating-interests" value="${escapeHtml((profile.interests || []).join(", "))}" placeholder="${I18N.t("dating.interestsPlaceholder")}" />
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.genderLabel")}</label>
+        <select id="dating-gender">
+          <option value="">${I18N.t("dating.genderSelect")}</option>
+          <option value="woman" ${profile.gender === "woman" ? "selected" : ""}>${I18N.t("dating.genderWoman")}</option>
+          <option value="man" ${profile.gender === "man" ? "selected" : ""}>${I18N.t("dating.genderMan")}</option>
+          <option value="nonbinary" ${profile.gender === "nonbinary" ? "selected" : ""}>${I18N.t("dating.genderNonbinary")}</option>
+          <option value="other" ${profile.gender === "other" ? "selected" : ""}>${I18N.t("dating.genderOther")}</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.seekingLabel")}</label>
+        <div class="dating-seeking-options" id="dating-seeking-options">
+          ${["woman", "man", "nonbinary", "other"]
+            .map(
+              (g) => `
+            <label class="dating-seeking-chip">
+              <input type="checkbox" value="${g}" ${(profile.seeking || []).includes(g) ? "checked" : ""} />
+              ${I18N.t("dating.gender" + g.charAt(0).toUpperCase() + g.slice(1))}
+            </label>`
+            )
+            .join("")}
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.locationLabel")}</label>
+        <p class="form-field-hint" id="dating-location-status">${escapeHtml(locationStatus)}</p>
+        <button type="button" class="btn btn-outline" id="dating-location-btn">${I18N.t("dating.shareLocation")}</button>
+        <p class="form-field-hint">${I18N.t("dating.locationPrivacyNote")}</p>
+      </div>
+
+      <button class="btn btn-primary" id="dating-setup-save" style="width:100%;">${profile.active ? I18N.t("common.save") : I18N.t("dating.activateCta")}</button>
+      ${profile.active ? `<button class="btn btn-secondary" id="dating-setup-deactivate" style="width:100%;margin-top:8px;">${I18N.t("dating.deactivate")}</button>` : ""}
+      <p class="form-msg" id="dating-setup-msg"></p>
+      <a class="form-footer-link" href="#/dating">${I18N.t("common.goBack")}</a>
+    </div>
+  `;
+
+  function drawPhotoGrid() {
+    const grid = document.getElementById("dating-photo-grid");
+    grid.innerHTML = setupPhotos
+      .map(
+        (p, i) => `
+      <div class="dating-photo-thumb">
+        <img src="${p}" />
+        <button type="button" class="dating-photo-remove" data-i="${i}" aria-label="${I18N.t("common.delete")}">×</button>
+      </div>`
+      )
+      .join("");
+    grid.querySelectorAll(".dating-photo-remove").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        setupPhotos.splice(Number(btn.dataset.i), 1);
+        drawPhotoGrid();
+      });
+    });
+  }
+  drawPhotoGrid();
+
+  document.getElementById("dating-photo-add-btn").addEventListener("click", () => document.getElementById("dating-photo-input").click());
+  document.getElementById("dating-photo-input").addEventListener("change", async (e) => {
+    const files = Array.from(e.target.files || []).slice(0, 6 - setupPhotos.length);
+    for (const file of files) {
+      try {
+        setupPhotos.push(await datingFileToDataUrl(file));
+      } catch (err) {
+        // skip a file that fails to read
+      }
+    }
+    drawPhotoGrid();
+    e.target.value = "";
+  });
+
+  // Carlos's explicit choice: only ever an approximate distance is shown to
+  // other users - the browser's precise coordinates are sent to our own
+  // server (over HTTPS) for matching, but the server itself only ever
+  // returns a rounded distance bucket to any client, never raw lat/lng of
+  // another person. See approximateDistanceLabel() in server.js.
+  document.getElementById("dating-location-btn").addEventListener("click", () => {
+    const statusEl = document.getElementById("dating-location-status");
+    if (!navigator.geolocation) {
+      statusEl.textContent = I18N.t("dating.locationUnsupported");
+      return;
+    }
+    statusEl.textContent = I18N.t("common.loading");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setupLat = pos.coords.latitude;
+        setupLng = pos.coords.longitude;
+        statusEl.textContent = I18N.t("dating.locationSaved");
+      },
+      () => {
+        statusEl.textContent = I18N.t("dating.locationDenied");
+      },
+      { enableHighAccuracy: false, timeout: 10000 }
+    );
+  });
+
+  async function saveProfile(activate) {
+    const msgEl = document.getElementById("dating-setup-msg");
+    const bio = document.getElementById("dating-bio").value;
+    const interests = document
+      .getElementById("dating-interests")
+      .value.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const gender = document.getElementById("dating-gender").value;
+    const seeking = Array.from(document.querySelectorAll("#dating-seeking-options input:checked")).map((el) => el.value);
+    const body = { bio, interests, gender, seeking, photos: setupPhotos, active: activate };
+    if (typeof setupLat === "number" && typeof setupLng === "number") {
+      body.lat = setupLat;
+      body.lng = setupLng;
+    }
+    try {
+      await api("/api/dating/profile", { method: "PUT", auth: true, body });
+      location.hash = "#/dating";
+      router();
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  }
+
+  document.getElementById("dating-setup-save").addEventListener("click", () => saveProfile(true));
+  const deactivateBtn = document.getElementById("dating-setup-deactivate");
+  if (deactivateBtn) {
+    deactivateBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("dating.confirmDeactivate"))) return;
+      try {
+        await api("/api/dating/deactivate", { method: "POST", auth: true });
+        location.hash = "#/friends";
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+}
+
+async function renderDatingDeck() {
+  viewEl.innerHTML = `
+    <div class="dating-deck-page">
+      <div class="dating-deck-header">
+        <h2 class="section-heading">💘 ${I18N.t("dating.deckTitle")}</h2>
+        <div class="dating-deck-header-links">
+          <a href="#/dating/matches">${I18N.t("dating.matchesLink")}</a>
+          <a href="#/dating/setup">${I18N.t("dating.editProfileLink")}</a>
+          <a href="#/dating-terms">${I18N.t("dating.safetyLink")}</a>
+        </div>
+      </div>
+      <div class="dating-card-stack" id="dating-card-stack"></div>
+      <div class="dating-deck-actions">
+        <button class="dating-action-btn dating-action-pass" id="dating-btn-pass" aria-label="${I18N.t("dating.pass")}">✕</button>
+        <button class="dating-action-btn dating-action-like" id="dating-btn-like" aria-label="${I18N.t("dating.like")}">♥</button>
+      </div>
+    </div>
+  `;
+
+  datingDeckState.candidates = [];
+  datingDeckState.index = 0;
+  try {
+    datingDeckState.candidates = await api("/api/dating/discover", { auth: true });
+  } catch (e) {
+    document.getElementById("dating-card-stack").innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  drawDatingCard();
+  document.getElementById("dating-btn-pass").addEventListener("click", () => datingSwipeCurrent("pass"));
+  document.getElementById("dating-btn-like").addEventListener("click", () => datingSwipeCurrent("like"));
+}
+
+function drawDatingCard() {
+  const stack = document.getElementById("dating-card-stack");
+  if (!stack) return;
+  const candidate = datingDeckState.candidates[datingDeckState.index];
+  if (!candidate) {
+    stack.innerHTML = `<div class="dating-empty-state"><p>${I18N.t("dating.noMoreCards")}</p><a class="btn btn-outline" href="#/dating/setup">${I18N.t("dating.editProfileLink")}</a></div>`;
+    return;
+  }
+  const photo = (candidate.photos && candidate.photos[0]) || "";
+  stack.innerHTML = `
+    <div class="dating-card" id="dating-active-card">
+      ${photo ? `<img class="dating-card-photo" src="${photo}" />` : `<div class="dating-card-photo-placeholder">${initials(candidate.name)}</div>`}
+      <div class="dating-card-overlay">
+        <p class="dating-card-name">${escapeHtml(candidate.name)}${candidate.distance ? ` · ${escapeHtml(candidate.distance)}` : ""}</p>
+        ${candidate.bio ? `<p class="dating-card-bio">${escapeHtml(candidate.bio)}</p>` : ""}
+        ${
+          candidate.interests && candidate.interests.length
+            ? `<div class="dating-card-chips">${candidate.interests
+                .slice(0, 6)
+                .map((i) => `<span class="dating-chip">${escapeHtml(i)}</span>`)
+                .join("")}</div>`
+            : ""
+        }
+      </div>
+      <div class="dating-card-swipe-hint dating-card-hint-like">${I18N.t("dating.like")}</div>
+      <div class="dating-card-swipe-hint dating-card-hint-pass">${I18N.t("dating.pass")}</div>
+    </div>
+  `;
+  wireDatingCardDrag();
+}
+
+// Pointer-based drag-to-swipe, with the button fallback above always
+// working too (accessibility + trackpads without touch/drag support).
+function wireDatingCardDrag() {
+  const card = document.getElementById("dating-active-card");
+  if (!card) return;
+  let startX = 0;
+  let startY = 0;
+  let dragging = false;
+  let dx = 0;
+
+  const onDown = (e) => {
+    dragging = true;
+    const p = e.touches ? e.touches[0] : e;
+    startX = p.clientX;
+    startY = p.clientY;
+    card.style.transition = "none";
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    const p = e.touches ? e.touches[0] : e;
+    dx = p.clientX - startX;
+    const dy = p.clientY - startY;
+    const rotate = dx / 12;
+    card.style.transform = `translate(${dx}px, ${dy}px) rotate(${rotate}deg)`;
+    card.classList.toggle("dating-card-lean-like", dx > 40);
+    card.classList.toggle("dating-card-lean-pass", dx < -40);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    card.style.transition = "";
+    if (dx > 100) {
+      datingSwipeCurrent("like");
+    } else if (dx < -100) {
+      datingSwipeCurrent("pass");
+    } else {
+      card.style.transform = "";
+      card.classList.remove("dating-card-lean-like", "dating-card-lean-pass");
+    }
+    dx = 0;
+  };
+
+  card.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+  card.addEventListener("touchstart", onDown, { passive: true });
+  card.addEventListener("touchmove", onMove, { passive: true });
+  card.addEventListener("touchend", onUp);
+}
+
+async function datingSwipeCurrent(direction) {
+  const candidate = datingDeckState.candidates[datingDeckState.index];
+  const card = document.getElementById("dating-active-card");
+  if (!candidate) return;
+  if (card) {
+    card.style.transition = "transform 0.25s ease, opacity 0.25s ease";
+    card.style.transform = direction === "like" ? "translate(400px, -60px) rotate(20deg)" : "translate(-400px, -60px) rotate(-20deg)";
+    card.style.opacity = "0";
+  }
+  datingDeckState.index++;
+  try {
+    const result = await api("/api/dating/swipe", { method: "POST", auth: true, body: { targetId: candidate.userId, direction } });
+    setTimeout(() => {
+      drawDatingCard();
+      if (result.matched) datingShowMatchOverlay(candidate);
+    }, 200);
+  } catch (e) {
+    setTimeout(() => drawDatingCard(), 200);
+  }
+}
+
+function datingShowMatchOverlay(candidate) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay dating-match-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box dating-match-box">
+      <div class="dating-match-icon">💘</div>
+      <h2 class="section-heading">${I18N.t("dating.itsAMatch")}</h2>
+      <p>${I18N.t("dating.matchBody").replace("{name}", escapeHtml(candidate.name))}</p>
+      <div class="action-row">
+        <a class="btn btn-primary" href="#/messages/${candidate.userId}">${I18N.t("dating.sendMessage")}</a>
+        <button class="btn btn-secondary" id="dating-match-close">${I18N.t("dating.keepSwiping")}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.getElementById("dating-match-close").addEventListener("click", () => overlay.remove());
+  const msgLink = overlay.querySelector("a.btn-primary");
+  if (msgLink) msgLink.addEventListener("click", () => overlay.remove());
+}
+
+async function renderDatingMatches() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `
+    <h2 class="section-heading">💘 ${I18N.t("dating.matchesTitle")}</h2>
+    <a class="form-footer-link" href="#/dating">${I18N.t("common.goBack")}</a>
+    <div id="dating-matches-list"><p>${I18N.t("common.loading")}</p></div>
+  `;
+  const listEl = document.getElementById("dating-matches-list");
+  let matches;
+  try {
+    matches = await api("/api/dating/matches", { auth: true });
+  } catch (e) {
+    listEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!matches.length) {
+    listEl.innerHTML = `<div class="empty-state">${I18N.t("dating.noMatches")}</div>`;
+    return;
+  }
+  listEl.innerHTML = `<div class="dating-matches-grid">${matches
+    .map(
+      (m) => `
+    <div class="dating-match-card" data-match-id="${m.matchId}" data-user-id="${m.userId}">
+      ${m.photo ? `<img class="dating-match-photo" src="${m.photo}" />` : `<div class="dating-match-photo-placeholder">${initials(m.name)}</div>`}
+      <p class="dating-match-name">${escapeHtml(m.name)}</p>
+      <div class="dating-match-actions">
+        <a class="btn btn-outline" href="#/messages/${m.userId}">${I18N.t("dating.sendMessage")}</a>
+        <button class="btn-icon-text dating-unmatch-btn" data-match-id="${m.matchId}">${I18N.t("dating.unmatch")}</button>
+        <button class="btn-icon-text dating-report-btn" data-user-id="${m.userId}">${I18N.t("report.reportUser")}</button>
+        <button class="btn-icon-text dating-block-btn" data-user-id="${m.userId}" data-match-id="${m.matchId}">${I18N.t("dating.block")}</button>
+      </div>
+    </div>`
+    )
+    .join("")}</div>`;
+
+  listEl.querySelectorAll(".dating-unmatch-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("dating.confirmUnmatch"))) return;
+      try {
+        await api("/api/dating/matches/" + btn.dataset.matchId + "/unmatch", { method: "POST", auth: true });
+        renderDatingMatches();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  });
+  listEl.querySelectorAll(".dating-report-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openReportModal("user", btn.dataset.userId));
+  });
+  listEl.querySelectorAll(".dating-block-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("profile.confirmBlock"))) return;
+      try {
+        await api("/api/users/" + btn.dataset.userId + "/block", { method: "POST", auth: true });
+        await api("/api/dating/matches/" + btn.dataset.matchId + "/unmatch", { method: "POST", auth: true });
+        renderDatingMatches();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  });
 }
 
 // ---------------- Init ----------------

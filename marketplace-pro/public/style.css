@@ -2335,4 +2335,119 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary);
   border-radius: 9px; padding: 8px 10px; font-size: 12.5px; cursor: pointer;
 }
+
+/* ---- Dating (Tinder/Bumble-style, opt-in, black+gold styling) ---- */
+
+.friends-search-tab-dating {
+  display: flex; align-items: center; justify-content: center; text-decoration: none;
+  background: linear-gradient(135deg, var(--bg-surface), var(--bg-surface-alt)); border: 1px solid var(--gold);
+  color: var(--gold); font-weight: 800;
+}
+
+.dating-intro { max-width: 480px; margin: 0 auto; text-align: center; padding: 8px 12px 24px; }
+.dating-intro-icon { font-size: 48px; line-height: 1; margin-bottom: 6px; }
+.dating-intro-body { color: var(--text-secondary); font-size: 14.5px; margin: 8px 0 18px; }
+.dating-safety-box {
+  text-align: left; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 14px;
+  padding: 14px 16px; margin-bottom: 18px; box-shadow: var(--card-shadow);
+}
+.dating-safety-box h3 { margin: 0 0 8px; font-size: 14.5px; color: var(--gold); font-family: var(--font-display); }
+.dating-safety-list { margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; }
+.dating-safety-list li { margin-bottom: 6px; }
+
+.dating-setup-panel .dating-photo-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.dating-photo-thumb { position: relative; width: 76px; height: 76px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color); }
+.dating-photo-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dating-photo-remove {
+  position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,0.6); color: #fff; font-size: 13px; line-height: 1; cursor: pointer;
+}
+.dating-seeking-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.dating-seeking-chip {
+  display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px;
+  border: 1px solid var(--border-color); background: var(--bg-surface); font-size: 12.5px; color: var(--text-secondary); cursor: pointer;
+}
+.dating-seeking-chip input { accent-color: var(--gold); }
+
+.dating-deck-page { max-width: 420px; margin: 0 auto; padding-bottom: 24px; }
+.dating-deck-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.dating-deck-header-links { display: flex; gap: 14px; }
+.dating-deck-header-links a { font-size: 12.5px; font-weight: 700; color: var(--gold); text-decoration: none; }
+
+.dating-card-stack { position: relative; height: 520px; }
+.dating-card {
+  position: absolute; inset: 0; border-radius: 20px; overflow: hidden; background: var(--bg-surface);
+  border: 1px solid var(--border-color); box-shadow: var(--card-shadow); cursor: grab; user-select: none;
+}
+.dating-card:active { cursor: grabbing; }
+.dating-card-photo { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.dating-card-photo-placeholder {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  font-size: 64px; font-weight: 800; color: var(--gold-text-on); background: var(--gold);
+}
+.dating-card-overlay {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 16px 18px;
+  background: linear-gradient(to top, rgba(0,0,0,0.82), rgba(0,0,0,0.15) 70%, transparent);
+  color: #fff; pointer-events: none;
+}
+.dating-card-name { font-size: 19px; font-weight: 800; margin: 0 0 4px; font-family: var(--font-display); }
+.dating-card-bio { font-size: 13.5px; margin: 0 0 8px; opacity: 0.9; }
+.dating-card-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dating-chip { background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.3); border-radius: 999px; padding: 4px 10px; font-size: 11.5px; }
+.dating-card-swipe-hint {
+  position: absolute; top: 24px; padding: 6px 14px; border-radius: 8px; border: 3px solid; font-weight: 900;
+  font-size: 20px; text-transform: uppercase; letter-spacing: 1px; opacity: 0; transform: rotate(-12deg);
+  transition: opacity 0.15s ease;
+}
+.dating-card-hint-like { left: 20px; color: #2ecc71; border-color: #2ecc71; transform: rotate(-12deg); }
+.dating-card-hint-pass { right: 20px; color: #e74c3c; border-color: #e74c3c; transform: rotate(12deg); }
+.dating-card-lean-like .dating-card-hint-like { opacity: 1; }
+.dating-card-lean-pass .dating-card-hint-pass { opacity: 1; }
+
+.dating-deck-actions { display: flex; justify-content: center; gap: 28px; margin-top: 18px; }
+.dating-action-btn {
+  width: 62px; height: 62px; border-radius: 50%; border: 1px solid var(--border-color); background: var(--bg-surface);
+  box-shadow: var(--card-shadow); font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.dating-action-pass { color: #e74c3c; }
+.dating-action-like { color: var(--gold); border-color: var(--gold); }
+
+.dating-empty-state { text-align: center; padding: 60px 20px; color: var(--text-secondary); }
+.dating-empty-state p { margin-bottom: 14px; }
+
+.dating-match-overlay .modal-box.dating-match-box { text-align: center; max-width: 360px; }
+.dating-match-icon { font-size: 52px; margin-bottom: 6px; }
+
+.dating-matches-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+.dating-match-card {
+  background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 14px; overflow: hidden;
+  box-shadow: var(--card-shadow); display: flex; flex-direction: column;
+}
+.dating-match-photo { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block; }
+.dating-match-photo-placeholder {
+  width: 100%; aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
+  font-size: 32px; font-weight: 800; color: var(--gold-text-on); background: var(--gold);
+}
+.dating-match-name { font-weight: 700; font-size: 13.5px; padding: 8px 10px 4px; }
+.dating-match-actions { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 10px; }
+.dating-match-actions .btn { font-size: 12px; padding: 7px; text-align: center; }
+.btn-icon-text {
+  border: none; background: transparent; color: var(--text-secondary); font-size: 11.5px; text-decoration: underline;
+  cursor: pointer; padding: 2px 0; text-align: left;
+}
+.dating-block-btn, .dating-unmatch-btn { color: #e74c3c; }
+
+.dating-terms-page { max-width: 640px; }
+.dating-terms-draft-banner {
+  background: #7a1f1f; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 12.5px;
+  font-weight: 700; margin-bottom: 16px; line-height: 1.5;
+}
+.dating-terms-heading { font-size: 15px; color: var(--gold); margin: 18px 0 4px; font-family: var(--font-display); }
+.dating-terms-body { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+
+/* ---- Legal pages (Terms & Conditions / Privacy Policy) ---- */
+.legal-page { max-width: 640px; }
+.legal-updated { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }
+.legal-heading { font-size: 15px; color: var(--gold); margin: 18px 0 4px; font-family: var(--font-display); }
+.legal-body { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
 .podcast-ep-existing-item.active { border-color: var(--gold); background: rgba(201,161,90,0.12); }
