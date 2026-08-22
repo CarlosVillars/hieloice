@@ -376,8 +376,16 @@ function applyStaticI18n() {
   setText("brand-name", I18N.t("site.name"));
   setText("brand-tagline", I18N.t("site.tagline"));
   updateGlobalSearchPlaceholder();
-  setText("nav-messages", I18N.t("nav.messages"));
+  // nav-messages shows an envelope emoji, not the word "Messages" - only
+  // title/aria-label are translated (not textContent, which would wipe out
+  // the unread-count badge <span> living inside this same <a>).
   setText("nav-profile", I18N.t("nav.profile"));
+  const navMessagesEl = document.getElementById("nav-messages");
+  if (navMessagesEl) {
+    const messagesLabel = I18N.t("nav.messages");
+    navMessagesEl.title = messagesLabel;
+    navMessagesEl.setAttribute("aria-label", messagesLabel);
+  }
   const navNotifEl = document.getElementById("nav-notifications");
   if (navNotifEl) {
     const notifLabel = I18N.t("iconnav.notifications");
@@ -393,6 +401,12 @@ function applyStaticI18n() {
     navBookClubEl.title = bookClubLabel;
     navBookClubEl.setAttribute("aria-label", bookClubLabel);
   }
+  const navPodcastsEl = document.getElementById("nav-podcasts");
+  if (navPodcastsEl) {
+    const podcastsLabel = I18N.t("iconnav.dropdownPodcasts");
+    navPodcastsEl.title = podcastsLabel;
+    navPodcastsEl.setAttribute("aria-label", podcastsLabel);
+  }
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
   setText("nav-logout", I18N.t("nav.logout"));
@@ -407,7 +421,6 @@ function applyStaticI18n() {
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
-  setText("icon-nav-dropdown-podcasts", "🎙️ " + I18N.t("iconnav.dropdownPodcasts"));
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
   setText("icon-nav-create-camera-label", I18N.t("iconnav.createCamera"));
   setText("icon-nav-create-record-label", I18N.t("iconnav.createRecord"));
