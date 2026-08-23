@@ -1819,10 +1819,11 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 /* ---- OAuth buttons ---- */
 .oauth-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0; font-size: 12px; color: var(--text-muted); }
 .oauth-divider::before, .oauth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border-color); }
-.btn-google { display: flex; align-items: center; justify-content: center; background: var(--bg-surface); border: 1px solid var(--border-color); color: var(--text-primary); }
-.btn-google:hover { background: var(--bg-surface-alt); }
-.btn-facebook { display: flex; align-items: center; justify-content: center; background: #1877f2; color: #fff; }
-.btn-facebook:hover { background: #1461c9; }
+.btn-google, .btn-facebook { display: flex; align-items: center; justify-content: center; gap: 10px; font-family: "Roboto", Arial, sans-serif; font-weight: 500; }
+.btn-google { background: #fff; border: 1px solid #dadce0; color: #3c4043; }
+.btn-google:hover { background: #f8f9fa; }
+.btn-facebook { background: #1877f2; border: none; color: #fff; }
+.btn-facebook:hover { background: #166fe5; }
 
 /* ---- Featured/sponsored listings carousel ---- */
 .featured-carousel { position: relative; margin-bottom: 20px; border-radius: 12px; overflow: hidden; min-height: 160px; background: var(--bg-surface-alt); }

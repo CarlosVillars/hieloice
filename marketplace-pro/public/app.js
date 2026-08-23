@@ -1878,6 +1878,22 @@ function openReportModal(targetType, targetId) {
 
 // ---------------- Auth views ----------------
 
+// Official Google "G" and Facebook "f" mark SVGs, used only inside the
+// Google/Facebook login buttons per each company's own button-branding
+// guidelines (this is the sanctioned, required way to show their login
+// buttons - not a decorative use of their logos elsewhere in the app).
+function googleGIconSvg() {
+  return '<svg width="18" height="18" viewBox="0 0 18 18" style="flex-shrink:0;"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.706A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.706V4.962H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.038l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.962L3.964 7.294C4.672 5.167 6.656 3.58 9 3.58z"/></svg>';
+}
+function facebookFIconSvg() {
+  return '<svg width="18" height="18" viewBox="0 0 36 36" style="flex-shrink:0;"><path fill="#fff" d="M36 18c0-9.94-8.06-18-18-18S0 8.06 0 18c0 8.98 6.58 16.41 15.19 17.76V23.2h-4.57V18h4.57v-3.97c0-4.51 2.69-7 6.8-7 1.97 0 4.03.35 4.03.35v4.43h-2.27c-2.24 0-2.94 1.39-2.94 2.82V18h5l-.8 5.2h-4.2v12.76C29.42 34.41 36 26.98 36 18z"/></svg>';
+}
+function oauthButtonsHtml(idPrefix) {
+  return `
+      <a class="btn btn-google" style="width:100%;" href="/api/auth/google">${googleGIconSvg()}<span>${I18N.t("auth.continueGoogle")}</span></a>
+      <a class="btn btn-facebook" style="width:100%;margin-top:8px;" href="/api/auth/facebook">${facebookFIconSvg()}<span>${I18N.t("auth.continueFacebook")}</span></a>`;
+}
+
 function renderLogin() {
   viewEl.innerHTML = `
     <div class="form-panel">
@@ -1893,8 +1909,7 @@ function renderLogin() {
       <button class="btn btn-primary" id="login-submit" style="width:100%;">${I18N.t("auth.submitLogin")}</button>
       <p class="form-msg" id="login-msg"></p>
       <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      ${oauthButtonsHtml()}
       <p class="form-footer-link">${I18N.t("auth.needAccount")} <a href="#/register">${I18N.t("auth.goRegister")}</a></p>
     </div>
   `;
@@ -1942,8 +1957,7 @@ function renderRegister() {
       <button class="btn btn-primary" id="reg-submit" style="width:100%;">${I18N.t("auth.submitRegister")}</button>
       <p class="form-msg" id="reg-msg"></p>
       <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      ${oauthButtonsHtml()}
       <p class="form-footer-link">${I18N.t("auth.haveAccount")} <a href="#/login">${I18N.t("auth.goLogin")}</a></p>
     </div>
   `;
@@ -2043,8 +2057,7 @@ function renderDeleteAccount() {
         <button class="btn btn-primary" id="del-login-submit" style="width:100%;">${I18N.t("auth.submitLogin")}</button>
         <p class="form-msg" id="del-login-msg"></p>
         <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-        <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-        <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+        ${oauthButtonsHtml()}
       </div>
     `;
     document.getElementById("del-login-submit").addEventListener("click", async () => {
