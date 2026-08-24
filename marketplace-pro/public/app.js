@@ -1181,8 +1181,11 @@ function renderMarketplaceHome() {
       <span class="sell-books-banner-arrow">&#8250;</span>
     </a>
     <div id="my-listings-section" style="display:none;">
-      <h2 class="section-heading">${I18N.t("home.myListingsHeading")}</h2>
-      <div class="classics-preview-row" id="my-listings-row"></div>
+      <button type="button" id="my-listings-toggle" class="my-listings-toggle-btn" aria-expanded="false">
+        <span class="section-heading my-listings-toggle-heading">${I18N.t("home.myListingsHeading")}</span>
+        <span class="my-listings-caret" id="my-listings-caret">&#9662;</span>
+      </button>
+      <div class="classics-preview-row my-listings-row-collapsed" id="my-listings-row"></div>
     </div>
     <h2 class="section-heading">${I18N.t("home.allBooksHeading")}</h2>
     <div class="product-grid product-grid-library" id="home-all-products"><p>${I18N.t("common.loading")}</p></div>
@@ -1199,6 +1202,17 @@ function renderMarketplaceHome() {
   `;
   const toggleBtn = document.getElementById("toggle-categories-btn");
   if (toggleBtn) toggleBtn.addEventListener("click", openBrowseCategoriesOverlay);
+  const myListingsToggle = document.getElementById("my-listings-toggle");
+  if (myListingsToggle) {
+    myListingsToggle.addEventListener("click", () => {
+      const row = document.getElementById("my-listings-row");
+      const caret = document.getElementById("my-listings-caret");
+      if (!row) return;
+      const collapsed = row.classList.toggle("my-listings-row-collapsed");
+      if (caret) caret.innerHTML = collapsed ? "&#9662;" : "&#9652;";
+      myListingsToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    });
+  }
   loadAllProductsPreview();
   loadClassicsPreview();
   loadMyListingsPreview();
@@ -1806,6 +1820,11 @@ async function renderProductDetail(id) {
                 </button>`
           }
         </div>
+        ${
+          !isOwnerOfListing && p.sellerPaymentsReady
+            ? `<p class="detail-shipping-note">${I18N.t("product.plusShippingNote").replace("{fee}", fmtPrice(SHIPPING_FLAT_FEE_DISPLAY))}</p>`
+            : ""
+        }
         <div class="detail-meta">\u{1F4CD} ${escapeHtml(locationLabel(p)) || "-"} &middot; ${fmtDate(p.createdAt)}</div>
         <div>
           <span class="badge">${escapeHtml(I18N.categoryName(p.category))}</span>
@@ -1921,6 +1940,13 @@ async function renderProductDetail(id) {
     });
   }
 }
+
+// Keep in sync with SHIPPING_FLAT_FEE in server.js (task #313) - shown here
+// only for display (a calm, small-text note next to the price), the real
+// charge always comes from the server's own Stripe line item so this number
+// being briefly stale on the client would never let anyone pay the wrong
+// amount, just show an inaccurate preview until the page is refreshed.
+const SHIPPING_FLAT_FEE_DISPLAY = 4.99;
 
 function renderProductActions(p) {
   if (!state.token) {
@@ -2158,6 +2184,8 @@ async function renderOrderDetail(id) {
       <span class="${orderStatusBadgeClass(o.status)}">${orderStatusLabel(o.status)}</span>
       ${timelineHtml}
       <p style="margin-top:14px;">${I18N.t("orders.amountLabel")}: ${fmtPrice(o.amount)}</p>
+      ${o.shippingFee ? `<p>${I18N.t("orders.shippingFeeLabel")}: ${fmtPrice(o.shippingFee)}</p>` : ""}
+      ${o.shippingFee ? `<p><strong>${I18N.t("orders.totalPaidLabel")}: ${fmtPrice(o.amount + o.shippingFee)}</strong></p>` : ""}
       ${o.role === "seller" ? `<p>${I18N.t("orders.payoutLabel")}: ${fmtPrice(o.sellerPayout)}</p>` : ""}
       ${shippingHtml}
       ${trackingHtml}
