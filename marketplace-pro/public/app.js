@@ -2095,9 +2095,46 @@ async function renderOrderDetail(id) {
     </div>
   `;
 
+  // Task #312 - basic shipping: address + tracking. The buyer's address was
+  // collected by Stripe's own hosted checkout page and only exists on the
+  // order once payment clears, so this block naturally stays hidden until
+  // then. Shown to both sides: the seller needs it to actually mail the
+  // book, and the buyer gets a chance to notice a typo early.
+  const shippingHtml = o.shippingAddress
+    ? `<div class="order-shipping-block">
+        <h3 class="order-shipping-heading">${I18N.t("orders.shipToHeading")}</h3>
+        <p class="order-shipping-address">
+          ${o.shippingAddress.name ? escapeHtml(o.shippingAddress.name) + "<br>" : ""}
+          ${escapeHtml(o.shippingAddress.line1 || "")}<br>
+          ${o.shippingAddress.line2 ? escapeHtml(o.shippingAddress.line2) + "<br>" : ""}
+          ${escapeHtml([o.shippingAddress.city, o.shippingAddress.state, o.shippingAddress.postalCode].filter(Boolean).join(", "))}<br>
+          ${escapeHtml(o.shippingAddress.country || "")}
+        </p>
+      </div>`
+    : "";
+  const trackingHtml = o.trackingNumber || o.trackingCarrier
+    ? `<div class="order-shipping-block">
+        <h3 class="order-shipping-heading">${I18N.t("orders.trackingHeading")}</h3>
+        <p class="order-shipping-address">${o.trackingCarrier ? escapeHtml(o.trackingCarrier) + " &mdash; " : ""}${escapeHtml(o.trackingNumber || "")}</p>
+      </div>`
+    : "";
+
   let actionHtml = "";
   if (o.role === "seller" && o.status === "paid_held") {
-    actionHtml = `<button class="btn btn-gold" id="order-ship-btn">${I18N.t("orders.markShipped")}</button>`;
+    actionHtml = `
+      <div class="order-ship-form">
+        <div class="form-group">
+          <label>${I18N.t("orders.trackingCarrierLabel")}</label>
+          <input type="text" id="order-tracking-carrier" placeholder="${escapeHtml(I18N.t("orders.trackingCarrierPlaceholder"))}" />
+        </div>
+        <div class="form-group">
+          <label>${I18N.t("orders.trackingNumberLabel")}</label>
+          <input type="text" id="order-tracking-number" placeholder="${escapeHtml(I18N.t("orders.trackingNumberPlaceholder"))}" />
+        </div>
+        <p class="buy-safety-note">${I18N.t("orders.trackingHint")}</p>
+        <button class="btn btn-gold" id="order-ship-btn">${I18N.t("orders.markShipped")}</button>
+      </div>
+    `;
   } else if (o.role === "buyer" && o.status === "shipped") {
     actionHtml = `
       <button class="btn btn-gold" id="order-confirm-btn">${I18N.t("orders.confirmArrival")}</button>
@@ -2122,6 +2159,8 @@ async function renderOrderDetail(id) {
       ${timelineHtml}
       <p style="margin-top:14px;">${I18N.t("orders.amountLabel")}: ${fmtPrice(o.amount)}</p>
       ${o.role === "seller" ? `<p>${I18N.t("orders.payoutLabel")}: ${fmtPrice(o.sellerPayout)}</p>` : ""}
+      ${shippingHtml}
+      ${trackingHtml}
       <div id="order-action-area" class="action-row" style="margin-top:16px;">${actionHtml}</div>
       <div id="order-dispute-form"></div>
       <p id="order-msg" class="form-msg"></p>
@@ -2134,7 +2173,16 @@ async function renderOrderDetail(id) {
   if (shipBtn) {
     shipBtn.addEventListener("click", async () => {
       try {
-        await api("/api/orders/" + o.id + "/ship", { method: "POST", auth: true, body: {} });
+        const carrierEl = document.getElementById("order-tracking-carrier");
+        const numberEl = document.getElementById("order-tracking-number");
+        await api("/api/orders/" + o.id + "/ship", {
+          method: "POST",
+          auth: true,
+          body: {
+            trackingCarrier: carrierEl ? carrierEl.value.trim() : "",
+            trackingNumber: numberEl ? numberEl.value.trim() : "",
+          },
+        });
         router();
       } catch (e) {
         msgEl.textContent = e.message;

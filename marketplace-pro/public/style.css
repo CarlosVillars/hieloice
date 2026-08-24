@@ -1088,6 +1088,12 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .order-step.done .order-step-dot { background: var(--gold); }
 .order-step-label { font-size: 11px; color: var(--text-secondary); text-align: center; }
 .order-step.done .order-step-label { color: var(--accent-text); font-weight: 700; }
+/* Task #312 - basic shipping: address (from Stripe's hosted checkout) and
+   tracking (seller-entered) shown on the order detail page. */
+.order-shipping-block { background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 14px; margin-top: 14px; }
+.order-shipping-heading { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); margin: 0 0 6px; }
+.order-shipping-address { font-size: 14px; line-height: 1.5; margin: 0; color: var(--text-primary); }
+.order-ship-form { width: 100%; }
 .btn { border: none; border-radius: 6px; padding: 10px 16px; font-weight: 700; font-size: 14px; }
 .btn-primary { background: var(--accent); color: var(--accent-text-on); }
 .btn-primary:hover { background: var(--accent-strong); }
