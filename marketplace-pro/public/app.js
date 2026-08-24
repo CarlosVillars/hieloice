@@ -798,6 +798,8 @@ async function router() {
     if (parts[0] === "intl") return renderIntlHome();
     if (parts[0] === "admin" && parts[1]) return renderAdminPanel(parts[1]);
     if (parts[0] === "admin") return renderAdminPanel("reports");
+    if (parts[0] === "orders" && parts[1]) return renderOrderDetail(parts[1]);
+    if (parts[0] === "orders") return renderOrdersList();
     viewEl.innerHTML = `<div class="not-found-state"><p>${I18N.t("common.notFound")}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
   } catch (e) {
     viewEl.innerHTML = `<div class="not-found-state"><p class="form-msg error">${escapeHtml(e.message)}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
@@ -1756,6 +1758,20 @@ function renderProductActions(p) {
   if (!state.token) {
     return `<p class="form-msg" style="margin-top:14px;">${I18N.t("product.loginToOffer")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
   }
+  // Task #58/#127 - real, protected checkout. Only offered once the seller
+  // has finished Stripe onboarding (sellerPaymentsReady); otherwise this
+  // falls back to the old "express interest" flow so browsing/negotiating
+  // never breaks for listings from sellers who haven't set payments up yet.
+  if (p.sellerPaymentsReady) {
+    return `
+      <div class="action-row">
+        <a class="btn btn-outline" href="#/messages/${p.sellerId}">${I18N.t("product.contactSeller")}</a>
+        ${p.allowOffers ? `<button class="btn btn-outline" id="btn-offer">${I18N.t("product.makeOffer")}</button>` : ""}
+        <button class="btn btn-gold" id="btn-pay-now">${I18N.t("product.payNow")}</button>
+      </div>
+      <p class="buy-safety-note">${I18N.t("product.escrowSafetyNote")}</p>
+    `;
+  }
   return `
     <div class="action-row">
       <a class="btn btn-outline" href="#/messages/${p.sellerId}">${I18N.t("product.contactSeller")}</a>
@@ -1763,6 +1779,7 @@ function renderProductActions(p) {
       <button class="btn btn-gold" id="btn-buy">${I18N.t("product.buyNow")}</button>
     </div>
     <p class="buy-safety-note">${I18N.t("product.buySafetyNote")}</p>
+    <p class="buy-safety-note">${I18N.t("product.sellerNotPaymentsReady")}</p>
   `;
 }
 
@@ -1809,6 +1826,185 @@ function wireProductActions(p) {
       } catch (e) {
         offerArea.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
       }
+    });
+  }
+
+  const btnPayNow = document.getElementById("btn-pay-now");
+  if (btnPayNow) {
+    btnPayNow.addEventListener("click", async () => {
+      btnPayNow.disabled = true;
+      btnPayNow.textContent = I18N.t("product.redirectingToCheckout");
+      try {
+        const data = await api("/api/orders", { method: "POST", auth: true, body: { productId: p.id } });
+        window.location.href = data.checkoutUrl;
+      } catch (e) {
+        btnPayNow.disabled = false;
+        btnPayNow.textContent = I18N.t("product.payNow");
+        offerArea.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+      }
+    });
+  }
+}
+
+// ---------------- Orders (task #58/#127 - real payments, buyer protection) ----------------
+
+function orderStatusLabel(status) {
+  return I18N.t("orders.status." + status) || status;
+}
+
+function orderStatusBadgeClass(status) {
+  if (status === "released") return "badge";
+  if (status === "disputed") return "badge no";
+  if (status === "refunded") return "badge no";
+  return "badge";
+}
+
+async function renderOrdersList() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `<h2 class="section-heading">${I18N.t("orders.myOrders")}</h2><p>${I18N.t("common.loading")}</p>`;
+  let orders;
+  try {
+    orders = await api("/api/orders/mine", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!orders.length) {
+    viewEl.innerHTML = `<h2 class="section-heading">${I18N.t("orders.myOrders")}</h2><p class="form-msg">${I18N.t("orders.empty")}</p>`;
+    return;
+  }
+  viewEl.innerHTML = `
+    <h2 class="section-heading">${I18N.t("orders.myOrders")}</h2>
+    <div class="order-list">
+      ${orders
+        .map(
+          (o) => `
+        <a class="order-row" href="#/orders/${o.id}">
+          ${o.productPhoto ? `<img src="${o.productPhoto}" class="order-row-thumb" />` : `<div class="order-row-thumb-empty">\u{1F4E6}</div>`}
+          <div class="order-row-info">
+            <div class="order-row-title">${escapeHtml(o.productTitle)}</div>
+            <div class="order-row-meta">${o.role === "buyer" ? I18N.t("orders.roleBuyer") : I18N.t("orders.roleSeller")} &middot; ${fmtPrice(o.amount)}</div>
+          </div>
+          <span class="${orderStatusBadgeClass(o.status)}">${orderStatusLabel(o.status)}</span>
+        </a>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+async function renderOrderDetail(id) {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let o;
+  try {
+    o = await api("/api/orders/" + id, { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const steps = ["paid_held", "shipped", "released"];
+  const timelineHtml = `
+    <div class="order-timeline">
+      ${steps
+        .map((s, i) => {
+          const passed = steps.indexOf(o.status) >= i || o.status === "released";
+          const isDisputedOrRefunded = o.status === "disputed" || o.status === "refunded";
+          return `<div class="order-step ${passed && !isDisputedOrRefunded ? "done" : ""}">
+            <span class="order-step-dot"></span>
+            <span class="order-step-label">${I18N.t("orders.step." + s)}</span>
+          </div>`;
+        })
+        .join("")}
+    </div>
+  `;
+
+  let actionHtml = "";
+  if (o.role === "seller" && o.status === "paid_held") {
+    actionHtml = `<button class="btn btn-gold" id="order-ship-btn">${I18N.t("orders.markShipped")}</button>`;
+  } else if (o.role === "buyer" && o.status === "shipped") {
+    actionHtml = `
+      <button class="btn btn-gold" id="order-confirm-btn">${I18N.t("orders.confirmArrival")}</button>
+      <button class="btn btn-outline" id="order-dispute-btn">${I18N.t("orders.reportProblem")}</button>
+      <p class="buy-safety-note">${I18N.t("orders.autoReleaseNote")}</p>
+    `;
+  } else if (o.status === "disputed") {
+    actionHtml = `<p class="form-msg">${I18N.t("orders.disputeUnderReview")}</p>`;
+  } else if (o.status === "released") {
+    actionHtml = `<p class="form-msg ok">${I18N.t("orders.releasedNote")}</p>`;
+  } else if (o.status === "refunded") {
+    actionHtml = `<p class="form-msg">${I18N.t("orders.refundedNote")}</p>`;
+  } else if (o.status === "pending_payment") {
+    actionHtml = `<p class="form-msg">${I18N.t("orders.pendingPaymentNote")}</p>`;
+  }
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/orders">&larr; ${I18N.t("orders.myOrders")}</a>
+    <div class="form-panel">
+      <h2 class="section-heading">${escapeHtml(o.productTitle || "")}</h2>
+      <span class="${orderStatusBadgeClass(o.status)}">${orderStatusLabel(o.status)}</span>
+      ${timelineHtml}
+      <p style="margin-top:14px;">${I18N.t("orders.amountLabel")}: ${fmtPrice(o.amount)}</p>
+      ${o.role === "seller" ? `<p>${I18N.t("orders.payoutLabel")}: ${fmtPrice(o.sellerPayout)}</p>` : ""}
+      <div id="order-action-area" class="action-row" style="margin-top:16px;">${actionHtml}</div>
+      <div id="order-dispute-form"></div>
+      <p id="order-msg" class="form-msg"></p>
+    </div>
+  `;
+
+  const msgEl = document.getElementById("order-msg");
+  const shipBtn = document.getElementById("order-ship-btn");
+  if (shipBtn) {
+    shipBtn.addEventListener("click", async () => {
+      try {
+        await api("/api/orders/" + o.id + "/ship", { method: "POST", auth: true, body: {} });
+        router();
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+  const confirmBtn = document.getElementById("order-confirm-btn");
+  if (confirmBtn) {
+    confirmBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("orders.confirmArrivalPrompt"))) return;
+      try {
+        await api("/api/orders/" + o.id + "/confirm", { method: "POST", auth: true, body: {} });
+        router();
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+  const disputeBtn = document.getElementById("order-dispute-btn");
+  if (disputeBtn) {
+    disputeBtn.addEventListener("click", () => {
+      document.getElementById("order-dispute-form").innerHTML = `
+        <div class="form-group" style="margin-top:14px;">
+          <label>${I18N.t("orders.disputeReasonLabel")}</label>
+          <textarea id="dispute-reason" rows="3"></textarea>
+        </div>
+        <button class="btn btn-danger" id="dispute-submit-btn">${I18N.t("orders.submitDispute")}</button>
+      `;
+      document.getElementById("dispute-submit-btn").addEventListener("click", async () => {
+        const reason = document.getElementById("dispute-reason").value;
+        try {
+          await api("/api/orders/" + o.id + "/dispute", { method: "POST", auth: true, body: { reason } });
+          router();
+        } catch (e) {
+          msgEl.textContent = e.message;
+          msgEl.className = "form-msg error";
+        }
+      });
     });
   }
 }
@@ -9332,6 +9528,40 @@ function linkifyHashtags(escapedText) {
 
 // ---------------- Profile ----------------
 
+// Task #58/#127 - shows whether the logged-in seller can already receive
+// real payouts, and drives them into Stripe's own hosted onboarding form
+// when they're not set up yet. Fetched separately (not part of the main
+// profile payload) so a slow/failed Stripe status check never blocks or
+// breaks the rest of the profile page.
+async function loadPaymentsStatusCard() {
+  const el = document.getElementById("profile-payments-status");
+  if (!el) return;
+  let status;
+  try {
+    status = await api("/api/payments/connect/status", { auth: true });
+  } catch (e) {
+    el.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (status.payoutsEnabled) {
+    el.innerHTML = `<p class="form-msg ok">✅ ${I18N.t("orders.paymentsReady")}</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <p class="form-msg">${status.connected ? I18N.t("orders.paymentsAlmostReady") : I18N.t("orders.paymentsNotSetUp")}</p>
+    <button class="btn btn-gold" id="btn-setup-payments">${I18N.t("orders.setUpPayments")}</button>
+  `;
+  document.getElementById("btn-setup-payments").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      const data = await api("/api/payments/connect/onboard", { method: "POST", auth: true, body: {} });
+      window.location.href = data.url;
+    } catch (err) {
+      el.innerHTML = `<p class="form-msg error">${escapeHtml(err.message)}</p>`;
+    }
+  });
+}
+
 async function renderProfile(userId) {
   if (!userId) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
@@ -9448,6 +9678,16 @@ async function renderProfile(userId) {
         </div>
       </div>
     </div>
+
+    ${
+      isMe
+        ? `<div class="profile-about-card">
+            <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("orders.sellingAndPayments")}</h2>
+            <a class="btn btn-outline" href="#/orders" style="margin-bottom:10px;">${I18N.t("orders.myOrders")}</a>
+            <div id="profile-payments-status"><p class="form-msg">${I18N.t("common.loading")}</p></div>
+          </div>`
+        : ""
+    }
 
     ${isMe && profile.isPage ? `<div class="profile-about-card" id="subs-requests-card" style="display:none;"><h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("subs.requestsHeading")}</h2><div id="subs-requests-list"></div></div>` : ""}
 
@@ -9623,6 +9863,7 @@ async function renderProfile(userId) {
     document.getElementById("btn-edit-profile").addEventListener("click", () =>
       openEditProfileModal({ ...profile, phone: state.user ? state.user.phone : "" })
     );
+    loadPaymentsStatusCard();
     const coverBtn = document.getElementById("btn-edit-cover");
     const coverInput = document.getElementById("cover-input");
     if (coverBtn && coverInput) {
@@ -11721,6 +11962,7 @@ function adminTabsMarkup(active) {
     { key: "products", label: I18N.t("admin.tabProducts") },
     { key: "users", label: I18N.t("admin.tabUsers") },
     { key: "books", label: I18N.t("admin.tabBooks") },
+    { key: "disputes", label: I18N.t("admin.tabDisputes") },
     { key: "integrations", label: I18N.t("admin.tabIntegrations") },
   ];
   return `<div class="admin-tabs">${tabs
@@ -11742,8 +11984,67 @@ async function renderAdminPanel(section) {
   if (section === "users") return renderAdminUsers();
   if (section === "products") return renderAdminProducts();
   if (section === "books") return renderAdminBookSubmissions();
+  if (section === "disputes") return renderAdminDisputes();
   if (section === "integrations") return renderAdminIntegrations();
   return renderAdminReports();
+}
+
+// Task #58/#127 - a buyer reported a problem with a real, paid order.
+// Funds are frozen (order status "disputed") until an admin picks one of
+// these two outcomes here: release the seller's payout, or refund the buyer
+// in full. Both actions call Stripe directly and are logged on the order.
+async function renderAdminDisputes() {
+  const content = document.getElementById("admin-content");
+  content.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let orders;
+  try {
+    orders = await api("/api/admin/orders?status=disputed", { auth: true });
+  } catch (e) {
+    content.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!orders.length) {
+    content.innerHTML = `<p class="form-msg">${I18N.t("admin.noDisputes")}</p>`;
+    return;
+  }
+  content.innerHTML = orders
+    .map(
+      (o) => `
+    <div class="form-panel" style="margin-bottom:14px;" data-order-id="${o.id}">
+      <p><strong>${fmtPrice(o.amount)}</strong> &middot; ${I18N.t("orders.payoutLabel")}: ${fmtPrice(o.sellerPayout)}</p>
+      <p style="font-size:13px;color:var(--text-secondary);">${I18N.t("orders.roleBuyer")}: ${escapeHtml(o.buyerName)} (${escapeHtml(o.buyerEmail)})</p>
+      <p style="font-size:13px;color:var(--text-secondary);">${I18N.t("orders.roleSeller")}: ${escapeHtml(o.sellerName)} (${escapeHtml(o.sellerEmail)})</p>
+      <p style="margin-top:8px;white-space:pre-wrap;">${escapeHtml(o.disputeReason || "")}</p>
+      <div class="action-row" style="margin-top:10px;">
+        <button class="btn btn-gold" data-action="release">${I18N.t("admin.resolveRelease")}</button>
+        <button class="btn btn-danger" data-action="refund">${I18N.t("admin.resolveRefund")}</button>
+      </div>
+      <p class="form-msg admin-dispute-msg"></p>
+    </div>`
+    )
+    .join("");
+
+  content.querySelectorAll("[data-order-id]").forEach((card) => {
+    const orderId = card.dataset.orderId;
+    const msgEl = card.querySelector(".admin-dispute-msg");
+    card.querySelectorAll("[data-action]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const action = btn.dataset.action;
+        if (!confirm(I18N.t("admin.confirmResolve." + action))) return;
+        card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+        try {
+          await api("/api/admin/orders/" + orderId + "/resolve", { method: "POST", auth: true, body: { action } });
+          card.style.opacity = "0.5";
+          msgEl.textContent = I18N.t("admin.resolved");
+          msgEl.className = "form-msg ok admin-dispute-msg";
+        } catch (e) {
+          card.querySelectorAll("button").forEach((b) => (b.disabled = false));
+          msgEl.textContent = e.message;
+          msgEl.className = "form-msg error admin-dispute-msg";
+        }
+      });
+    });
+  });
 }
 
 // Task #278 - a simple one-click way for a non-technical admin to check

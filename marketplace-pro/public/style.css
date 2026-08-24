@@ -1047,6 +1047,23 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
    doesn't hold or process payment yet - avoids a "Buy Now" button implying
    a completed purchase when it only sends a request to the seller. */
 .buy-safety-note { font-size: 12px; color: var(--text-secondary); margin: 8px 0 0; max-width: 480px; }
+
+/* ---- Orders (task #58/#127 - real payments, buyer protection) ---- */
+.order-list { display: flex; flex-direction: column; gap: 10px; }
+.order-row { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-color); border-radius: 10px; text-decoration: none; color: inherit; background: var(--bg-surface); }
+.order-row-thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+.order-row-thumb-empty { width: 52px; height: 52px; border-radius: 8px; background: var(--bg-surface-alt); display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
+.order-row-info { flex: 1; min-width: 0; }
+.order-row-title { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-row-meta { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.order-timeline { display: flex; align-items: center; gap: 6px; margin: 16px 0; }
+.order-step { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; position: relative; }
+.order-step:not(:last-child)::after { content: ""; position: absolute; top: 6px; left: 55%; width: 90%; height: 2px; background: var(--border-color); z-index: 0; }
+.order-step.done:not(:last-child)::after { background: var(--gold); }
+.order-step-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--border-color); z-index: 1; }
+.order-step.done .order-step-dot { background: var(--gold); }
+.order-step-label { font-size: 11px; color: var(--text-secondary); text-align: center; }
+.order-step.done .order-step-label { color: var(--accent-text); font-weight: 700; }
 .btn { border: none; border-radius: 6px; padding: 10px 16px; font-weight: 700; font-size: 14px; }
 .btn-primary { background: var(--accent); color: var(--accent-text-on); }
 .btn-primary:hover { background: var(--accent-strong); }
