@@ -204,6 +204,16 @@ function fmtPrice(price) {
   return "$" + Number(price).toLocaleString("en-US");
 }
 
+// Task: show Stripe's presence in every purchase-related section (buy
+// button, order tracking, seller payment setup) - text wordmark in Stripe's
+// own brand purple, per Stripe's partner badge guidelines. Reused as a
+// small inline HTML snippet rather than duplicated markup everywhere.
+function stripeInlineBadgeHtml() {
+  return `<a href="https://stripe.com" target="_blank" rel="noopener noreferrer" class="stripe-inline-badge" title="Stripe">
+    <span>${I18N.t("orders.securedBy")}</span> <span class="stripe-inline-wordmark">Stripe</span>
+  </a>`;
+}
+
 function fmtDate(ts) {
   const d = new Date(ts);
   return d.toLocaleDateString();
@@ -376,8 +386,16 @@ function applyStaticI18n() {
   setText("brand-name", I18N.t("site.name"));
   setText("brand-tagline", I18N.t("site.tagline"));
   updateGlobalSearchPlaceholder();
-  setText("nav-messages", I18N.t("nav.messages"));
+  // nav-messages shows an envelope emoji, not the word "Messages" - only
+  // title/aria-label are translated (not textContent, which would wipe out
+  // the unread-count badge <span> living inside this same <a>).
   setText("nav-profile", I18N.t("nav.profile"));
+  const navMessagesEl = document.getElementById("nav-messages");
+  if (navMessagesEl) {
+    const messagesLabel = I18N.t("nav.messages");
+    navMessagesEl.title = messagesLabel;
+    navMessagesEl.setAttribute("aria-label", messagesLabel);
+  }
   const navNotifEl = document.getElementById("nav-notifications");
   if (navNotifEl) {
     const notifLabel = I18N.t("iconnav.notifications");
@@ -393,6 +411,12 @@ function applyStaticI18n() {
     navBookClubEl.title = bookClubLabel;
     navBookClubEl.setAttribute("aria-label", bookClubLabel);
   }
+  const navPodcastsEl = document.getElementById("nav-podcasts");
+  if (navPodcastsEl) {
+    const podcastsLabel = I18N.t("iconnav.dropdownPodcasts");
+    navPodcastsEl.title = podcastsLabel;
+    navPodcastsEl.setAttribute("aria-label", podcastsLabel);
+  }
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
   setText("nav-logout", I18N.t("nav.logout"));
@@ -406,6 +430,7 @@ function applyStaticI18n() {
   setText("icon-nav-marketplace-label", I18N.t("iconnav.marketplace"));
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
+  setText("icon-nav-dropdown-classics-label", I18N.t("classics.heading"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
   setText("icon-nav-create-camera-label", I18N.t("iconnav.createCamera"));
@@ -719,13 +744,34 @@ function parseHash() {
   return { parts, query };
 }
 
+// Routes reachable even if a logged-in user hasn't confirmed a birthdate yet
+// (the confirm-age page itself, plus anything needed to log out / view
+// legal pages / delete the account rather than being trapped).
+const AGE_GATE_EXEMPT_ROUTES = new Set(["confirm-age", "login", "register", "delete-account", "terms", "privacy", "dating-terms"]);
+
 async function router() {
   const { parts, query } = parseHash();
   window.scrollTo(0, 0);
   updateGlobalSearchPlaceholder();
 
+  // Platform-wide 18+ requirement (Carlos: adults only, whole platform).
+  // Any logged-in account missing a birthdate - pre-existing accounts from
+  // before this feature, or Google/Facebook signups which skip the
+  // register form - must confirm it once before doing anything else.
+  if (state.user && !state.user.birthdate && !AGE_GATE_EXEMPT_ROUTES.has(parts[0])) {
+    location.hash = "#/confirm-age";
+    return renderConfirmAge();
+  }
+
   try {
     if (parts.length === 0) return renderHome();
+    if (parts[0] === "confirm-age") return renderConfirmAge();
+    if (parts[0] === "terms") return renderTerms();
+    if (parts[0] === "privacy") return renderPrivacy();
+    if (parts[0] === "dating-terms") return renderDatingTerms();
+    if (parts[0] === "dating" && parts[1] === "matches") return renderDatingMatches();
+    if (parts[0] === "dating" && parts[1] === "setup") return renderDatingSetup();
+    if (parts[0] === "dating") return renderDatingSwipe();
     if (parts[0] === "marketplace") return renderMarketplaceHome();
     if (parts[0] === "friends") return renderFriendsPage();
     if (parts[0] === "clips") return renderClips();
@@ -738,6 +784,9 @@ async function router() {
     if (parts[0] === "publish-book" && parts[1]) return renderPublishBookEditor(parts[1]);
     if (parts[0] === "publish-book") return renderPublishBookHome();
     if (parts[0] === "music") return renderMusicLibrary(query);
+    if (parts[0] === "podcast" && parts[1]) return renderPodcastChannel(parts[1]);
+    if (parts[0] === "podcast-episode" && parts[1]) return renderPodcastEpisode(parts[1]);
+    if (parts[0] === "podcasts") return renderPodcastLibrary(query);
     if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
@@ -760,6 +809,10 @@ async function router() {
     if (parts[0] === "intl") return renderIntlHome();
     if (parts[0] === "admin" && parts[1]) return renderAdminPanel(parts[1]);
     if (parts[0] === "admin") return renderAdminPanel("reports");
+    if (parts[0] === "orders" && parts[1]) return renderOrderDetail(parts[1]);
+    if (parts[0] === "orders") return renderOrdersList();
+    if (parts[0] === "classics" && parts[1]) return renderClassicDetail(parts[1]);
+    if (parts[0] === "classics") return renderClassicsHub(query);
     viewEl.innerHTML = `<div class="not-found-state"><p>${I18N.t("common.notFound")}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
   } catch (e) {
     viewEl.innerHTML = `<div class="not-found-state"><p class="form-msg error">${escapeHtml(e.message)}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
@@ -1087,6 +1140,9 @@ function renderMarketplaceHome() {
       <h1>${escapeHtml(I18N.t("site.name"))}</h1>
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
     </div>
+    <h2 class="section-heading">${I18N.t("home.allBooksHeading")}</h2>
+    <div class="product-grid" id="home-all-products"><p>${I18N.t("common.loading")}</p></div>
+    <a class="back-link" href="#/category/all">${I18N.t("home.seeAllBooks")} &rarr;</a>
     <a href="#/post" class="sell-books-banner">
       <span class="sell-books-banner-icon">&#128218;</span>
       <span class="ai-listing-banner-text">
@@ -1096,10 +1152,61 @@ function renderMarketplaceHome() {
       <span class="sell-books-banner-arrow">&#8250;</span>
     </a>
     ${categoryTabsHtml("all")}
-    <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
-    <div class="category-grid">${categoryCardsHtml()}</div>
+    <button type="button" id="toggle-categories-btn" class="btn btn-outline categories-toggle-btn" aria-expanded="false">
+      ${I18N.t("home.categoriesHeading")} <span class="categories-toggle-caret">&#9662;</span>
+    </button>
+    <div class="category-grid" id="home-category-grid" style="display:none;">${categoryCardsHtml()}</div>
+    <div id="classics-preview-section" style="display:none;">
+      <h2 class="section-heading">${I18N.t("classics.previewHeading")}</h2>
+      <div class="classics-preview-row" id="classics-preview-row"></div>
+      <a class="back-link" href="#/classics">${I18N.t("classics.seeAll")} &rarr;</a>
+    </div>
   `;
+  const toggleBtn = document.getElementById("toggle-categories-btn");
+  const grid = document.getElementById("home-category-grid");
+  if (toggleBtn && grid) {
+    toggleBtn.addEventListener("click", () => {
+      const showing = grid.style.display !== "none";
+      grid.style.display = showing ? "none" : "grid";
+      toggleBtn.setAttribute("aria-expanded", String(!showing));
+      toggleBtn.classList.toggle("open", !showing);
+    });
+  }
   loadAdCarousel();
+  loadAllProductsPreview();
+  loadClassicsPreview();
+}
+
+// Task: Carlos reported that landing on Marketplace forced people to pick a
+// category before seeing any book - fixed by showing real listings right
+// away (this loader) and moving the category grid behind the toggle above.
+async function loadAllProductsPreview() {
+  const el = document.getElementById("home-all-products");
+  if (!el) return;
+  try {
+    const products = await api("/api/products"); // defaults to newest-first server-side
+    el.innerHTML = products.length
+      ? products.slice(0, 24).map(productCardHtml).join("")
+      : `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+  }
+}
+
+async function loadClassicsPreview() {
+  const section = document.getElementById("classics-preview-section");
+  const row = document.getElementById("classics-preview-row");
+  if (!section || !row) return;
+  try {
+    const books = await api("/api/classics");
+    if (!books.length) return;
+    // A handful of picks, not the whole library - this row is a teaser that
+    // links to the full #/classics hub, not a duplicate of it.
+    row.innerHTML = books.slice(0, 10).map(classicCardHtml).join("");
+    section.style.display = "block";
+  } catch (e) {
+    // best-effort, same pattern as the ad carousel - never break the home page
+  }
 }
 
 async function loadHomeFeed() {
@@ -1467,26 +1574,8 @@ async function loadAdCarousel() {
 
 // ---------------- Category listing ----------------
 
-async function renderCategory(slug, query) {
-  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
-
-  const params = new URLSearchParams();
-  if (slug !== "all") params.set("category", slug);
-  if (query.q) params.set("q", query.q);
-  if (query.country) params.set("country", query.country);
-  if (query.state) params.set("state", query.state);
-  if (query.city) params.set("city", query.city);
-  if (query.minPrice) params.set("minPrice", query.minPrice);
-  if (query.maxPrice) params.set("maxPrice", query.maxPrice);
-  if (query.sort) params.set("sort", query.sort);
-
-  const products = await api("/api/products?" + params.toString());
-  const heading = slug === "all" ? (query.q || "") : I18N.categoryName(slug);
-
-  const cards = products.length
-    ? products
-        .map(
-          (p) => `
+function productCardHtml(p) {
+  return `
       <a class="product-card" href="#/product/${p.id}">
         <div class="product-thumb-wrap">
           ${
@@ -1506,10 +1595,26 @@ async function renderCategory(slug, query) {
             ${ratingMarkup(p.sellerRating)}
           </div>
         </div>
-      </a>`
-        )
-        .join("")
-    : `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+      </a>`;
+}
+
+async function renderCategory(slug, query) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  const params = new URLSearchParams();
+  if (slug !== "all") params.set("category", slug);
+  if (query.q) params.set("q", query.q);
+  if (query.country) params.set("country", query.country);
+  if (query.state) params.set("state", query.state);
+  if (query.city) params.set("city", query.city);
+  if (query.minPrice) params.set("minPrice", query.minPrice);
+  if (query.maxPrice) params.set("maxPrice", query.maxPrice);
+  if (query.sort) params.set("sort", query.sort);
+
+  const products = await api("/api/products?" + params.toString());
+  const heading = slug === "all" ? (query.q || "") : I18N.categoryName(slug);
+
+  const cards = products.length ? products.map(productCardHtml).join("") : `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
 
   viewEl.innerHTML = `
     <a class="back-link" href="#/">&larr; ${I18N.t("category.back")}</a>
@@ -1718,6 +1823,21 @@ function renderProductActions(p) {
   if (!state.token) {
     return `<p class="form-msg" style="margin-top:14px;">${I18N.t("product.loginToOffer")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
   }
+  // Task #58/#127 - real, protected checkout. Only offered once the seller
+  // has finished Stripe onboarding (sellerPaymentsReady); otherwise this
+  // falls back to the old "express interest" flow so browsing/negotiating
+  // never breaks for listings from sellers who haven't set payments up yet.
+  if (p.sellerPaymentsReady) {
+    return `
+      <div class="action-row">
+        <a class="btn btn-outline" href="#/messages/${p.sellerId}">${I18N.t("product.contactSeller")}</a>
+        ${p.allowOffers ? `<button class="btn btn-outline" id="btn-offer">${I18N.t("product.makeOffer")}</button>` : ""}
+        <button class="btn btn-gold" id="btn-pay-now">${I18N.t("product.payNow")}</button>
+      </div>
+      <p class="buy-safety-note">${I18N.t("product.escrowSafetyNote")}</p>
+      ${stripeInlineBadgeHtml()}
+    `;
+  }
   return `
     <div class="action-row">
       <a class="btn btn-outline" href="#/messages/${p.sellerId}">${I18N.t("product.contactSeller")}</a>
@@ -1725,6 +1845,7 @@ function renderProductActions(p) {
       <button class="btn btn-gold" id="btn-buy">${I18N.t("product.buyNow")}</button>
     </div>
     <p class="buy-safety-note">${I18N.t("product.buySafetyNote")}</p>
+    <p class="buy-safety-note">${I18N.t("product.sellerNotPaymentsReady")}</p>
   `;
 }
 
@@ -1773,6 +1894,479 @@ function wireProductActions(p) {
       }
     });
   }
+
+  const btnPayNow = document.getElementById("btn-pay-now");
+  if (btnPayNow) {
+    btnPayNow.addEventListener("click", async () => {
+      btnPayNow.disabled = true;
+      btnPayNow.textContent = I18N.t("product.redirectingToCheckout");
+      try {
+        const data = await api("/api/orders", { method: "POST", auth: true, body: { productId: p.id } });
+        window.location.href = data.checkoutUrl;
+      } catch (e) {
+        btnPayNow.disabled = false;
+        btnPayNow.textContent = I18N.t("product.payNow");
+        offerArea.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+      }
+    });
+  }
+}
+
+// ---------------- Orders (task #58/#127 - real payments, buyer protection) ----------------
+
+function orderStatusLabel(status) {
+  return I18N.t("orders.status." + status) || status;
+}
+
+function orderStatusBadgeClass(status) {
+  if (status === "released") return "badge";
+  if (status === "disputed") return "badge no";
+  if (status === "refunded") return "badge no";
+  return "badge";
+}
+
+async function renderOrdersList() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `<h2 class="section-heading">${I18N.t("orders.myOrders")}</h2><p>${I18N.t("common.loading")}</p>`;
+  let orders;
+  try {
+    orders = await api("/api/orders/mine", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!orders.length) {
+    viewEl.innerHTML = `<h2 class="section-heading">${I18N.t("orders.myOrders")}</h2><p class="form-msg">${I18N.t("orders.empty")}</p>`;
+    return;
+  }
+  viewEl.innerHTML = `
+    <h2 class="section-heading">${I18N.t("orders.myOrders")}</h2>
+    <div class="order-list">
+      ${orders
+        .map(
+          (o) => `
+        <a class="order-row" href="#/orders/${o.id}">
+          ${o.productPhoto ? `<img src="${o.productPhoto}" class="order-row-thumb" />` : `<div class="order-row-thumb-empty">\u{1F4E6}</div>`}
+          <div class="order-row-info">
+            <div class="order-row-title">${escapeHtml(o.productTitle)}</div>
+            <div class="order-row-meta">${o.role === "buyer" ? I18N.t("orders.roleBuyer") : I18N.t("orders.roleSeller")} &middot; ${fmtPrice(o.amount)}</div>
+          </div>
+          <span class="${orderStatusBadgeClass(o.status)}">${orderStatusLabel(o.status)}</span>
+        </a>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+async function renderOrderDetail(id) {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let o;
+  try {
+    o = await api("/api/orders/" + id, { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const steps = ["paid_held", "shipped", "released"];
+  const timelineHtml = `
+    <div class="order-timeline">
+      ${steps
+        .map((s, i) => {
+          const passed = steps.indexOf(o.status) >= i || o.status === "released";
+          const isDisputedOrRefunded = o.status === "disputed" || o.status === "refunded";
+          return `<div class="order-step ${passed && !isDisputedOrRefunded ? "done" : ""}">
+            <span class="order-step-dot"></span>
+            <span class="order-step-label">${I18N.t("orders.step." + s)}</span>
+          </div>`;
+        })
+        .join("")}
+    </div>
+  `;
+
+  let actionHtml = "";
+  if (o.role === "seller" && o.status === "paid_held") {
+    actionHtml = `<button class="btn btn-gold" id="order-ship-btn">${I18N.t("orders.markShipped")}</button>`;
+  } else if (o.role === "buyer" && o.status === "shipped") {
+    actionHtml = `
+      <button class="btn btn-gold" id="order-confirm-btn">${I18N.t("orders.confirmArrival")}</button>
+      <button class="btn btn-outline" id="order-dispute-btn">${I18N.t("orders.reportProblem")}</button>
+      <p class="buy-safety-note">${I18N.t("orders.autoReleaseNote")}</p>
+    `;
+  } else if (o.status === "disputed") {
+    actionHtml = `<p class="form-msg">${I18N.t("orders.disputeUnderReview")}</p>`;
+  } else if (o.status === "released") {
+    actionHtml = `<p class="form-msg ok">${I18N.t("orders.releasedNote")}</p>`;
+  } else if (o.status === "refunded") {
+    actionHtml = `<p class="form-msg">${I18N.t("orders.refundedNote")}</p>`;
+  } else if (o.status === "pending_payment") {
+    actionHtml = `<p class="form-msg">${I18N.t("orders.pendingPaymentNote")}</p>`;
+  }
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/orders">&larr; ${I18N.t("orders.myOrders")}</a>
+    <div class="form-panel">
+      <h2 class="section-heading">${escapeHtml(o.productTitle || "")}</h2>
+      <span class="${orderStatusBadgeClass(o.status)}">${orderStatusLabel(o.status)}</span>
+      ${timelineHtml}
+      <p style="margin-top:14px;">${I18N.t("orders.amountLabel")}: ${fmtPrice(o.amount)}</p>
+      ${o.role === "seller" ? `<p>${I18N.t("orders.payoutLabel")}: ${fmtPrice(o.sellerPayout)}</p>` : ""}
+      <div id="order-action-area" class="action-row" style="margin-top:16px;">${actionHtml}</div>
+      <div id="order-dispute-form"></div>
+      <p id="order-msg" class="form-msg"></p>
+      ${stripeInlineBadgeHtml()}
+    </div>
+  `;
+
+  const msgEl = document.getElementById("order-msg");
+  const shipBtn = document.getElementById("order-ship-btn");
+  if (shipBtn) {
+    shipBtn.addEventListener("click", async () => {
+      try {
+        await api("/api/orders/" + o.id + "/ship", { method: "POST", auth: true, body: {} });
+        router();
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+  const confirmBtn = document.getElementById("order-confirm-btn");
+  if (confirmBtn) {
+    confirmBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("orders.confirmArrivalPrompt"))) return;
+      try {
+        await api("/api/orders/" + o.id + "/confirm", { method: "POST", auth: true, body: {} });
+        router();
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+  const disputeBtn = document.getElementById("order-dispute-btn");
+  if (disputeBtn) {
+    disputeBtn.addEventListener("click", () => {
+      document.getElementById("order-dispute-form").innerHTML = `
+        <div class="form-group" style="margin-top:14px;">
+          <label>${I18N.t("orders.disputeReasonLabel")}</label>
+          <textarea id="dispute-reason" rows="3"></textarea>
+        </div>
+        <button class="btn btn-danger" id="dispute-submit-btn">${I18N.t("orders.submitDispute")}</button>
+      `;
+      document.getElementById("dispute-submit-btn").addEventListener("click", async () => {
+        const reason = document.getElementById("dispute-reason").value;
+        try {
+          await api("/api/orders/" + o.id + "/dispute", { method: "POST", auth: true, body: { reason } });
+          router();
+        } catch (e) {
+          msgEl.textContent = e.message;
+          msgEl.className = "form-msg error";
+        }
+      });
+    });
+  }
+}
+
+// ---------------- Classics (public-domain library, Phase 1: browsing only)
+// ----------------
+// Books come from Project Gutenberg's public-domain catalog. Per Carlos's
+// instruction this is connected "silently" - the source is never surfaced
+// in the UI copy - and no price/buy button appears yet, since real pricing
+// only gets wired once the live Lulu print-cost calculation (Phase 2) is
+// built and verified. Showing a wrong price is worse than showing none.
+const CLASSICS_CATEGORIES = [
+  "fiction_classics",
+  "world_literature",
+  "adventure_scifi",
+  "mystery_adventure",
+  "childrens",
+  "philosophy",
+  "history_ideas",
+  "poetry_drama",
+];
+
+function classicCategoryLabel(cat) {
+  return I18N.t("classics.category." + cat) || cat;
+}
+
+// Original, HieloIce-owned cover art (task: Carlos wants covers with zero
+// copyright ambiguity - Gutenberg's own cover thumbnails couldn't be
+// guaranteed 100% clear of any rights, so instead of using an external
+// image at all, every classic gets a generated typographic cover: just
+// title + author on a category-tinted background, drawn as inline SVG.
+// Nothing here is downloaded from anywhere - it's built from plain text,
+// so there is nothing to have a copyright dispute about.
+// Each theme is a soft top-to-bottom "night sky" gradient (tinted per
+// category) plus one accent color used for the border, icon, stars and
+// text - this is what gives the covers an elegant, of-their-era, dreamy
+// feel (Carlos's request: "elegantes, acorde a su epoca, invitar a sonar
+// y volar e imaginar") while staying 100% hand-drawn, zero external images.
+const CLASSICS_COVER_THEMES = {
+  fiction_classics: { top: "#6b2f37", bottom: "#241014", accent: "#f4d9a0" },
+  world_literature: { top: "#274a6b", bottom: "#0e1c2e", accent: "#f0e3c0" },
+  adventure_scifi: { top: "#1f5c54", bottom: "#0b2521", accent: "#eee7c8" },
+  mystery_adventure: { top: "#2c2c52", bottom: "#111122", accent: "#e6dfc4" },
+  childrens: { top: "#8a6a1c", bottom: "#382a08", accent: "#fff3d0" },
+  philosophy: { top: "#4a3068", bottom: "#1c132c", accent: "#e9dcf5" },
+  history_ideas: { top: "#33543f", bottom: "#112016", accent: "#e6ecd8" },
+  poetry_drama: { top: "#5c2648", bottom: "#230e1d", accent: "#f4d9e6" },
+};
+
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h << 5) - h + s.charCodeAt(i);
+    h |= 0;
+  }
+  return h;
+}
+
+// A small hand-drawn emblem per category - each one points at the same
+// idea (dreaming, soaring, imagining) through a motif that fits the
+// category: a crescent moon for classic fiction, a compass/globe for
+// world literature, a ship under the stars for adventure & sci-fi, a
+// lantern for mystery, a hot-air balloon for children's, an owl for
+// philosophy, a laurel wreath for history, a quill for poetry & drama.
+function classicCoverIcon(category, accent) {
+  switch (category) {
+    case "fiction_classics":
+      return `<path d="M108 45a12 12 0 1 0 0 24 9 9 0 1 1 0-24" fill="${accent}" opacity="0.9"/>
+        <circle cx="82" cy="38" r="1.3" fill="${accent}"/>
+        <circle cx="128" cy="52" r="1" fill="${accent}"/>
+        <circle cx="92" cy="60" r="0.8" fill="${accent}"/>`;
+    case "world_literature":
+      return `<circle cx="100" cy="49" r="15" fill="none" stroke="${accent}" stroke-width="1"/>
+        <ellipse cx="100" cy="49" rx="15" ry="6" fill="none" stroke="${accent}" stroke-width="0.7"/>
+        <ellipse cx="100" cy="49" rx="6.5" ry="15" fill="none" stroke="${accent}" stroke-width="0.7"/>
+        <line x1="100" y1="34" x2="100" y2="64" stroke="${accent}" stroke-width="0.7"/>
+        <circle cx="122" cy="34" r="1.2" fill="${accent}"/>`;
+    case "adventure_scifi":
+      return `<path d="M100 33 L100 58" stroke="${accent}" stroke-width="1"/>
+        <path d="M100 35 L116 55 L100 55 Z" fill="${accent}" opacity="0.85"/>
+        <path d="M100 40 L87 55 L100 55 Z" fill="${accent}" opacity="0.6"/>
+        <path d="M80 60 Q100 68 120 60 L116 64 Q100 71 84 64 Z" fill="${accent}"/>
+        <circle cx="131" cy="29" r="1" fill="${accent}"/>
+        <circle cx="71" cy="34" r="0.8" fill="${accent}"/>`;
+    case "mystery_adventure":
+      return `<circle cx="113" cy="39" r="9" fill="none" stroke="${accent}" stroke-width="0.7" opacity="0.55"/>
+        <rect x="92" y="45" width="14" height="17" rx="2" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M95 45 Q99 39 103 45" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="99" cy="53" r="1.8" fill="${accent}"/>`;
+    case "childrens":
+      return `<ellipse cx="100" cy="44" rx="11" ry="14" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M91 56 L94 64 L106 64 L109 56" fill="none" stroke="${accent}" stroke-width="1"/>
+        <rect x="96" y="64" width="8" height="5" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="76" cy="35" r="1.2" fill="${accent}"/>
+        <circle cx="125" cy="41" r="1" fill="${accent}"/>
+        <circle cx="118" cy="23" r="0.8" fill="${accent}"/>`;
+    case "philosophy":
+      return `<circle cx="92" cy="47" r="7.5" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="108" cy="47" r="7.5" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="92" cy="47" r="2.2" fill="${accent}"/>
+        <circle cx="108" cy="47" r="2.2" fill="${accent}"/>
+        <path d="M96 54 L100 60 L104 54" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M83 39 Q92 32 97 38" fill="none" stroke="${accent}" stroke-width="0.8"/>
+        <path d="M103 38 Q108 32 117 39" fill="none" stroke="${accent}" stroke-width="0.8"/>`;
+    case "history_ideas":
+      return `<path d="M84 60 Q78 44 90 32" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M116 60 Q122 44 110 32" fill="none" stroke="${accent}" stroke-width="1"/>
+        <ellipse cx="87" cy="41" rx="3" ry="1.6" fill="${accent}" transform="rotate(-30 87 41)"/>
+        <ellipse cx="82" cy="52" rx="3" ry="1.6" fill="${accent}" transform="rotate(-15 82 52)"/>
+        <ellipse cx="113" cy="41" rx="3" ry="1.6" fill="${accent}" transform="rotate(30 113 41)"/>
+        <ellipse cx="118" cy="52" rx="3" ry="1.6" fill="${accent}" transform="rotate(15 118 52)"/>`;
+    case "poetry_drama":
+      return `<path d="M90 62 Q99 29 116 32 Q103 38 99 50 Q107 46 111 38" fill="none" stroke="${accent}" stroke-width="1.1"/>
+        <circle cx="89" cy="64" r="1.4" fill="${accent}"/>`;
+    default:
+      return `<circle cx="100" cy="47" r="10" fill="none" stroke="${accent}" stroke-width="1"/>`;
+  }
+}
+
+function wrapCoverText(text, maxCharsPerLine, maxLines) {
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let current = "";
+  for (const w of words) {
+    const candidate = current ? current + " " + w : w;
+    if (candidate.length > maxCharsPerLine && current) {
+      lines.push(current);
+      current = w;
+    } else {
+      current = candidate;
+    }
+    if (lines.length === maxLines - 1) {
+      // last line gets whatever remains, truncated with an ellipsis if long
+      break;
+    }
+  }
+  const usedWords = lines.join(" ").split(/\s+/).filter(Boolean).length;
+  const remaining = words.slice(usedWords).join(" ");
+  if (remaining) {
+    lines.push(remaining.length > maxCharsPerLine + 3 ? remaining.slice(0, maxCharsPerLine) + "…" : remaining);
+  } else if (current && lines[lines.length - 1] !== current) {
+    lines.push(current);
+  }
+  return lines.slice(0, maxLines);
+}
+
+function classicCoverSvg(title, author, category) {
+  const theme = CLASSICS_COVER_THEMES[category] || CLASSICS_COVER_THEMES.fiction_classics;
+  const uid = "cvr" + Math.abs(hashStr(title + "|" + author)).toString(36);
+  const titleLines = wrapCoverText(title, 16, 4);
+  const titleStartY = 100;
+  const titleTspans = titleLines
+    .map((line, i) => `<tspan x="100" y="${titleStartY + i * 22}">${escapeHtml(line)}</tspan>`)
+    .join("");
+  const authorStartY = titleStartY + titleLines.length * 22 + 18;
+  const authorLines = wrapCoverText(author.toUpperCase(), 24, 2);
+  const authorTspans = authorLines
+    .map((line, i) => `<tspan x="100" y="${authorStartY + i * 16}">${escapeHtml(line)}</tspan>`)
+    .join("");
+  // A quiet scattered night sky - the same idea ("soar, dream, imagine")
+  // running underneath every category, regardless of its accent color.
+  const stars = [
+    [26, 26, 1.3, 0.85], [172, 32, 1, 0.7], [48, 18, 0.8, 0.6], [152, 20, 1.1, 0.75],
+    [20, 84, 0.7, 0.5], [180, 96, 0.9, 0.6], [16, 130, 0.6, 0.4], [186, 150, 0.85, 0.55],
+    [34, 258, 0.7, 0.45], [166, 268, 0.9, 0.5],
+  ]
+    .map(([x, y, r, o]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${theme.accent}" opacity="${o}"/>`)
+    .join("");
+  const dividerY = 78;
+  return `<svg viewBox="0 0 200 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHtml(title)}">
+    <defs>
+      <linearGradient id="${uid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${theme.top}" />
+        <stop offset="100%" stop-color="${theme.bottom}" />
+      </linearGradient>
+    </defs>
+    <rect width="200" height="300" fill="url(#${uid})" />
+    ${stars}
+    <rect x="9" y="9" width="182" height="282" fill="none" stroke="${theme.accent}" stroke-width="1" opacity="0.9" />
+    <rect x="13" y="13" width="174" height="274" fill="none" stroke="${theme.accent}" stroke-width="0.5" opacity="0.45" />
+    <path d="M9 24 L9 9 L24 9" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    <path d="M176 9 L191 9 L191 24" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    <path d="M9 276 L9 291 L24 291" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    <path d="M191 276 L191 291 L176 291" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    ${classicCoverIcon(category, theme.accent)}
+    <g opacity="0.85">
+      <line x1="68" y1="${dividerY}" x2="88" y2="${dividerY}" stroke="${theme.accent}" stroke-width="0.8"/>
+      <rect x="97" y="${dividerY - 3}" width="6" height="6" fill="${theme.accent}" transform="rotate(45 100 ${dividerY})"/>
+      <line x1="112" y1="${dividerY}" x2="132" y2="${dividerY}" stroke="${theme.accent}" stroke-width="0.8"/>
+    </g>
+    <text font-family="Playfair Display, Georgia, serif" font-weight="700" font-size="19" fill="#faf3e0" text-anchor="middle">${titleTspans}</text>
+    <text font-family="Georgia, serif" font-size="10" letter-spacing="1.5" fill="${theme.accent}" text-anchor="middle">${authorTspans}</text>
+    <text x="100" y="283" font-family="Georgia, serif" font-size="7" letter-spacing="2" fill="${theme.accent}" text-anchor="middle" opacity="0.85">HIELOICE CLASSICS</text>
+  </svg>`;
+}
+
+// Prefer a real, museum-verified public-domain painting (see cover_image_url,
+// sourced from the Met Museum's Open Access API, isPublicDomain:true only)
+// as the cover art - falls back to the hand-drawn SVG cover for the rare
+// book where no confident match was found, so every title always has art.
+function classicCoverMarkup(b) {
+  if (b.cover_image_url) {
+    return `
+      <img class="classics-cover-photo" src="${escapeHtml(b.cover_image_url_small || b.cover_image_url)}" alt="${escapeHtml(b.title)}" loading="lazy" />
+      <div class="classics-cover-gradient"></div>
+      <div class="classics-cover-text">
+        <p class="classics-cover-title">${escapeHtml(b.title)}</p>
+        <p class="classics-cover-author">${escapeHtml(b.author)}</p>
+      </div>`;
+  }
+  return classicCoverSvg(b.title, b.author, b.category);
+}
+
+function classicCardHtml(b) {
+  return `
+    <a class="product-card" href="#/classics/${b.id}">
+      <div class="product-thumb-wrap classics-cover-wrap">
+        ${classicCoverMarkup(b)}
+        <span class="badge classics-new-badge">${I18N.t("classics.newBadge")}</span>
+      </div>
+      <div class="product-card-body">
+        <p class="product-title">${escapeHtml(b.title)}</p>
+        <p class="product-location">${escapeHtml(b.author)}</p>
+      </div>
+    </a>`;
+}
+
+async function renderClassicsHub(query) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const activeCat = query && query.category ? query.category : "";
+  let books;
+  try {
+    const params = new URLSearchParams();
+    if (activeCat) params.set("category", activeCat);
+    books = await api("/api/classics?" + params.toString());
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const pillsHtml = `
+    <div class="category-tabs-row">
+      <a class="category-tab-pill ${!activeCat ? "active" : ""}" href="#/classics">${I18N.t("classics.allCategories")}</a>
+      ${CLASSICS_CATEGORIES.map(
+        (c) => `<a class="category-tab-pill ${activeCat === c ? "active" : ""}" href="#/classics?category=${c}">${classicCategoryLabel(c)}</a>`
+      ).join("")}
+    </div>
+  `;
+
+  viewEl.innerHTML = `
+    <div class="hero">
+      <h1>${I18N.t("classics.heading")}</h1>
+      <p>${I18N.t("classics.subheading")}</p>
+    </div>
+    ${pillsHtml}
+    <div class="category-grid">
+      ${books.length ? books.map(classicCardHtml).join("") : `<div class="empty-state">${I18N.t("category.noResults")}</div>`}
+    </div>
+  `;
+}
+
+async function renderClassicDetail(id) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let b;
+  try {
+    b = await api("/api/classics/" + id);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const creditHtml = b.cover_image_url && b.cover_artwork_title
+    ? `<p class="classics-cover-credit">${I18N.t("classics.coverCredit")}: <em>${escapeHtml(b.cover_artwork_title)}</em>${b.cover_artist ? ", " + escapeHtml(b.cover_artist) : ""}${b.cover_object_date ? " (" + escapeHtml(b.cover_object_date) + ")" : ""} &mdash; ${I18N.t("classics.metMuseum")}</p>`
+    : "";
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/classics">&larr; ${I18N.t("classics.heading")}</a>
+    <div class="form-panel classics-detail">
+      <div class="classics-detail-cover">${classicCoverMarkup(b)}</div>
+      <div class="classics-detail-info">
+        <span class="badge classics-new-badge">${I18N.t("classics.newBadge")}</span>
+        <h2 class="section-heading">${escapeHtml(b.title)}</h2>
+        <p class="product-location">${escapeHtml(b.author)}</p>
+        <p style="margin-top:10px;">${escapeHtml(b.description || "")}</p>
+        ${creditHtml}
+        <div class="classics-buy-box">
+          <div class="classics-buy-price">
+            <span class="classics-buy-price-label">${I18N.t("classics.priceLabel")}</span>
+            <span class="classics-buy-price-value">${I18N.t("classics.pricePending")}</span>
+          </div>
+          <button class="btn btn-primary classics-buy-btn" disabled title="${escapeHtml(I18N.t("classics.comingSoonNote"))}">${I18N.t("classics.buyButton")}</button>
+          <p class="form-msg" style="margin-top:10px;">${I18N.t("classics.comingSoonNote")}</p>
+          ${stripeInlineBadgeHtml()}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // ---------------- Report modal (report a listing or a user) ----------------
@@ -1795,6 +2389,8 @@ function openReportModal(targetType, targetId) {
           <option value="prohibited">${I18N.t("report.reasonProhibited")}</option>
           <option value="inappropriate">${I18N.t("report.reasonInappropriate")}</option>
           <option value="fraud">${I18N.t("report.reasonFraud")}</option>
+          ${targetType === "user" ? `<option value="harassment">${I18N.t("report.reasonHarassment")}</option>` : ""}
+          ${targetType === "user" ? `<option value="fake_profile">${I18N.t("report.reasonFakeProfile")}</option>` : ""}
           <option value="other">${I18N.t("report.reasonOther")}</option>
         </select>
       </div>
@@ -1838,6 +2434,22 @@ function openReportModal(targetType, targetId) {
 
 // ---------------- Auth views ----------------
 
+// Official Google "G" and Facebook "f" mark SVGs, used only inside the
+// Google/Facebook login buttons per each company's own button-branding
+// guidelines (this is the sanctioned, required way to show their login
+// buttons - not a decorative use of their logos elsewhere in the app).
+function googleGIconSvg() {
+  return '<svg width="18" height="18" viewBox="0 0 18 18" style="flex-shrink:0;"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.706A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.706V4.962H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.038l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.962L3.964 7.294C4.672 5.167 6.656 3.58 9 3.58z"/></svg>';
+}
+function facebookFIconSvg() {
+  return '<svg width="18" height="18" viewBox="0 0 36 36" style="flex-shrink:0;"><path fill="#fff" d="M36 18c0-9.94-8.06-18-18-18S0 8.06 0 18c0 8.98 6.58 16.41 15.19 17.76V23.2h-4.57V18h4.57v-3.97c0-4.51 2.69-7 6.8-7 1.97 0 4.03.35 4.03.35v4.43h-2.27c-2.24 0-2.94 1.39-2.94 2.82V18h5l-.8 5.2h-4.2v12.76C29.42 34.41 36 26.98 36 18z"/></svg>';
+}
+function oauthButtonsHtml(idPrefix) {
+  return `
+      <a class="btn btn-google" style="width:100%;" href="/api/auth/google">${googleGIconSvg()}<span>${I18N.t("auth.continueGoogle")}</span></a>
+      <a class="btn btn-facebook" style="width:100%;margin-top:8px;" href="/api/auth/facebook">${facebookFIconSvg()}<span>${I18N.t("auth.continueFacebook")}</span></a>`;
+}
+
 function renderLogin() {
   viewEl.innerHTML = `
     <div class="form-panel">
@@ -1853,8 +2465,7 @@ function renderLogin() {
       <button class="btn btn-primary" id="login-submit" style="width:100%;">${I18N.t("auth.submitLogin")}</button>
       <p class="form-msg" id="login-msg"></p>
       <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      ${oauthButtonsHtml()}
       <p class="form-footer-link">${I18N.t("auth.needAccount")} <a href="#/register">${I18N.t("auth.goRegister")}</a></p>
     </div>
   `;
@@ -1894,11 +2505,15 @@ function renderRegister() {
         <label>${I18N.t("auth.phone")}</label>
         <input type="tel" id="reg-phone" placeholder="+1 555 555 5555" />
       </div>
+      <div class="form-group">
+        <label>${I18N.t("auth.birthdate")}</label>
+        <input type="date" id="reg-birthdate" />
+        <p class="form-field-hint">${I18N.t("auth.birthdateHint")}</p>
+      </div>
       <button class="btn btn-primary" id="reg-submit" style="width:100%;">${I18N.t("auth.submitRegister")}</button>
       <p class="form-msg" id="reg-msg"></p>
       <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      ${oauthButtonsHtml()}
       <p class="form-footer-link">${I18N.t("auth.haveAccount")} <a href="#/login">${I18N.t("auth.goLogin")}</a></p>
     </div>
   `;
@@ -1907,15 +2522,55 @@ function renderRegister() {
     const email = document.getElementById("reg-email").value;
     const password = document.getElementById("reg-password").value;
     const phone = document.getElementById("reg-phone").value;
+    const birthdate = document.getElementById("reg-birthdate").value;
     const msgEl = document.getElementById("reg-msg");
     try {
-      const data = await api("/api/auth/register", { method: "POST", body: { name, email, password, phone } });
+      const data = await api("/api/auth/register", { method: "POST", body: { name, email, password, phone, birthdate } });
       setAuth(data.token, data.user);
       location.hash = "#/";
     } catch (e) {
       msgEl.textContent = e.message;
       msgEl.className = "form-msg error";
     }
+  });
+}
+
+// One-time gate for logged-in accounts that don't have a birthdate on file
+// yet (Google/Facebook signups, or pre-existing accounts from before this
+// requirement existed). Blocks every other route until confirmed - see the
+// AGE_GATE_EXEMPT_ROUTES check in router(). Self-attestation only, same
+// disclosed limitation as the registration-form check.
+function renderConfirmAge() {
+  viewEl.innerHTML = `
+    <div class="form-panel">
+      <h2 class="section-heading">${I18N.t("auth.confirmAgeTitle")}</h2>
+      <p class="form-field-hint">${I18N.t("auth.confirmAgeBody")}</p>
+      <div class="form-group">
+        <label>${I18N.t("auth.birthdate")}</label>
+        <input type="date" id="confirm-age-birthdate" />
+      </div>
+      <button class="btn btn-primary" id="confirm-age-submit" style="width:100%;">${I18N.t("common.continue")}</button>
+      <p class="form-msg" id="confirm-age-msg"></p>
+      <p class="form-footer-link"><a href="#" id="confirm-age-logout">${I18N.t("nav.logout")}</a></p>
+    </div>
+  `;
+  document.getElementById("confirm-age-submit").addEventListener("click", async () => {
+    const birthdate = document.getElementById("confirm-age-birthdate").value;
+    const msgEl = document.getElementById("confirm-age-msg");
+    try {
+      const data = await api("/api/auth/birthdate", { method: "PUT", auth: true, body: { birthdate } });
+      setAuth(state.token, data.user);
+      location.hash = "#/";
+      router();
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  });
+  document.getElementById("confirm-age-logout").addEventListener("click", (e) => {
+    e.preventDefault();
+    setAuth(null, null);
+    location.hash = "#/login";
   });
 }
 
@@ -1958,8 +2613,7 @@ function renderDeleteAccount() {
         <button class="btn btn-primary" id="del-login-submit" style="width:100%;">${I18N.t("auth.submitLogin")}</button>
         <p class="form-msg" id="del-login-msg"></p>
         <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-        <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-        <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+        ${oauthButtonsHtml()}
       </div>
     `;
     document.getElementById("del-login-submit").addEventListener("click", async () => {
@@ -2749,6 +3403,7 @@ async function renderFriendsPage() {
     <div class="friends-search-tabs">
       <button class="friends-search-tab ${friendsPageTab === "friends" ? "active" : ""}" data-tab="friends">${I18N.t("friendsPage.tabFriends")}</button>
       <button class="friends-search-tab ${friendsPageTab === "people" ? "active" : ""}" data-tab="people">${I18N.t("friendsPage.tabPeople")}</button>
+      <a class="friends-search-tab friends-search-tab-dating" href="#/dating">💘 ${I18N.t("friendsPage.tabDating")}</a>
     </div>
     <input type="text" id="friends-search-input" class="friends-search-input" placeholder="${friendsPageTab === "people" ? I18N.t("friendsPage.searchPeoplePlaceholder") : I18N.t("friendsPage.searchFriendsPlaceholder")}" />
     <div id="friends-page-body"><p>${I18N.t("common.loading")}</p></div>
@@ -7047,6 +7702,611 @@ function drawMusicLibrary() {
   });
 }
 
+// ---------------- Podcasts ("#/podcasts", "#/podcast/:id", "#/podcast-episode/:id") ----------------
+// Free for every creator - a growth/reach feature (get people creating AND
+// listening), not paid hosting. Modeled loosely on the two platforms that
+// actually dominate podcast listening today (a dedicated library/channel
+// structure like Spotify's, plus reusing existing video content as episodes
+// the way YouTube creators do) but built with HieloIce's own black+gold
+// visual language - no copied icons, logos, or layouts from either. Real
+// creator monetization (tips/memberships/ad revenue share) is intentionally
+// out of scope for now (needs its own payment-processor decision, task #58)
+// - this only builds the free, real, audience-facing half: channels,
+// episodes, follows, views, likes, and a browsable library.
+const PODCAST_CATEGORIES = ["books", "business", "comedy", "education", "truecrime", "music", "tech", "lifestyle", "sports", "news", "storytelling"];
+
+let podcastLibraryState = { tab: "foryou", sort: "trending", episodes: [], channels: [], q: "", category: "", loading: true, myChannel: undefined };
+
+async function renderPodcastLibrary(query) {
+  podcastLibraryState = {
+    tab: (query && query.tab) || "foryou",
+    sort: "trending",
+    episodes: [],
+    channels: [],
+    q: "",
+    category: "",
+    loading: true,
+    myChannel: undefined,
+  };
+  drawPodcastLibrary();
+  const tasks = [podcastLibraryLoadFeed()];
+  if (state.user) tasks.push(podcastLibraryLoadMyChannel());
+  else podcastLibraryState.myChannel = null;
+  await Promise.all(tasks);
+}
+
+async function podcastLibraryLoadMyChannel() {
+  try {
+    const data = await api("/api/podcasts/mine", { auth: true });
+    podcastLibraryState.myChannel = data.channel;
+  } catch (e) {
+    podcastLibraryState.myChannel = null;
+  }
+  drawPodcastLibrary();
+}
+
+async function podcastLibraryLoadFeed() {
+  podcastLibraryState.loading = true;
+  drawPodcastLibrary();
+  try {
+    podcastLibraryState.episodes = await api("/api/podcast-episodes/feed?sort=" + podcastLibraryState.sort);
+  } catch (e) {
+    podcastLibraryState.episodes = [];
+  }
+  podcastLibraryState.loading = false;
+  drawPodcastLibrary();
+}
+
+async function podcastLibraryLoadChannels() {
+  podcastLibraryState.loading = true;
+  drawPodcastLibrary();
+  const params = [];
+  if (podcastLibraryState.q) params.push("q=" + encodeURIComponent(podcastLibraryState.q));
+  if (podcastLibraryState.category) params.push("category=" + encodeURIComponent(podcastLibraryState.category));
+  try {
+    podcastLibraryState.channels = await api("/api/podcasts" + (params.length ? "?" + params.join("&") : ""));
+  } catch (e) {
+    podcastLibraryState.channels = [];
+  }
+  podcastLibraryState.loading = false;
+  drawPodcastLibrary();
+}
+
+function podcastMediaIcon(type) {
+  return type === "video" ? "🎬" : "🎧";
+}
+
+function drawPodcastLibrary() {
+  const s = podcastLibraryState;
+  const myChannelCard =
+    s.myChannel === undefined
+      ? ""
+      : s.myChannel
+      ? `<a href="#/podcast/${s.myChannel.id}" class="podcast-my-channel-card">
+          <span class="podcast-my-channel-icon">🎙️</span>
+          <span class="podcast-my-channel-text">
+            <strong>${escapeHtml(s.myChannel.name)}</strong>
+            <span>${s.myChannel.followerCount} ${I18N.t("podcast.followers")} · ${s.myChannel.episodeCount} ${I18N.t("podcast.episodes")}</span>
+          </span>
+          <span class="podcast-my-channel-cta">${I18N.t("podcast.manage")} &rarr;</span>
+        </a>`
+      : `<div class="podcast-my-channel-card podcast-my-channel-card-empty">
+          <span class="podcast-my-channel-icon">🎙️</span>
+          <span class="podcast-my-channel-text">
+            <strong>${I18N.t("podcast.startYourOwn")}</strong>
+            <span>${I18N.t("podcast.startYourOwnHint")}</span>
+          </span>
+          <button type="button" class="btn btn-gold" id="podcast-create-btn">${I18N.t("podcast.createBtn")}</button>
+        </div>`;
+
+  const tabsHtml = `
+    <div class="podcast-tabs">
+      <button type="button" class="podcast-tab-btn ${s.tab === "foryou" ? "active" : ""}" data-tab="foryou">${I18N.t("podcast.tabForYou")}</button>
+      <button type="button" class="podcast-tab-btn ${s.tab === "browse" ? "active" : ""}" data-tab="browse">${I18N.t("podcast.tabBrowse")}</button>
+    </div>`;
+
+  let bodyHtml;
+  if (s.tab === "foryou") {
+    const sortRow = `
+      <div class="podcast-sort-row">
+        <button type="button" class="podcast-sort-btn ${s.sort === "trending" ? "active" : ""}" data-sort="trending">${I18N.t("podcast.sortTrending")}</button>
+        <button type="button" class="podcast-sort-btn ${s.sort === "new" ? "active" : ""}" data-sort="new">${I18N.t("podcast.sortNew")}</button>
+      </div>`;
+    let listHtml;
+    if (s.loading) listHtml = `<p>${I18N.t("common.loading")}</p>`;
+    else if (!s.episodes.length) listHtml = `<div class="empty-state">${I18N.t("podcast.noEpisodesYet")}</div>`;
+    else
+      listHtml = `<div class="podcast-episode-grid">${s.episodes
+        .map((e) => {
+          const cover = e.coverImage || (e.channel && e.channel.coverImage) || "";
+          return `
+        <a href="#/podcast-episode/${e.id}" class="podcast-episode-card">
+          <span class="podcast-episode-card-cover" style="${cover ? `background-image:url('${cover}')` : ""}">${cover ? "" : podcastMediaIcon(e.mediaType)}</span>
+          <span class="podcast-episode-card-info">
+            <strong>${escapeHtml(e.title)}</strong>
+            <span class="podcast-episode-card-channel">${escapeHtml((e.channel && e.channel.name) || "")}</span>
+            <span class="podcast-episode-card-stats">${podcastMediaIcon(e.mediaType)} ${e.viewCount} · &#9825; ${e.likeCount}</span>
+          </span>
+        </a>`;
+        })
+        .join("")}</div>`;
+    bodyHtml = sortRow + listHtml;
+  } else {
+    const catChips = PODCAST_CATEGORIES.map(
+      (c) => `<button type="button" class="podcast-cat-chip ${s.category === c ? "active" : ""}" data-cat="${c}">${I18N.t("podcast.category." + c)}</button>`
+    ).join("");
+    let listHtml;
+    if (s.loading) listHtml = `<p>${I18N.t("common.loading")}</p>`;
+    else if (!s.channels.length) listHtml = `<div class="empty-state">${I18N.t("podcast.noChannelsYet")}</div>`;
+    else
+      listHtml = `<div class="podcast-channel-grid">${s.channels
+        .map(
+          (c) => `
+        <a href="#/podcast/${c.id}" class="podcast-channel-card">
+          <span class="podcast-channel-card-cover" style="${c.coverImage ? `background-image:url('${c.coverImage}')` : ""}">${c.coverImage ? "" : "🎙️"}</span>
+          <strong>${escapeHtml(c.name)}</strong>
+          <span class="podcast-channel-card-owner">${escapeHtml(c.ownerName || "")}</span>
+          <span class="podcast-channel-card-stats">${c.followerCount} ${I18N.t("podcast.followers")} · ${c.episodeCount} ${I18N.t("podcast.episodes")}</span>
+        </a>`
+        )
+        .join("")}</div>`;
+    bodyHtml = `
+      <form class="podcast-search-row" id="podcast-search-form">
+        <input type="text" id="podcast-search-input" value="${escapeHtml(s.q)}" placeholder="${I18N.t("podcast.searchPlaceholder")}" />
+        <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+      </form>
+      <div class="podcast-cat-row">
+        <button type="button" class="podcast-cat-chip ${!s.category ? "active" : ""}" data-cat="">${I18N.t("podcast.allCategories")}</button>
+        ${catChips}
+      </div>
+      ${listHtml}`;
+  }
+
+  viewEl.innerHTML = `
+    <div class="podcast-library-page">
+      <p class="podcast-eyebrow">🎙️ ${I18N.t("podcast.eyebrow")}</p>
+      <h2 class="podcast-title">${I18N.t("podcast.libraryTitle")}</h2>
+      <p class="podcast-subtitle">${I18N.t("podcast.librarySubtitle")}</p>
+      ${myChannelCard}
+      ${tabsHtml}
+      ${bodyHtml}
+    </div>`;
+
+  const createBtn = document.getElementById("podcast-create-btn");
+  if (createBtn) createBtn.addEventListener("click", () => openCreatePodcastForm());
+
+  document.querySelectorAll(".podcast-tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      podcastLibraryState.tab = btn.dataset.tab;
+      if (podcastLibraryState.tab === "browse" && !podcastLibraryState.channels.length) {
+        podcastLibraryLoadChannels();
+      } else {
+        drawPodcastLibrary();
+      }
+    });
+  });
+  document.querySelectorAll(".podcast-sort-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      podcastLibraryState.sort = btn.dataset.sort;
+      podcastLibraryLoadFeed();
+    });
+  });
+  document.querySelectorAll(".podcast-cat-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      podcastLibraryState.category = btn.dataset.cat;
+      podcastLibraryLoadChannels();
+    });
+  });
+  const searchForm = document.getElementById("podcast-search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      podcastLibraryState.q = document.getElementById("podcast-search-input").value.trim();
+      podcastLibraryLoadChannels();
+    });
+  }
+}
+
+function podcastFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function closePodcastModal() {
+  const existing = document.getElementById("podcast-modal-backdrop");
+  if (existing) existing.remove();
+}
+
+function openCreatePodcastForm() {
+  if (!state.user) {
+    location.hash = "#/login";
+    return;
+  }
+  closePodcastModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "podcast-modal-backdrop";
+  backdrop.id = "podcast-modal-backdrop";
+  const catOptions = PODCAST_CATEGORIES.map((c) => `<option value="${c}">${I18N.t("podcast.category." + c)}</option>`).join("");
+  backdrop.innerHTML = `
+    <div class="podcast-modal">
+      <div class="podcast-modal-head">
+        <p>${I18N.t("podcast.createTitle")}</p>
+        <button type="button" class="podcast-modal-close" id="podcast-modal-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      <form id="podcast-create-form">
+        <label>${I18N.t("podcast.nameLabel")}</label>
+        <input type="text" id="podcast-form-name" maxlength="80" required />
+        <label>${I18N.t("podcast.descriptionLabel")}</label>
+        <textarea id="podcast-form-description" maxlength="500" rows="3"></textarea>
+        <label>${I18N.t("podcast.categoryLabel")}</label>
+        <select id="podcast-form-category">${catOptions}</select>
+        <label>${I18N.t("podcast.coverLabel")}</label>
+        <input type="file" id="podcast-form-cover" accept="image/*" />
+        <p class="field-hint">${I18N.t("podcast.freeHint")}</p>
+        <button type="submit" class="btn btn-gold" id="podcast-form-submit">${I18N.t("podcast.createBtn")}</button>
+      </form>
+    </div>`;
+  document.body.appendChild(backdrop);
+  document.getElementById("podcast-modal-close").addEventListener("click", closePodcastModal);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePodcastModal();
+  });
+  document.getElementById("podcast-create-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("podcast-form-name").value.trim();
+    if (!name) return;
+    const submitBtn = document.getElementById("podcast-form-submit");
+    submitBtn.disabled = true;
+    try {
+      const coverFile = document.getElementById("podcast-form-cover").files[0];
+      let coverImage = null;
+      if (coverFile) coverImage = await podcastFileToDataUrl(coverFile);
+      const channel = await api("/api/podcasts", {
+        method: "POST",
+        auth: true,
+        body: {
+          name,
+          description: document.getElementById("podcast-form-description").value.trim(),
+          category: document.getElementById("podcast-form-category").value,
+          coverImage,
+        },
+      });
+      closePodcastModal();
+      location.hash = "#/podcast/" + channel.id;
+    } catch (err) {
+      showAppToast(err.message || I18N.t("common.error"));
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+function openEditPodcastForm(channel) {
+  closePodcastModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "podcast-modal-backdrop";
+  backdrop.id = "podcast-modal-backdrop";
+  const catOptions = PODCAST_CATEGORIES.map(
+    (c) => `<option value="${c}" ${channel.category === c ? "selected" : ""}>${I18N.t("podcast.category." + c)}</option>`
+  ).join("");
+  backdrop.innerHTML = `
+    <div class="podcast-modal">
+      <div class="podcast-modal-head">
+        <p>${I18N.t("podcast.editChannel")}</p>
+        <button type="button" class="podcast-modal-close" id="podcast-modal-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      <form id="podcast-edit-form">
+        <label>${I18N.t("podcast.nameLabel")}</label>
+        <input type="text" id="podcast-form-name" maxlength="80" required value="${escapeHtml(channel.name)}" />
+        <label>${I18N.t("podcast.descriptionLabel")}</label>
+        <textarea id="podcast-form-description" maxlength="500" rows="3">${escapeHtml(channel.description || "")}</textarea>
+        <label>${I18N.t("podcast.categoryLabel")}</label>
+        <select id="podcast-form-category">${catOptions}</select>
+        <label>${I18N.t("podcast.coverLabel")}</label>
+        <input type="file" id="podcast-form-cover" accept="image/*" />
+        <button type="submit" class="btn btn-gold" id="podcast-form-submit">${I18N.t("common.save")}</button>
+      </form>
+    </div>`;
+  document.body.appendChild(backdrop);
+  document.getElementById("podcast-modal-close").addEventListener("click", closePodcastModal);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePodcastModal();
+  });
+  document.getElementById("podcast-edit-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const submitBtn = document.getElementById("podcast-form-submit");
+    submitBtn.disabled = true;
+    try {
+      const payload = {
+        name: document.getElementById("podcast-form-name").value.trim(),
+        description: document.getElementById("podcast-form-description").value.trim(),
+        category: document.getElementById("podcast-form-category").value,
+      };
+      const coverFile = document.getElementById("podcast-form-cover").files[0];
+      if (coverFile) payload.coverImage = await podcastFileToDataUrl(coverFile);
+      await api("/api/podcasts/" + channel.id, { method: "PUT", auth: true, body: payload });
+      closePodcastModal();
+      renderPodcastChannel(channel.id);
+    } catch (err) {
+      showAppToast(err.message || I18N.t("common.error"));
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+async function openNewEpisodeComposer(channelId) {
+  closePodcastModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "podcast-modal-backdrop";
+  backdrop.id = "podcast-modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="podcast-modal">
+      <div class="podcast-modal-head">
+        <p>${I18N.t("podcast.newEpisodeTitle")}</p>
+        <button type="button" class="podcast-modal-close" id="podcast-modal-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      <form id="podcast-episode-form">
+        <label>${I18N.t("podcast.episodeTitleLabel")}</label>
+        <input type="text" id="podcast-ep-title" maxlength="120" required />
+        <label>${I18N.t("podcast.descriptionLabel")}</label>
+        <textarea id="podcast-ep-description" maxlength="1000" rows="3"></textarea>
+        <div class="podcast-ep-source-tabs">
+          <button type="button" class="podcast-ep-source-tab active" data-source="upload">${I18N.t("podcast.uploadFile")}</button>
+          <button type="button" class="podcast-ep-source-tab" data-source="reuse">${I18N.t("podcast.reuseExisting")}</button>
+        </div>
+        <div id="podcast-ep-source-upload">
+          <label>${I18N.t("podcast.audioOrVideoFile")}</label>
+          <input type="file" id="podcast-ep-file" accept="audio/*,video/*" />
+        </div>
+        <div id="podcast-ep-source-reuse" style="display:none;">
+          <label>${I18N.t("podcast.pickExisting")}</label>
+          <div id="podcast-ep-existing-list"><p>${I18N.t("common.loading")}</p></div>
+        </div>
+        <label>${I18N.t("podcast.coverLabel")} (${I18N.t("common.optional")})</label>
+        <input type="file" id="podcast-ep-cover" accept="image/*" />
+        <button type="submit" class="btn btn-gold" id="podcast-ep-submit">${I18N.t("podcast.publishEpisode")}</button>
+      </form>
+    </div>`;
+  document.body.appendChild(backdrop);
+  document.getElementById("podcast-modal-close").addEventListener("click", closePodcastModal);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePodcastModal();
+  });
+
+  let sourceMode = "upload";
+  let selectedExistingId = null;
+  const uploadDiv = document.getElementById("podcast-ep-source-upload");
+  const reuseDiv = document.getElementById("podcast-ep-source-reuse");
+  document.querySelectorAll(".podcast-ep-source-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      sourceMode = btn.dataset.source;
+      document.querySelectorAll(".podcast-ep-source-tab").forEach((b) => b.classList.toggle("active", b === btn));
+      uploadDiv.style.display = sourceMode === "upload" ? "" : "none";
+      reuseDiv.style.display = sourceMode === "reuse" ? "" : "none";
+    });
+  });
+
+  api("/api/users/me/media", { auth: true })
+    .then((items) => {
+      const listEl = document.getElementById("podcast-ep-existing-list");
+      if (!listEl) return;
+      if (!items.length) {
+        listEl.innerHTML = `<p class="field-hint">${I18N.t("podcast.noExistingMedia")}</p>`;
+        return;
+      }
+      listEl.innerHTML = items
+        .map(
+          (it) => `<button type="button" class="podcast-ep-existing-item" data-id="${it.id}">
+            ${it.mediaType === "video" ? "🎬" : "🎧"} ${escapeHtml(it.label || it.source)} <span class="field-hint">${fmtDate(it.createdAt)}</span>
+          </button>`
+        )
+        .join("");
+      listEl.querySelectorAll(".podcast-ep-existing-item").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          selectedExistingId = btn.dataset.id;
+          listEl.querySelectorAll(".podcast-ep-existing-item").forEach((b) => b.classList.toggle("active", b === btn));
+        });
+      });
+    })
+    .catch(() => {
+      const listEl = document.getElementById("podcast-ep-existing-list");
+      if (listEl) listEl.innerHTML = `<p class="field-hint">${I18N.t("podcast.noExistingMedia")}</p>`;
+    });
+
+  document.getElementById("podcast-episode-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = document.getElementById("podcast-ep-title").value.trim();
+    if (!title) return;
+    const submitBtn = document.getElementById("podcast-ep-submit");
+    submitBtn.disabled = true;
+    try {
+      const payload = {
+        title,
+        description: document.getElementById("podcast-ep-description").value.trim(),
+      };
+      const coverFile = document.getElementById("podcast-ep-cover").files[0];
+      if (coverFile) payload.coverImage = await podcastFileToDataUrl(coverFile);
+
+      if (sourceMode === "reuse") {
+        if (!selectedExistingId) {
+          showAppToast(I18N.t("podcast.pickExistingRequired"));
+          submitBtn.disabled = false;
+          return;
+        }
+        payload.sourceMomentId = selectedExistingId;
+      } else {
+        const file = document.getElementById("podcast-ep-file").files[0];
+        if (!file) {
+          showAppToast(I18N.t("podcast.fileRequired"));
+          submitBtn.disabled = false;
+          return;
+        }
+        payload.mediaType = file.type.startsWith("video/") ? "video" : "audio";
+        payload.media = await podcastFileToDataUrl(file);
+      }
+
+      await api("/api/podcasts/" + channelId + "/episodes", { method: "POST", auth: true, body: payload });
+      closePodcastModal();
+      renderPodcastChannel(channelId);
+    } catch (err) {
+      showAppToast(err.message || I18N.t("common.error"));
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+let podcastChannelState = { channel: null, episodes: [], loading: true };
+
+async function renderPodcastChannel(channelId) {
+  podcastChannelState = { channel: null, episodes: [], loading: true };
+  drawPodcastChannel();
+  try {
+    const [channel, episodes] = await Promise.all([
+      api("/api/podcasts/" + channelId, { auth: true }),
+      api("/api/podcasts/" + channelId + "/episodes"),
+    ]);
+    podcastChannelState.channel = channel;
+    podcastChannelState.episodes = episodes;
+  } catch (e) {
+    podcastChannelState.channel = null;
+  }
+  podcastChannelState.loading = false;
+  drawPodcastChannel();
+}
+
+function drawPodcastChannel() {
+  const { channel, episodes, loading } = podcastChannelState;
+  if (loading) {
+    viewEl.innerHTML = `<div class="podcast-channel-page"><p>${I18N.t("common.loading")}</p></div>`;
+    return;
+  }
+  if (!channel) {
+    viewEl.innerHTML = `<div class="podcast-channel-page"><div class="empty-state">${I18N.t("podcast.notFound")}</div></div>`;
+    return;
+  }
+  const episodesHtml = episodes.length
+    ? episodes
+        .map(
+          (e) => `
+      <a href="#/podcast-episode/${e.id}" class="podcast-episode-row">
+        <span class="podcast-episode-row-icon">${podcastMediaIcon(e.mediaType)}</span>
+        <span class="podcast-episode-row-info">
+          <strong>${escapeHtml(e.title)}</strong>
+          <span>${fmtDate(e.createdAt)} · ${e.viewCount} ${I18N.t("podcast.views")} · &#9825; ${e.likeCount}</span>
+        </span>
+      </a>`
+        )
+        .join("")
+    : `<div class="empty-state">${I18N.t("podcast.noEpisodesYet")}</div>`;
+
+  viewEl.innerHTML = `
+    <div class="podcast-channel-page">
+      <a href="#/podcasts" class="back-link">&larr; ${I18N.t("podcast.libraryTitle")}</a>
+      <div class="podcast-channel-header" style="${channel.coverImage ? `background-image:url('${channel.coverImage}')` : ""}">
+        <div class="podcast-channel-header-overlay">
+          <span class="podcast-channel-header-icon">${channel.coverImage ? "" : "🎙️"}</span>
+          <h2>${escapeHtml(channel.name)}</h2>
+          <p class="podcast-channel-owner">${escapeHtml(channel.ownerName || "")}${channel.category ? " · " + I18N.t("podcast.category." + channel.category) : ""}</p>
+          <p class="podcast-channel-stats">${channel.followerCount} ${I18N.t("podcast.followers")} · ${channel.episodeCount} ${I18N.t("podcast.episodes")}</p>
+          <div class="podcast-channel-actions">
+            ${
+              channel.isMine
+                ? `<button type="button" class="btn btn-gold" id="podcast-add-episode-btn">+ ${I18N.t("podcast.addEpisode")}</button>
+                   <button type="button" class="btn btn-secondary" id="podcast-edit-channel-btn">${I18N.t("podcast.editChannel")}</button>`
+                : `<button type="button" class="btn ${channel.isFollowing ? "btn-secondary" : "btn-gold"}" id="podcast-follow-btn">${
+                    channel.isFollowing ? I18N.t("podcast.following") : I18N.t("podcast.follow")
+                  }</button>`
+            }
+          </div>
+        </div>
+      </div>
+      ${channel.description ? `<p class="podcast-channel-description">${escapeHtml(channel.description)}</p>` : ""}
+      <div class="podcast-episode-list">${episodesHtml}</div>
+    </div>`;
+
+  const followBtn = document.getElementById("podcast-follow-btn");
+  if (followBtn) {
+    followBtn.addEventListener("click", async () => {
+      if (!state.user) {
+        location.hash = "#/login";
+        return;
+      }
+      followBtn.disabled = true;
+      try {
+        const res = await api("/api/podcasts/" + channel.id + "/follow", { method: "POST", auth: true });
+        channel.isFollowing = res.following;
+        channel.followerCount += res.following ? 1 : -1;
+        drawPodcastChannel();
+      } catch (e) {
+        showAppToast(e.message || I18N.t("common.error"));
+      }
+    });
+  }
+  const addEpisodeBtn = document.getElementById("podcast-add-episode-btn");
+  if (addEpisodeBtn) addEpisodeBtn.addEventListener("click", () => openNewEpisodeComposer(channel.id));
+  const editBtn = document.getElementById("podcast-edit-channel-btn");
+  if (editBtn) editBtn.addEventListener("click", () => openEditPodcastForm(channel));
+}
+
+async function renderPodcastEpisode(episodeId) {
+  viewEl.innerHTML = `<div class="podcast-episode-page"><p>${I18N.t("common.loading")}</p></div>`;
+  let episode;
+  try {
+    episode = await api("/api/podcast-episodes/" + episodeId, { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<div class="podcast-episode-page"><div class="empty-state">${I18N.t("podcast.notFound")}</div></div>`;
+    return;
+  }
+  drawPodcastEpisode(episode);
+  api("/api/podcast-episodes/" + episodeId + "/view", { method: "POST", auth: !!state.user }).catch(() => {});
+}
+
+function drawPodcastEpisode(episode) {
+  const channel = episode.channel;
+  const cover = episode.coverImage || (channel && channel.coverImage) || "";
+  const playerHtml =
+    episode.mediaType === "video"
+      ? `<video class="podcast-player-media" src="${episode.mediaUrl}" controls playsinline></video>`
+      : `<audio class="podcast-player-media podcast-player-audio" src="${episode.mediaUrl}" controls></audio>`;
+  viewEl.innerHTML = `
+    <div class="podcast-episode-page">
+      <a href="#/podcast/${channel ? channel.id : ""}" class="back-link">&larr; ${channel ? escapeHtml(channel.name) : I18N.t("podcast.libraryTitle")}</a>
+      <div class="podcast-player-cover" style="${cover ? `background-image:url('${cover}')` : ""}">${cover ? "" : podcastMediaIcon(episode.mediaType)}</div>
+      <h2 class="podcast-player-title">${escapeHtml(episode.title)}</h2>
+      <p class="podcast-player-channel">${channel ? escapeHtml(channel.name) : ""} · ${fmtDate(episode.createdAt)}</p>
+      ${playerHtml}
+      <div class="podcast-player-actions">
+        <button type="button" class="podcast-like-btn ${episode.likedByMe ? "active" : ""}" id="podcast-like-btn">&#9825; <span id="podcast-like-count">${episode.likeCount}</span></button>
+        <span class="podcast-view-count">${I18N.t("podcast.viewsIcon")} ${episode.viewCount}</span>
+      </div>
+      ${episode.description ? `<p class="podcast-player-description">${escapeHtml(episode.description)}</p>` : ""}
+    </div>`;
+
+  const likeBtn = document.getElementById("podcast-like-btn");
+  if (likeBtn) {
+    likeBtn.addEventListener("click", async () => {
+      if (!state.user) {
+        location.hash = "#/login";
+        return;
+      }
+      likeBtn.disabled = true;
+      try {
+        const res = await api("/api/podcast-episodes/" + episode.id + "/like", { method: "POST", auth: true });
+        episode.likedByMe = res.liked;
+        episode.likeCount += res.liked ? 1 : -1;
+        likeBtn.classList.toggle("active", episode.likedByMe);
+        document.getElementById("podcast-like-count").textContent = episode.likeCount;
+      } catch (e) {
+        showAppToast(e.message || I18N.t("common.error"));
+      }
+      likeBtn.disabled = false;
+    });
+  }
+}
+
 function wizardOpenSoundPicker() {
   const existing = document.getElementById("wizard-sound-picker");
   if (existing) {
@@ -8628,6 +9888,41 @@ function linkifyHashtags(escapedText) {
 
 // ---------------- Profile ----------------
 
+// Task #58/#127 - shows whether the logged-in seller can already receive
+// real payouts, and drives them into Stripe's own hosted onboarding form
+// when they're not set up yet. Fetched separately (not part of the main
+// profile payload) so a slow/failed Stripe status check never blocks or
+// breaks the rest of the profile page.
+async function loadPaymentsStatusCard() {
+  const el = document.getElementById("profile-payments-status");
+  if (!el) return;
+  let status;
+  try {
+    status = await api("/api/payments/connect/status", { auth: true });
+  } catch (e) {
+    el.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (status.payoutsEnabled) {
+    el.innerHTML = `<p class="form-msg ok">✅ ${I18N.t("orders.paymentsReady")}</p>${stripeInlineBadgeHtml()}`;
+    return;
+  }
+  el.innerHTML = `
+    <p class="form-msg">${status.connected ? I18N.t("orders.paymentsAlmostReady") : I18N.t("orders.paymentsNotSetUp")}</p>
+    <button class="btn btn-gold" id="btn-setup-payments">${I18N.t("orders.setUpPayments")}</button>
+    ${stripeInlineBadgeHtml()}
+  `;
+  document.getElementById("btn-setup-payments").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      const data = await api("/api/payments/connect/onboard", { method: "POST", auth: true, body: {} });
+      window.location.href = data.url;
+    } catch (err) {
+      el.innerHTML = `<p class="form-msg error">${escapeHtml(err.message)}</p>`;
+    }
+  });
+}
+
 async function renderProfile(userId) {
   if (!userId) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
@@ -8736,6 +10031,7 @@ async function renderProfile(userId) {
         <div class="profile-actions" id="profile-actions">
           ${isMe ? `<button class="btn btn-outline" id="btn-edit-profile">${I18N.t("profile.editProfile")}</button>` : ""}
           ${isMe ? `<a class="btn btn-gold" href="#/post">${I18N.t("profile.postNewListing")}</a>` : ""}
+          ${isMe ? `<a class="btn btn-outline" href="#/podcasts">🎙️ ${I18N.t("podcast.eyebrow")}</a>` : ""}
           ${!isMe && profile.isPage && !isBlocked ? pageFollowMarkup(followStatus) : ""}
           ${!isMe && !isBlocked ? friendActionMarkup(friendStatus) : ""}
           ${!isMe && state.token && !isBlocked ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}
@@ -8743,6 +10039,16 @@ async function renderProfile(userId) {
         </div>
       </div>
     </div>
+
+    ${
+      isMe
+        ? `<div class="profile-about-card">
+            <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("orders.sellingAndPayments")}</h2>
+            <a class="btn btn-outline" href="#/orders" style="margin-bottom:10px;">${I18N.t("orders.myOrders")}</a>
+            <div id="profile-payments-status"><p class="form-msg">${I18N.t("common.loading")}</p></div>
+          </div>`
+        : ""
+    }
 
     ${isMe && profile.isPage ? `<div class="profile-about-card" id="subs-requests-card" style="display:none;"><h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("subs.requestsHeading")}</h2><div id="subs-requests-list"></div></div>` : ""}
 
@@ -8918,6 +10224,7 @@ async function renderProfile(userId) {
     document.getElementById("btn-edit-profile").addEventListener("click", () =>
       openEditProfileModal({ ...profile, phone: state.user ? state.user.phone : "" })
     );
+    loadPaymentsStatusCard();
     const coverBtn = document.getElementById("btn-edit-cover");
     const coverInput = document.getElementById("cover-input");
     if (coverBtn && coverInput) {
@@ -11016,6 +12323,8 @@ function adminTabsMarkup(active) {
     { key: "products", label: I18N.t("admin.tabProducts") },
     { key: "users", label: I18N.t("admin.tabUsers") },
     { key: "books", label: I18N.t("admin.tabBooks") },
+    { key: "disputes", label: I18N.t("admin.tabDisputes") },
+    { key: "integrations", label: I18N.t("admin.tabIntegrations") },
   ];
   return `<div class="admin-tabs">${tabs
     .map((t) => `<a href="#/admin/${t.key}" class="admin-tab${active === t.key ? " active" : ""}">${t.label}</a>`)
@@ -11036,7 +12345,101 @@ async function renderAdminPanel(section) {
   if (section === "users") return renderAdminUsers();
   if (section === "products") return renderAdminProducts();
   if (section === "books") return renderAdminBookSubmissions();
+  if (section === "disputes") return renderAdminDisputes();
+  if (section === "integrations") return renderAdminIntegrations();
   return renderAdminReports();
+}
+
+// Task #58/#127 - a buyer reported a problem with a real, paid order.
+// Funds are frozen (order status "disputed") until an admin picks one of
+// these two outcomes here: release the seller's payout, or refund the buyer
+// in full. Both actions call Stripe directly and are logged on the order.
+async function renderAdminDisputes() {
+  const content = document.getElementById("admin-content");
+  content.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let orders;
+  try {
+    orders = await api("/api/admin/orders?status=disputed", { auth: true });
+  } catch (e) {
+    content.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!orders.length) {
+    content.innerHTML = `<p class="form-msg">${I18N.t("admin.noDisputes")}</p>`;
+    return;
+  }
+  content.innerHTML = orders
+    .map(
+      (o) => `
+    <div class="form-panel" style="margin-bottom:14px;" data-order-id="${o.id}">
+      <p><strong>${fmtPrice(o.amount)}</strong> &middot; ${I18N.t("orders.payoutLabel")}: ${fmtPrice(o.sellerPayout)}</p>
+      <p style="font-size:13px;color:var(--text-secondary);">${I18N.t("orders.roleBuyer")}: ${escapeHtml(o.buyerName)} (${escapeHtml(o.buyerEmail)})</p>
+      <p style="font-size:13px;color:var(--text-secondary);">${I18N.t("orders.roleSeller")}: ${escapeHtml(o.sellerName)} (${escapeHtml(o.sellerEmail)})</p>
+      <p style="margin-top:8px;white-space:pre-wrap;">${escapeHtml(o.disputeReason || "")}</p>
+      <div class="action-row" style="margin-top:10px;">
+        <button class="btn btn-gold" data-action="release">${I18N.t("admin.resolveRelease")}</button>
+        <button class="btn btn-danger" data-action="refund">${I18N.t("admin.resolveRefund")}</button>
+      </div>
+      <p class="form-msg admin-dispute-msg"></p>
+    </div>`
+    )
+    .join("");
+
+  content.querySelectorAll("[data-order-id]").forEach((card) => {
+    const orderId = card.dataset.orderId;
+    const msgEl = card.querySelector(".admin-dispute-msg");
+    card.querySelectorAll("[data-action]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const action = btn.dataset.action;
+        if (!confirm(I18N.t("admin.confirmResolve." + action))) return;
+        card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+        try {
+          await api("/api/admin/orders/" + orderId + "/resolve", { method: "POST", auth: true, body: { action } });
+          card.style.opacity = "0.5";
+          msgEl.textContent = I18N.t("admin.resolved");
+          msgEl.className = "form-msg ok admin-dispute-msg";
+        } catch (e) {
+          card.querySelectorAll("button").forEach((b) => (b.disabled = false));
+          msgEl.textContent = e.message;
+          msgEl.className = "form-msg error admin-dispute-msg";
+        }
+      });
+    });
+  });
+}
+
+// Task #278 - a simple one-click way for a non-technical admin to check
+// whether the Lulu print-on-demand connection is actually working, without
+// touching any code or curl. Read-only: never creates a cost calculation or
+// a print job, just asks the server to fetch an OAuth token from Lulu.
+async function renderAdminIntegrations() {
+  const content = document.getElementById("admin-content");
+  content.innerHTML = `
+    <div class="form-panel">
+      <h3 class="section-heading" style="font-size:16px;">${I18N.t("admin.luluTitle")}</h3>
+      <p style="color:var(--text-secondary);font-size:13px;">${I18N.t("admin.luluDesc")}</p>
+      <button class="btn btn-primary" id="lulu-check-btn">${I18N.t("admin.luluCheckButton")}</button>
+      <div id="lulu-status-result" style="margin-top:14px;"></div>
+    </div>
+  `;
+  const resultEl = document.getElementById("lulu-status-result");
+  async function checkStatus() {
+    resultEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    try {
+      const data = await api("/api/admin/lulu-status", { auth: true });
+      if (!data.configured) {
+        resultEl.innerHTML = `<p class="form-msg error">${I18N.t("admin.luluNotConfigured")}</p>`;
+      } else if (data.connected) {
+        resultEl.innerHTML = `<p class="form-msg success">✅ ${I18N.t("admin.luluConnected")} (${escapeHtml(data.baseUrl || "")})</p>`;
+      } else {
+        resultEl.innerHTML = `<p class="form-msg error">❌ ${escapeHtml(data.message || I18N.t("admin.luluFailed"))}</p>`;
+      }
+    } catch (e) {
+      resultEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    }
+  }
+  document.getElementById("lulu-check-btn").addEventListener("click", checkStatus);
+  checkStatus();
 }
 
 // Task #244 - team review queue for the "Publish a Book" independent-
@@ -11317,6 +12720,765 @@ async function renderAdminUsers() {
     if (e.key === "Enter") load(e.target.value.trim());
   });
   load("");
+}
+
+// ---------------- Legal pages (Terms & Conditions / Privacy Policy) ----------------
+// These were previously drafted but never wired into the router - the
+// footer links pointed at #/terms and #/privacy with no matching route, so
+// they silently rendered "page not found". Fixed by writing real bilingual
+// content covering the platform as it exists today and wiring it up here.
+// As with the Dating safety addendum, this is AI-drafted legal content and
+// should still be reviewed by a licensed attorney for the jurisdictions
+// HieloIce operates in before being treated as final/binding.
+
+function legalLastUpdated() {
+  const d = new Date();
+  const months = I18N.lang === "es"
+    ? ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    : ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  return I18N.lang === "es"
+    ? `Ultima actualizacion: ${d.getDate()} de ${months[d.getMonth()]} de ${d.getFullYear()}`
+    : `Last updated: ${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+function termsContent() {
+  if (I18N.lang === "es") {
+    return {
+      title: "Terminos y Condiciones de HieloIce",
+      sections: [
+        ["1. Aceptacion de estos terminos",
+         "Al crear una cuenta o usar HieloIce (el sitio web, la aplicacion movil y todas sus funciones, incluyendo el Marketplace, Moments, Loops, Videos, Book Club, Comunidades, Podcasts y Dating), aceptas estos Terminos y Condiciones y nuestra Politica de Privacidad. Si no estas de acuerdo, no debes usar la plataforma."],
+        ["2. Elegibilidad",
+         "HieloIce es solo para personas mayores de 18 anos. Confirmamos tu edad mediante la fecha de nacimiento que proporcionas al registrarte o al confirmarla despues; esto es una declaracion propia y no una verificacion de identidad por terceros. Si descubrimos que una cuenta pertenece a un menor de edad, la suspenderemos."],
+        ["3. Tu cuenta",
+         "Eres responsable de mantener segura tu contrasena y de toda la actividad en tu cuenta. Debes proporcionar informacion veraz al registrarte. No se permite crear multiples cuentas para evadir una suspension o para manipular funciones como calificaciones, reportes o el algoritmo de recomendacion."],
+        ["4. El Marketplace de libros usados",
+         "El Marketplace conecta a compradores y vendedores de libros usados directamente entre si. HieloIce no es parte de estas transacciones, no garantiza la condicion, autenticidad o entrega de ningun articulo, y actualmente no procesa pagos entre usuarios ni ofrece proteccion de pago tipo garantia (escrow) - los acuerdos de pago y envio se realizan directamente entre comprador y vendedor bajo su propio riesgo. Esta prohibido publicar articulos ilegales, robados o falsificados."],
+        ["5. Funciones sociales",
+         "Moments, Loops, Videos, Book Club, Comunidades y Podcasts te permiten publicar y compartir contenido con otros usuarios. Eres responsable del contenido que publicas y debes tener los derechos necesarios sobre el. Nos reservamos el derecho de eliminar contenido que viole estas reglas o nuestras politicas de la comunidad."],
+        ["6. HieloIce Dating",
+         "Dating es una funcion separada y opcional dentro de HieloIce, sujeta a su propia adenda de Seguridad y Terminos que puedes leer en cualquier momento desde la seccion de Dating. Al activar Dating, tambien aceptas esos terminos adicionales."],
+        ["7. Contenido que publicas",
+         "Conservas la propiedad de las fotos, videos, textos y demas contenido que publicas. Al subirlos, nos otorgas una licencia para almacenarlos, mostrarlos y distribuirlos dentro de la plataforma segun la configuracion de privacidad que elijas. No publiques contenido que no tengas derecho a compartir, que infrinja derechos de autor, o que involucre a menores de edad de forma inapropiada."],
+        ["8. Conducta prohibida",
+         "Esta prohibido: acosar, amenazar o discriminar a otros usuarios; publicar contenido ilegal, fraudulento o enganoso; suplantar la identidad de otra persona o entidad; usar bots, scraping u otras herramientas automatizadas no autorizadas; intentar acceder a cuentas ajenas o a partes no publicas de la plataforma; y cualquier otra actividad que viole la ley aplicable."],
+        ["9. Reportes, bloqueo y cumplimiento",
+         "Puedes reportar o bloquear a otros usuarios y publicaciones desde la plataforma. Revisamos los reportes y podemos advertir, suspender o eliminar permanentemente cuentas que violen estas reglas, sin previo aviso en casos graves."],
+        ["10. Propiedad intelectual",
+         "El nombre HieloIce, su logotipo y el diseno de la plataforma son propiedad de HieloIce. No se permite copiar, imitar o usar nuestra marca sin autorizacion. HieloIce tampoco permite el uso de iconos, simbolos, imagenes o marcas registradas de otras empresas o plataformas dentro del servicio."],
+        ["11. Exencion de garantias y limitacion de responsabilidad",
+         "HieloIce se ofrece \"tal cual\", sin garantias de ningun tipo. No garantizamos que la plataforma este libre de errores o interrupciones, ni la veracidad, seguridad o legalidad del contenido publicado por los usuarios. En la maxima medida permitida por la ley, HieloIce no sera responsable por danos indirectos, incidentales o consecuentes derivados del uso de la plataforma."],
+        ["12. Terminacion",
+         "Podemos suspender o eliminar tu cuenta si violas estos terminos. Puedes eliminar tu cuenta en cualquier momento desde la pagina de eliminacion de cuenta."],
+        ["13. Cambios a estos terminos",
+         "Podemos actualizar estos terminos a medida que la plataforma evolucione. Los cambios importantes se comunicaran dentro de la aplicacion. El uso continuado de HieloIce despues de un cambio implica tu aceptacion de los nuevos terminos."],
+        ["14. Ley aplicable",
+         "Estos terminos se rigen por las leyes aplicables segun la jurisdiccion de operacion de HieloIce. [Nota interna: esta seccion debe completarse con el asesoramiento de un abogado con licencia segun donde se constituya y opere la empresa.]"],
+        ["15. Contacto",
+         "Si tienes preguntas sobre estos terminos, escribenos a info@hieloice.com."],
+      ],
+    };
+  }
+  return {
+    title: "HieloIce Terms & Conditions",
+    sections: [
+      ["1. Acceptance of these terms",
+       "By creating an account or using HieloIce (the website, mobile app, and all its features, including the Marketplace, Moments, Loops, Videos, Book Club, Communities, Podcasts, and Dating), you agree to these Terms & Conditions and our Privacy Policy. If you don't agree, you may not use the platform."],
+      ["2. Eligibility",
+       "HieloIce is for adults 18 and older only. We confirm your age from the birthdate you provide when registering or when later confirming it; this is self-attestation, not third-party identity verification. If we discover an account belongs to a minor, we will suspend it."],
+      ["3. Your account",
+       "You're responsible for keeping your password secure and for all activity on your account. You must provide truthful information when registering. Creating multiple accounts to evade a suspension or manipulate features like ratings, reports, or the recommendation algorithm is not allowed."],
+      ["4. The used-book Marketplace",
+       "The Marketplace connects buyers and sellers of used books directly with each other. HieloIce is not a party to these transactions, does not guarantee the condition, authenticity, or delivery of any item, and does not currently process payments between users or offer escrow-style payment protection - payment and shipping arrangements happen directly between buyer and seller at their own risk. Posting illegal, stolen, or counterfeit items is prohibited."],
+      ["5. Social features",
+       "Moments, Loops, Videos, Book Club, Communities, and Podcasts let you post and share content with other users. You're responsible for the content you post and must have the necessary rights to it. We reserve the right to remove content that violates these rules or our community guidelines."],
+      ["6. HieloIce Dating",
+       "Dating is a separate, opt-in feature within HieloIce, subject to its own Safety & Terms addendum, which you can read at any time from the Dating section. Activating Dating means you also agree to those additional terms."],
+      ["7. Content you post",
+       "You keep ownership of the photos, videos, text, and other content you post. By uploading it, you grant us a license to store, display, and distribute it within the platform according to the privacy settings you choose. Don't post content you don't have the right to share, that infringes copyright, or that inappropriately involves minors."],
+      ["8. Prohibited conduct",
+       "Prohibited: harassing, threatening, or discriminating against other users; posting illegal, fraudulent, or misleading content; impersonating another person or entity; using bots, scraping, or other unauthorized automated tools; attempting to access other users' accounts or non-public parts of the platform; and any other activity that violates applicable law."],
+      ["9. Reporting, blocking, and enforcement",
+       "You can report or block other users and posts from within the platform. We review reports and may warn, suspend, or permanently remove accounts that violate these rules, without prior notice in serious cases."],
+      ["10. Intellectual property",
+       "The HieloIce name, logo, and platform design are the property of HieloIce. Copying, imitating, or using our brand without authorization is not permitted. HieloIce likewise does not permit the use of icons, symbols, images, or trademarks belonging to other companies or platforms within the service."],
+      ["11. Disclaimer of warranties and limitation of liability",
+       "HieloIce is provided \"as is\", without warranties of any kind. We don't guarantee the platform will be error-free or uninterrupted, or the truthfulness, safety, or legality of content posted by users. To the maximum extent permitted by law, HieloIce will not be liable for indirect, incidental, or consequential damages arising from use of the platform."],
+      ["12. Termination",
+       "We may suspend or remove your account if you violate these terms. You can delete your account at any time from the account deletion page."],
+      ["13. Changes to these terms",
+       "We may update these terms as the platform evolves. Material changes will be communicated within the app. Continued use of HieloIce after a change means you accept the new terms."],
+      ["14. Governing law",
+       "These terms are governed by applicable law based on HieloIce's operating jurisdiction. [Internal note: this section should be completed with advice from a licensed attorney based on where the company is incorporated and operates.]"],
+      ["15. Contact",
+       "If you have questions about these terms, email us at info@hieloice.com."],
+    ],
+  };
+}
+
+function privacyContent() {
+  if (I18N.lang === "es") {
+    return {
+      title: "Politica de Privacidad de HieloIce",
+      sections: [
+        ["1. Informacion que recopilamos",
+         "Recopilamos la informacion que nos proporcionas directamente: nombre, correo electronico, telefono (opcional), fecha de nacimiento, fotos y videos que subes, mensajes que envias, y la informacion de tu perfil de Dating si lo activas (incluyendo ubicacion aproximada, con tu permiso). Tambien recopilamos informacion de uso automaticamente, como paginas visitadas y acciones dentro de la app, para mejorar la plataforma."],
+        ["2. Como usamos tu informacion",
+         "Usamos tu informacion para operar la plataforma (mostrar tu perfil, procesar publicaciones, conectar amigos, calcular distancias aproximadas en Dating), para verificar que tienes al menos 18 anos, para enviarte notificaciones que elijas recibir, para prevenir fraude y abuso, y para mejorar nuestras funciones."],
+        ["3. Como compartimos tu informacion",
+         "No vendemos tu informacion personal. Compartimos datos unicamente con proveedores de servicio que nos ayudan a operar HieloIce (por ejemplo, Supabase para la base de datos y almacenamiento, Render para el alojamiento del sitio, Jamendo para la biblioteca de musica libre de regalias, y Google o Facebook si eliges iniciar sesion con ellos), y cuando la ley lo exige."],
+        ["4. Tus opciones y derechos",
+         "Puedes editar tu perfil y tu informacion en cualquier momento. Puedes desactivar tu perfil de Dating sin perder tus matches ni tu informacion. Puedes eliminar tu cuenta por completo desde la pagina de eliminacion de cuenta, lo cual borra tu informacion personal segun lo descrito alli. Puedes ajustar tus preferencias de notificaciones desde tu perfil."],
+        ["5. Retencion de datos",
+         "Conservamos tu informacion mientras tu cuenta este activa. Si eliminas tu cuenta, eliminamos o anonimizamos tu informacion personal, salvo lo que debamos conservar por obligaciones legales o para prevenir fraude."],
+        ["6. Privacidad de menores",
+         "HieloIce es una plataforma solo para personas mayores de 18 anos. No recopilamos intencionalmente informacion de menores de edad. Si tienes motivos para creer que un menor de edad esta usando la plataforma, contactanos de inmediato a info@hieloice.com."],
+        ["7. Seguridad",
+         "Tomamos medidas razonables para proteger tu informacion, incluyendo el uso de conexiones cifradas (HTTPS) y control de acceso a nuestra base de datos. Ningun sistema es completamente seguro, por lo que no podemos garantizar una seguridad absoluta."],
+        ["8. Ubicacion en Dating",
+         "Si activas Dating y compartes tu ubicacion, la usamos unicamente para calcular una distancia aproximada entre tu y otros usuarios de Dating. Nunca mostramos tu ubicacion exacta ni tu direccion a otros usuarios."],
+        ["9. Cambios a esta politica",
+         "Podemos actualizar esta politica de privacidad de vez en cuando. Los cambios importantes se comunicaran dentro de la aplicacion."],
+        ["10. Contacto",
+         "Si tienes preguntas sobre esta politica de privacidad o quieres ejercer tus derechos sobre tu informacion, escribenos a info@hieloice.com."],
+      ],
+    };
+  }
+  return {
+    title: "HieloIce Privacy Policy",
+    sections: [
+      ["1. Information we collect",
+       "We collect information you provide directly: name, email, phone (optional), date of birth, photos and videos you upload, messages you send, and your Dating profile information if you activate it (including approximate location, with your permission). We also automatically collect usage information, like pages visited and in-app actions, to improve the platform."],
+      ["2. How we use your information",
+       "We use your information to operate the platform (display your profile, process posts, connect friends, compute approximate distances in Dating), to verify you're at least 18, to send you notifications you choose to receive, to prevent fraud and abuse, and to improve our features."],
+      ["3. How we share your information",
+       "We do not sell your personal information. We share data only with service providers that help us run HieloIce (for example, Supabase for database and storage, Render for site hosting, Jamendo for the royalty-free music library, and Google or Facebook if you choose to sign in with them), and when required by law."],
+      ["4. Your choices and rights",
+       "You can edit your profile and information at any time. You can deactivate your Dating profile without losing your matches or information. You can delete your account entirely from the account deletion page, which erases your personal information as described there. You can adjust your notification preferences from your profile."],
+      ["5. Data retention",
+       "We keep your information while your account is active. If you delete your account, we delete or anonymize your personal information, except what we must retain for legal obligations or to prevent fraud."],
+      ["6. Children's privacy",
+       "HieloIce is a platform for adults 18 and older only. We do not knowingly collect information from minors. If you have reason to believe a minor is using the platform, contact us immediately at info@hieloice.com."],
+      ["7. Security",
+       "We take reasonable measures to protect your information, including encrypted connections (HTTPS) and access controls on our database. No system is completely secure, so we cannot guarantee absolute security."],
+      ["8. Location in Dating",
+       "If you activate Dating and share your location, we use it only to compute an approximate distance between you and other Dating users. We never show your exact location or address to other users."],
+      ["9. Changes to this policy",
+       "We may update this privacy policy from time to time. Material changes will be communicated within the app."],
+      ["10. Contact",
+       "If you have questions about this privacy policy or want to exercise your rights over your information, email us at info@hieloice.com."],
+    ],
+  };
+}
+
+function renderTerms() {
+  const content = termsContent();
+  viewEl.innerHTML = `
+    <div class="form-panel legal-page">
+      <h2 class="section-heading">${escapeHtml(content.title)}</h2>
+      <p class="legal-updated">${escapeHtml(legalLastUpdated())}</p>
+      ${content.sections
+        .map(([heading, body]) => `<h3 class="legal-heading">${escapeHtml(heading)}</h3><p class="legal-body">${escapeHtml(body)}</p>`)
+        .join("")}
+      <a class="form-footer-link" href="#/">${I18N.t("common.goHome")}</a>
+    </div>
+  `;
+}
+
+function renderPrivacy() {
+  const content = privacyContent();
+  viewEl.innerHTML = `
+    <div class="form-panel legal-page">
+      <h2 class="section-heading">${escapeHtml(content.title)}</h2>
+      <p class="legal-updated">${escapeHtml(legalLastUpdated())}</p>
+      ${content.sections
+        .map(([heading, body]) => `<h3 class="legal-heading">${escapeHtml(heading)}</h3><p class="legal-body">${escapeHtml(body)}</p>`)
+        .join("")}
+      <a class="form-footer-link" href="#/">${I18N.t("common.goHome")}</a>
+    </div>
+  `;
+}
+
+// ---------------- Dating ----------------
+// Tinder/Bumble-style opt-in feature (Carlos's explicit spec): heart+arrow
+// icon inside Friends, swipe right = like / swipe left = pass,
+// location + shared-interest matching, block/unmatch, safety-first, matches
+// exchange photos/video/messages through the existing #/messages system.
+// Separate from the main HieloIce profile - off by default (dating_profiles
+// is its own opt-in row, not part of mkt_users). Every screen here assumes
+// the platform-wide 18+ gate (see AGE_GATE_EXEMPT_ROUTES / renderConfirmAge
+// above) has already run before this code can be reached; the server
+// independently re-verifies age on every request regardless.
+
+const DATING_SAFETY_ACK_KEY = "datingSafetyAckV1";
+const datingDeckState = { candidates: [], index: 0 };
+
+// Bilingual draft of the Dating-specific safety/terms addendum (Carlos's
+// explicit choice: build the technical feature AND draft this for a real
+// attorney to review before public launch - not a substitute for one).
+// Kept as a plain-language draft, not final legal copy.
+function datingTermsContent() {
+  if (I18N.lang === "es") {
+    return {
+      title: "Terminos y Seguridad de HieloIce Dating",
+      notice:
+        "BORRADOR - Este documento es un borrador preparado para HieloIce y aun no ha sido revisado ni aprobado por un abogado. No debe publicarse ni considerarse vinculante hasta que un abogado con licencia lo revise y apruebe.",
+      sections: [
+        [
+          "1. Elegibilidad y edad",
+          "HieloIce Dating es solo para personas mayores de 18 anos. Confirmamos tu edad con la fecha de nacimiento que proporcionaste al crear tu cuenta o al confirmarla despues. No realizamos verificacion de identidad, antecedentes penales, estado civil ni verificacion de edad por terceros. Si tienes motivos para creer que un usuario es menor de edad, reportalo de inmediato usando la funcion de Reportar.",
+        ],
+        [
+          "2. Como funciona el emparejamiento",
+          "Dating es un perfil separado y opcional, apagado por defecto, distinto de tu perfil principal de HieloIce. Cuando lo activas, otros usuarios con Dating activo pueden verte segun intereses compartidos y una distancia aproximada (nunca tu ubicacion exacta ni tu direccion). Deslizar a la derecha indica interes (\"like\"); deslizar a la izquierda indica que no (\"pass\"). Si dos personas se dan like mutuamente, se crea un match y pueden enviarse mensajes.",
+        ],
+        [
+          "3. Tu seguridad al conocer gente",
+          "Reunete por primera vez en un lugar publico. Avisa a un amigo o familiar donde vas y con quien. No compartas informacion financiera, contrasenas ni documentos de identidad. Nunca envies dinero a alguien que conociste en la plataforma, sin importar la historia que te cuenten - esto es una senal comun de fraude. Confia en tu instinto: si algo se siente mal, puedes bloquear, reportar o dejar de responder en cualquier momento.",
+        ],
+        [
+          "4. Conducta prohibida",
+          "Esta prohibido: acosar o enviar contenido no solicitado explicito; suplantar la identidad de otra persona; usar Dating con fines comerciales, publicitarios o de reclutamiento; solicitar dinero, regalos o informacion financiera; publicar o enviar contenido ilegal; contactar o intentar contactar a menores de edad. Violar estas reglas puede resultar en suspension o eliminacion permanente de la cuenta.",
+        ],
+        [
+          "5. Contenido que compartes",
+          "Las fotos, videos, mensajes e informacion que compartes en Dating siguen siendo tuyos. Al subirlos, autorizas a HieloIce a mostrarlos dentro de la plataforma a las personas con las que interactuas (por ejemplo, tus fotos de perfil a otros usuarios, o los mensajes al destinatario de un match). No subas contenido que no tengas derecho a compartir, ni contenido que involucre a menores de edad.",
+        ],
+        [
+          "6. Bloquear, deshacer match y reportar",
+          "Puedes bloquear o deshacer el match con cualquier persona en cualquier momento desde tu lista de matches. Bloquear a alguien impide todo contacto futuro en ambas direcciones. Puedes reportar a un usuario por acoso, perfil falso, contenido inapropiado u otras razones; nuestro equipo revisa los reportes y puede suspender cuentas que violen estas reglas.",
+        ],
+        [
+          "7. Sin garantias",
+          "HieloIce no verifica la identidad, antecedentes, intenciones ni veracidad de la informacion de ningun usuario de Dating. No garantizamos la seguridad de ningun encuentro o interaccion, en linea o en persona. Usas Dating bajo tu propio riesgo y criterio.",
+        ],
+        [
+          "8. Datos que usamos para Dating",
+          "Para mostrarte personas cercanas, usamos tu ubicacion (con tu permiso) para calcular una distancia aproximada - nunca compartimos tu ubicacion exacta ni tu direccion con otros usuarios. Puedes desactivar Dating en cualquier momento desde la configuracion de tu perfil de Dating; esto oculta tu perfil de la busqueda mientras conserva tus matches e informacion.",
+        ],
+        [
+          "9. Vigencia y cambios",
+          "Podemos actualizar este documento a medida que la funcion evolucione. Los cambios importantes se comunicaran dentro de la aplicacion.",
+        ],
+      ],
+    };
+  }
+  return {
+    title: "HieloIce Dating Safety & Terms",
+    notice:
+      "DRAFT - This document is a draft prepared for HieloIce and has not yet been reviewed or approved by an attorney. It should not be published or treated as binding until reviewed and approved by a licensed attorney.",
+    sections: [
+      [
+        "1. Eligibility and age",
+        "HieloIce Dating is for adults 18 and older only. We confirm your age from the birthdate you provided when creating your account or when later confirming it. We do not perform identity verification, criminal background checks, marital-status checks, or third-party age verification. If you have reason to believe a user is a minor, report them immediately using the Report feature.",
+      ],
+      [
+        "2. How matching works",
+        "Dating is a separate, opt-in profile, off by default, distinct from your main HieloIce profile. Once activated, other users with Dating active can see you based on shared interests and an approximate distance (never your exact location or address). Swiping right indicates interest (\"like\"); swiping left means no (\"pass\"). When two people like each other, a match is created and they can message each other.",
+      ],
+      [
+        "3. Your safety when meeting people",
+        "Meet for the first time in a public place. Tell a friend or family member where you're going and with whom. Don't share financial information, passwords, or identity documents. Never send money to someone you met on the platform, no matter what story they tell you - this is a common sign of fraud. Trust your instincts: if something feels wrong, you can block, report, or stop responding at any time.",
+      ],
+      [
+        "4. Prohibited conduct",
+        "Prohibited: harassment or sending unsolicited explicit content; impersonating another person; using Dating for commercial, advertising, or recruiting purposes; soliciting money, gifts, or financial information; posting or sending unlawful content; contacting or attempting to contact minors. Violating these rules may result in account suspension or permanent removal.",
+      ],
+      [
+        "5. Content you share",
+        "Photos, videos, messages, and information you share on Dating remain yours. By uploading them, you authorize HieloIce to display them within the platform to the people you interact with (for example, your profile photos to other users, or messages to a match recipient). Do not upload content you don't have the right to share, or content involving minors.",
+      ],
+      [
+        "6. Blocking, unmatching, and reporting",
+        "You can block or unmatch anyone at any time from your matches list. Blocking someone prevents all future contact in both directions. You can report a user for harassment, a fake profile, inappropriate content, or other reasons; our team reviews reports and may suspend accounts that violate these rules.",
+      ],
+      [
+        "7. No guarantees",
+        "HieloIce does not verify the identity, background, intentions, or truthfulness of any Dating user's information. We do not guarantee the safety of any encounter or interaction, online or in person. You use Dating at your own risk and discretion.",
+      ],
+      [
+        "8. Data we use for Dating",
+        "To show you nearby people, we use your location (with your permission) to compute an approximate distance - we never share your exact location or address with other users. You can deactivate Dating at any time from your Dating profile settings; this hides your profile from discovery while keeping your matches and information intact.",
+      ],
+      [
+        "9. Updates",
+        "We may update this document as the feature evolves. Material changes will be communicated within the app.",
+      ],
+    ],
+  };
+}
+
+function renderDatingTerms() {
+  const content = datingTermsContent();
+  viewEl.innerHTML = `
+    <div class="form-panel dating-terms-page">
+      <div class="dating-terms-draft-banner">${escapeHtml(content.notice)}</div>
+      <h2 class="section-heading">💘 ${escapeHtml(content.title)}</h2>
+      ${content.sections
+        .map(
+          ([heading, body]) => `
+        <h3 class="dating-terms-heading">${escapeHtml(heading)}</h3>
+        <p class="dating-terms-body">${escapeHtml(body)}</p>`
+        )
+        .join("")}
+      <a class="form-footer-link" href="#/dating">${I18N.t("common.goBack")}</a>
+    </div>
+  `;
+}
+
+async function renderDatingSwipe() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let data;
+  try {
+    data = await api("/api/dating/profile", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!data.profile || !data.profile.active) return renderDatingIntro();
+  return renderDatingDeck();
+}
+
+function renderDatingIntro() {
+  viewEl.innerHTML = `
+    <div class="dating-intro">
+      <div class="dating-intro-icon">💘</div>
+      <h2 class="section-heading">${I18N.t("dating.introTitle")}</h2>
+      <p class="dating-intro-body">${I18N.t("dating.introBody")}</p>
+      <div class="dating-safety-box">
+        <h3>${I18N.t("dating.safetyTitle")}</h3>
+        <ul class="dating-safety-list">
+          <li>${I18N.t("dating.safety1")}</li>
+          <li>${I18N.t("dating.safety2")}</li>
+          <li>${I18N.t("dating.safety3")}</li>
+          <li>${I18N.t("dating.safety4")}</li>
+          <li>${I18N.t("dating.safety5")}</li>
+        </ul>
+      </div>
+      <p class="form-field-hint"><a href="#/dating-terms">${I18N.t("dating.readFullSafetyTerms")}</a></p>
+      <button class="btn btn-primary" id="dating-intro-continue" style="width:100%;">${I18N.t("dating.introCta")}</button>
+      <a class="form-footer-link" href="#/friends">${I18N.t("common.goBack")}</a>
+    </div>
+  `;
+  document.getElementById("dating-intro-continue").addEventListener("click", () => {
+    localStorage.setItem(DATING_SAFETY_ACK_KEY, "1");
+    location.hash = "#/dating/setup";
+  });
+}
+
+async function datingFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function renderDatingSetup() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let data;
+  try {
+    data = await api("/api/dating/profile", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const profile = data.profile || { bio: "", photos: [], interests: [], gender: "", seeking: [], active: false, hasLocation: false };
+  const setupPhotos = profile.photos.slice();
+  let setupLat = null;
+  let setupLng = null;
+  let locationStatus = profile.hasLocation ? I18N.t("dating.locationSaved") : I18N.t("dating.locationNotSet");
+
+  viewEl.innerHTML = `
+    <div class="form-panel dating-setup-panel">
+      <h2 class="section-heading">💘 ${I18N.t("dating.setupTitle")}</h2>
+      <p class="form-field-hint">${I18N.t("dating.setupHint")}</p>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.photosLabel")}</label>
+        <div class="dating-photo-grid" id="dating-photo-grid"></div>
+        <input type="file" id="dating-photo-input" accept="image/*" multiple style="display:none;" />
+        <button type="button" class="btn btn-outline" id="dating-photo-add-btn">${I18N.t("dating.addPhoto")}</button>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.bioLabel")}</label>
+        <textarea id="dating-bio" rows="3" maxlength="500">${escapeHtml(profile.bio || "")}</textarea>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.interestsLabel")}</label>
+        <input type="text" id="dating-interests" value="${escapeHtml((profile.interests || []).join(", "))}" placeholder="${I18N.t("dating.interestsPlaceholder")}" />
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.genderLabel")}</label>
+        <select id="dating-gender">
+          <option value="">${I18N.t("dating.genderSelect")}</option>
+          <option value="woman" ${profile.gender === "woman" ? "selected" : ""}>${I18N.t("dating.genderWoman")}</option>
+          <option value="man" ${profile.gender === "man" ? "selected" : ""}>${I18N.t("dating.genderMan")}</option>
+          <option value="nonbinary" ${profile.gender === "nonbinary" ? "selected" : ""}>${I18N.t("dating.genderNonbinary")}</option>
+          <option value="other" ${profile.gender === "other" ? "selected" : ""}>${I18N.t("dating.genderOther")}</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.seekingLabel")}</label>
+        <div class="dating-seeking-options" id="dating-seeking-options">
+          ${["woman", "man", "nonbinary", "other"]
+            .map(
+              (g) => `
+            <label class="dating-seeking-chip">
+              <input type="checkbox" value="${g}" ${(profile.seeking || []).includes(g) ? "checked" : ""} />
+              ${I18N.t("dating.gender" + g.charAt(0).toUpperCase() + g.slice(1))}
+            </label>`
+            )
+            .join("")}
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.locationLabel")}</label>
+        <p class="form-field-hint" id="dating-location-status">${escapeHtml(locationStatus)}</p>
+        <button type="button" class="btn btn-outline" id="dating-location-btn">${I18N.t("dating.shareLocation")}</button>
+        <p class="form-field-hint">${I18N.t("dating.locationPrivacyNote")}</p>
+      </div>
+
+      <button class="btn btn-primary" id="dating-setup-save" style="width:100%;">${profile.active ? I18N.t("common.save") : I18N.t("dating.activateCta")}</button>
+      ${profile.active ? `<button class="btn btn-secondary" id="dating-setup-deactivate" style="width:100%;margin-top:8px;">${I18N.t("dating.deactivate")}</button>` : ""}
+      <p class="form-msg" id="dating-setup-msg"></p>
+      <a class="form-footer-link" href="#/dating">${I18N.t("common.goBack")}</a>
+    </div>
+  `;
+
+  function drawPhotoGrid() {
+    const grid = document.getElementById("dating-photo-grid");
+    grid.innerHTML = setupPhotos
+      .map(
+        (p, i) => `
+      <div class="dating-photo-thumb">
+        <img src="${p}" />
+        <button type="button" class="dating-photo-remove" data-i="${i}" aria-label="${I18N.t("common.delete")}">×</button>
+      </div>`
+      )
+      .join("");
+    grid.querySelectorAll(".dating-photo-remove").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        setupPhotos.splice(Number(btn.dataset.i), 1);
+        drawPhotoGrid();
+      });
+    });
+  }
+  drawPhotoGrid();
+
+  document.getElementById("dating-photo-add-btn").addEventListener("click", () => document.getElementById("dating-photo-input").click());
+  document.getElementById("dating-photo-input").addEventListener("change", async (e) => {
+    const files = Array.from(e.target.files || []).slice(0, 6 - setupPhotos.length);
+    for (const file of files) {
+      try {
+        setupPhotos.push(await datingFileToDataUrl(file));
+      } catch (err) {
+        // skip a file that fails to read
+      }
+    }
+    drawPhotoGrid();
+    e.target.value = "";
+  });
+
+  // Carlos's explicit choice: only ever an approximate distance is shown to
+  // other users - the browser's precise coordinates are sent to our own
+  // server (over HTTPS) for matching, but the server itself only ever
+  // returns a rounded distance bucket to any client, never raw lat/lng of
+  // another person. See approximateDistanceLabel() in server.js.
+  document.getElementById("dating-location-btn").addEventListener("click", () => {
+    const statusEl = document.getElementById("dating-location-status");
+    if (!navigator.geolocation) {
+      statusEl.textContent = I18N.t("dating.locationUnsupported");
+      return;
+    }
+    statusEl.textContent = I18N.t("common.loading");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setupLat = pos.coords.latitude;
+        setupLng = pos.coords.longitude;
+        statusEl.textContent = I18N.t("dating.locationSaved");
+      },
+      () => {
+        statusEl.textContent = I18N.t("dating.locationDenied");
+      },
+      { enableHighAccuracy: false, timeout: 10000 }
+    );
+  });
+
+  async function saveProfile(activate) {
+    const msgEl = document.getElementById("dating-setup-msg");
+    const bio = document.getElementById("dating-bio").value;
+    const interests = document
+      .getElementById("dating-interests")
+      .value.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const gender = document.getElementById("dating-gender").value;
+    const seeking = Array.from(document.querySelectorAll("#dating-seeking-options input:checked")).map((el) => el.value);
+    const body = { bio, interests, gender, seeking, photos: setupPhotos, active: activate };
+    if (typeof setupLat === "number" && typeof setupLng === "number") {
+      body.lat = setupLat;
+      body.lng = setupLng;
+    }
+    try {
+      await api("/api/dating/profile", { method: "PUT", auth: true, body });
+      location.hash = "#/dating";
+      router();
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  }
+
+  document.getElementById("dating-setup-save").addEventListener("click", () => saveProfile(true));
+  const deactivateBtn = document.getElementById("dating-setup-deactivate");
+  if (deactivateBtn) {
+    deactivateBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("dating.confirmDeactivate"))) return;
+      try {
+        await api("/api/dating/deactivate", { method: "POST", auth: true });
+        location.hash = "#/friends";
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+}
+
+async function renderDatingDeck() {
+  viewEl.innerHTML = `
+    <div class="dating-deck-page">
+      <div class="dating-deck-header">
+        <h2 class="section-heading">💘 ${I18N.t("dating.deckTitle")}</h2>
+        <div class="dating-deck-header-links">
+          <a href="#/dating/matches">${I18N.t("dating.matchesLink")}</a>
+          <a href="#/dating/setup">${I18N.t("dating.editProfileLink")}</a>
+          <a href="#/dating-terms">${I18N.t("dating.safetyLink")}</a>
+        </div>
+      </div>
+      <div class="dating-card-stack" id="dating-card-stack"></div>
+      <div class="dating-deck-actions">
+        <button class="dating-action-btn dating-action-pass" id="dating-btn-pass" aria-label="${I18N.t("dating.pass")}">✕</button>
+        <button class="dating-action-btn dating-action-like" id="dating-btn-like" aria-label="${I18N.t("dating.like")}">♥</button>
+      </div>
+    </div>
+  `;
+
+  datingDeckState.candidates = [];
+  datingDeckState.index = 0;
+  try {
+    datingDeckState.candidates = await api("/api/dating/discover", { auth: true });
+  } catch (e) {
+    document.getElementById("dating-card-stack").innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  drawDatingCard();
+  document.getElementById("dating-btn-pass").addEventListener("click", () => datingSwipeCurrent("pass"));
+  document.getElementById("dating-btn-like").addEventListener("click", () => datingSwipeCurrent("like"));
+}
+
+function drawDatingCard() {
+  const stack = document.getElementById("dating-card-stack");
+  if (!stack) return;
+  const candidate = datingDeckState.candidates[datingDeckState.index];
+  if (!candidate) {
+    stack.innerHTML = `<div class="dating-empty-state"><p>${I18N.t("dating.noMoreCards")}</p><a class="btn btn-outline" href="#/dating/setup">${I18N.t("dating.editProfileLink")}</a></div>`;
+    return;
+  }
+  const photo = (candidate.photos && candidate.photos[0]) || "";
+  stack.innerHTML = `
+    <div class="dating-card" id="dating-active-card">
+      ${photo ? `<img class="dating-card-photo" src="${photo}" />` : `<div class="dating-card-photo-placeholder">${initials(candidate.name)}</div>`}
+      <div class="dating-card-overlay">
+        <p class="dating-card-name">${escapeHtml(candidate.name)}${candidate.distance ? ` · ${escapeHtml(candidate.distance)}` : ""}</p>
+        ${candidate.bio ? `<p class="dating-card-bio">${escapeHtml(candidate.bio)}</p>` : ""}
+        ${
+          candidate.interests && candidate.interests.length
+            ? `<div class="dating-card-chips">${candidate.interests
+                .slice(0, 6)
+                .map((i) => `<span class="dating-chip">${escapeHtml(i)}</span>`)
+                .join("")}</div>`
+            : ""
+        }
+      </div>
+      <div class="dating-card-swipe-hint dating-card-hint-like">${I18N.t("dating.like")}</div>
+      <div class="dating-card-swipe-hint dating-card-hint-pass">${I18N.t("dating.pass")}</div>
+    </div>
+  `;
+  wireDatingCardDrag();
+}
+
+// Pointer-based drag-to-swipe, with the button fallback above always
+// working too (accessibility + trackpads without touch/drag support).
+function wireDatingCardDrag() {
+  const card = document.getElementById("dating-active-card");
+  if (!card) return;
+  let startX = 0;
+  let startY = 0;
+  let dragging = false;
+  let dx = 0;
+
+  const onDown = (e) => {
+    dragging = true;
+    const p = e.touches ? e.touches[0] : e;
+    startX = p.clientX;
+    startY = p.clientY;
+    card.style.transition = "none";
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    const p = e.touches ? e.touches[0] : e;
+    dx = p.clientX - startX;
+    const dy = p.clientY - startY;
+    const rotate = dx / 12;
+    card.style.transform = `translate(${dx}px, ${dy}px) rotate(${rotate}deg)`;
+    card.classList.toggle("dating-card-lean-like", dx > 40);
+    card.classList.toggle("dating-card-lean-pass", dx < -40);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    card.style.transition = "";
+    if (dx > 100) {
+      datingSwipeCurrent("like");
+    } else if (dx < -100) {
+      datingSwipeCurrent("pass");
+    } else {
+      card.style.transform = "";
+      card.classList.remove("dating-card-lean-like", "dating-card-lean-pass");
+    }
+    dx = 0;
+  };
+
+  card.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+  card.addEventListener("touchstart", onDown, { passive: true });
+  card.addEventListener("touchmove", onMove, { passive: true });
+  card.addEventListener("touchend", onUp);
+}
+
+async function datingSwipeCurrent(direction) {
+  const candidate = datingDeckState.candidates[datingDeckState.index];
+  const card = document.getElementById("dating-active-card");
+  if (!candidate) return;
+  if (card) {
+    card.style.transition = "transform 0.25s ease, opacity 0.25s ease";
+    card.style.transform = direction === "like" ? "translate(400px, -60px) rotate(20deg)" : "translate(-400px, -60px) rotate(-20deg)";
+    card.style.opacity = "0";
+  }
+  datingDeckState.index++;
+  try {
+    const result = await api("/api/dating/swipe", { method: "POST", auth: true, body: { targetId: candidate.userId, direction } });
+    setTimeout(() => {
+      drawDatingCard();
+      if (result.matched) datingShowMatchOverlay(candidate);
+    }, 200);
+  } catch (e) {
+    setTimeout(() => drawDatingCard(), 200);
+  }
+}
+
+function datingShowMatchOverlay(candidate) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay dating-match-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box dating-match-box">
+      <div class="dating-match-icon">💘</div>
+      <h2 class="section-heading">${I18N.t("dating.itsAMatch")}</h2>
+      <p>${I18N.t("dating.matchBody").replace("{name}", escapeHtml(candidate.name))}</p>
+      <div class="action-row">
+        <a class="btn btn-primary" href="#/messages/${candidate.userId}">${I18N.t("dating.sendMessage")}</a>
+        <button class="btn btn-secondary" id="dating-match-close">${I18N.t("dating.keepSwiping")}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.getElementById("dating-match-close").addEventListener("click", () => overlay.remove());
+  const msgLink = overlay.querySelector("a.btn-primary");
+  if (msgLink) msgLink.addEventListener("click", () => overlay.remove());
+}
+
+async function renderDatingMatches() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `
+    <h2 class="section-heading">💘 ${I18N.t("dating.matchesTitle")}</h2>
+    <a class="form-footer-link" href="#/dating">${I18N.t("common.goBack")}</a>
+    <div id="dating-matches-list"><p>${I18N.t("common.loading")}</p></div>
+  `;
+  const listEl = document.getElementById("dating-matches-list");
+  let matches;
+  try {
+    matches = await api("/api/dating/matches", { auth: true });
+  } catch (e) {
+    listEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!matches.length) {
+    listEl.innerHTML = `<div class="empty-state">${I18N.t("dating.noMatches")}</div>`;
+    return;
+  }
+  listEl.innerHTML = `<div class="dating-matches-grid">${matches
+    .map(
+      (m) => `
+    <div class="dating-match-card" data-match-id="${m.matchId}" data-user-id="${m.userId}">
+      ${m.photo ? `<img class="dating-match-photo" src="${m.photo}" />` : `<div class="dating-match-photo-placeholder">${initials(m.name)}</div>`}
+      <p class="dating-match-name">${escapeHtml(m.name)}</p>
+      <div class="dating-match-actions">
+        <a class="btn btn-outline" href="#/messages/${m.userId}">${I18N.t("dating.sendMessage")}</a>
+        <button class="btn-icon-text dating-unmatch-btn" data-match-id="${m.matchId}">${I18N.t("dating.unmatch")}</button>
+        <button class="btn-icon-text dating-report-btn" data-user-id="${m.userId}">${I18N.t("report.reportUser")}</button>
+        <button class="btn-icon-text dating-block-btn" data-user-id="${m.userId}" data-match-id="${m.matchId}">${I18N.t("dating.block")}</button>
+      </div>
+    </div>`
+    )
+    .join("")}</div>`;
+
+  listEl.querySelectorAll(".dating-unmatch-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("dating.confirmUnmatch"))) return;
+      try {
+        await api("/api/dating/matches/" + btn.dataset.matchId + "/unmatch", { method: "POST", auth: true });
+        renderDatingMatches();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  });
+  listEl.querySelectorAll(".dating-report-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openReportModal("user", btn.dataset.userId));
+  });
+  listEl.querySelectorAll(".dating-block-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("profile.confirmBlock"))) return;
+      try {
+        await api("/api/users/" + btn.dataset.userId + "/block", { method: "POST", auth: true });
+        await api("/api/dating/matches/" + btn.dataset.matchId + "/unmatch", { method: "POST", auth: true });
+        renderDatingMatches();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  });
 }
 
 // ---------------- Init ----------------

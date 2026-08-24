@@ -249,10 +249,14 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   font-size: 14px;
   font-weight: 600;
 }
-/* The icon-only links (Book Club, notifications bell) are bigger glyphs so
-   they visually fill the leftover space at the end of the row instead of
-   leaving it looking empty next to "PUBLISH A BOOK". */
-#nav-book-club, #nav-notifications {
+/* The icon-only links (Book Club, Podcasts, Messages, notifications bell)
+   are all bigger glyphs, at the same size as each other, so they visually
+   fill the leftover space at the end of the row instead of leaving it
+   looking empty next to "PUBLISH A BOOK" - and so Messages/Podcasts don't
+   look small/out of place next to Book Club/the bell. flex-wrap: nowrap +
+   overflow-x: auto on .topbar-nav (above) is what keeps all of them on this
+   one row instead of breaking to a second line. */
+#nav-book-club, #nav-podcasts, #nav-messages, #nav-notifications {
   font-size: 24px;
   line-height: 1;
 }
@@ -1043,6 +1047,23 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
    doesn't hold or process payment yet - avoids a "Buy Now" button implying
    a completed purchase when it only sends a request to the seller. */
 .buy-safety-note { font-size: 12px; color: var(--text-secondary); margin: 8px 0 0; max-width: 480px; }
+
+/* ---- Orders (task #58/#127 - real payments, buyer protection) ---- */
+.order-list { display: flex; flex-direction: column; gap: 10px; }
+.order-row { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-color); border-radius: 10px; text-decoration: none; color: inherit; background: var(--bg-surface); }
+.order-row-thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+.order-row-thumb-empty { width: 52px; height: 52px; border-radius: 8px; background: var(--bg-surface-alt); display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
+.order-row-info { flex: 1; min-width: 0; }
+.order-row-title { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-row-meta { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.order-timeline { display: flex; align-items: center; gap: 6px; margin: 16px 0; }
+.order-step { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; position: relative; }
+.order-step:not(:last-child)::after { content: ""; position: absolute; top: 6px; left: 55%; width: 90%; height: 2px; background: var(--border-color); z-index: 0; }
+.order-step.done:not(:last-child)::after { background: var(--gold); }
+.order-step-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--border-color); z-index: 1; }
+.order-step.done .order-step-dot { background: var(--gold); }
+.order-step-label { font-size: 11px; color: var(--text-secondary); text-align: center; }
+.order-step.done .order-step-label { color: var(--accent-text); font-weight: 700; }
 .btn { border: none; border-radius: 6px; padding: 10px 16px; font-weight: 700; font-size: 14px; }
 .btn-primary { background: var(--accent); color: var(--accent-text-on); }
 .btn-primary:hover { background: var(--accent-strong); }
@@ -1815,10 +1836,11 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 /* ---- OAuth buttons ---- */
 .oauth-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0; font-size: 12px; color: var(--text-muted); }
 .oauth-divider::before, .oauth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border-color); }
-.btn-google { display: flex; align-items: center; justify-content: center; background: var(--bg-surface); border: 1px solid var(--border-color); color: var(--text-primary); }
-.btn-google:hover { background: var(--bg-surface-alt); }
-.btn-facebook { display: flex; align-items: center; justify-content: center; background: #1877f2; color: #fff; }
-.btn-facebook:hover { background: #1461c9; }
+.btn-google, .btn-facebook { display: flex; align-items: center; justify-content: center; gap: 10px; font-family: "Roboto", Arial, sans-serif; font-weight: 500; }
+.btn-google { background: #fff; border: 1px solid #dadce0; color: #3c4043; }
+.btn-google:hover { background: #f8f9fa; }
+.btn-facebook { background: #1877f2; border: none; color: #fff; }
+.btn-facebook:hover { background: #166fe5; }
 
 /* ---- Featured/sponsored listings carousel ---- */
 .featured-carousel { position: relative; margin-bottom: 20px; border-radius: 12px; overflow: hidden; min-height: 160px; background: var(--bg-surface-alt); }
@@ -1908,6 +1930,59 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .footer-dot { margin: 0 8px; color: var(--text-muted); }
 .footer-rights { margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
 .footer-social-label { margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
+.footer-stripe-badge { display: flex; align-items: center; justify-content: center; gap: 7px; margin: 16px 0 0; padding: 8px 14px; background: rgba(99, 91, 255, 0.08); border: 1px solid rgba(99, 91, 255, 0.35); border-radius: 999px; width: fit-content; margin-left: auto; margin-right: auto; }
+.footer-stripe-badge #footer-stripe-label { font-size: 11px; color: var(--text-muted); }
+.footer-stripe-link { display: inline-flex; align-items: center; line-height: 0; }
+.footer-stripe-wordmark { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; color: #635BFF; }
+.footer-stripe-link:hover .footer-stripe-wordmark { color: #8b85ff; }
+
+/* Inline Stripe badge reused on buy button, order tracking, seller payment
+   setup - anywhere money moves - so Stripe's presence is visible at every
+   purchase touchpoint, not just the site footer. */
+.stripe-inline-badge { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; padding: 5px 12px; background: rgba(99, 91, 255, 0.08); border: 1px solid rgba(99, 91, 255, 0.35); border-radius: 999px; text-decoration: none; }
+.stripe-inline-badge span:first-child { font-size: 11px; color: var(--text-muted); }
+.stripe-inline-wordmark { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-weight: 700; font-size: 14px; letter-spacing: -0.01em; color: #635BFF; }
+.stripe-inline-badge:hover .stripe-inline-wordmark { color: #8b85ff; }
+
+/* ---- Classics library (public-domain, Phase 1: browsing only) ---- */
+.classics-new-badge { position: absolute; top: 8px; right: 8px; margin-right: 0; background: var(--gold); color: var(--gold-text-on); font-weight: 800; text-transform: uppercase; letter-spacing: .03em; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+.classics-preview-row { display: flex; gap: 14px; overflow-x: auto; padding: 4px 2px 12px; scrollbar-width: thin; }
+.classics-preview-row .product-card { flex: 0 0 150px; }
+.classics-detail { display: flex; gap: 20px; flex-wrap: wrap; }
+.classics-detail-cover { width: 180px; flex-shrink: 0; position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,.25); aspect-ratio: 2 / 3; }
+.classics-detail-cover svg { width: 100%; height: auto; display: block; }
+.classics-detail-info { flex: 1; min-width: 220px; }
+.classics-cover-wrap { aspect-ratio: 2 / 3; overflow: hidden; position: relative; }
+.classics-cover-wrap svg { width: 100%; height: 100%; display: block; }
+
+/* Real museum-sourced public-domain cover art (Met Museum Open Access,
+   isPublicDomain:true only) - a photo cover with a soft bottom gradient
+   so the title/author stay legible over any painting. */
+.classics-cover-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.classics-cover-gradient { position: absolute; inset: 0; background: linear-gradient(to top, rgba(10,8,6,.92) 0%, rgba(10,8,6,.55) 32%, rgba(10,8,6,0) 60%); pointer-events: none; }
+.classics-cover-text { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 12px 12px; }
+.classics-cover-title { margin: 0; font-family: "Playfair Display", Georgia, serif; font-weight: 700; font-size: 15px; line-height: 1.2; color: #faf3e0; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.classics-cover-author { margin: 4px 0 0; font-family: Georgia, serif; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: #d4af6a; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.classics-cover-credit { margin-top: 10px; font-size: 11px; opacity: .65; font-style: normal; }
+.classics-cover-credit em { font-style: italic; }
+
+/* "Rehearsal" buy box - shows the full purchase layout (price line + Buy
+   button + Stripe badge) exactly as it will look once Lulu is connected,
+   but the button is disabled: no real price is ever shown or guessed here,
+   only "To be set", so this can never mislead anyone or misstate a cost. */
+.classics-buy-box { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface-alt); max-width: 320px; }
+.classics-buy-price { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.classics-buy-price-label { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+.classics-buy-price-value { font-size: 15px; font-weight: 700; color: var(--text-muted); font-style: italic; }
+.classics-buy-btn { width: 100%; }
+.classics-buy-box .stripe-inline-badge { margin-top: 12px; }
+
+/* Marketplace home: categories are now a click-to-open drawer instead of the
+   first thing you see, so real listings (loadAllProductsPreview) are visible
+   right away without picking a category first. */
+.categories-toggle-btn { display: inline-flex; align-items: center; gap: 6px; margin: 10px 0 16px; }
+.categories-toggle-caret { display: inline-block; transition: transform .18s ease; }
+.categories-toggle-btn.open .categories-toggle-caret { transform: rotate(180deg); }
 .footer-social { display: flex; justify-content: center; gap: 14px; margin-bottom: 16px; }
 .footer-social-link { display: inline-flex; width: 38px; height: 38px; border-radius: 10px; overflow: hidden; transition: transform .15s ease, box-shadow .15s ease; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
 .footer-social-link:hover { transform: translateY(-2px) scale(1.06); box-shadow: 0 4px 10px rgba(0,0,0,.2); }
@@ -1987,8 +2062,9 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .intl-admin-row { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px; }
 
 /* ---- Admin panel ---- */
-.admin-tabs { display: flex; gap: 6px; margin: 10px 0 18px; border-bottom: 1px solid var(--border-color); }
-.admin-tab { padding: 8px 14px; font-size: 14px; font-weight: 600; color: var(--text-secondary); text-decoration: none; border-bottom: 2px solid transparent; }
+.admin-tabs { display: flex; gap: 6px; margin: 10px 0 18px; border-bottom: 1px solid var(--border-color); overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.admin-tabs::-webkit-scrollbar { display: none; }
+.admin-tab { padding: 8px 14px; font-size: 14px; font-weight: 600; color: var(--text-secondary); text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; flex-shrink: 0; }
 .admin-tab.active { color: var(--accent-text); border-bottom-color: var(--accent-text); }
 .admin-search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
 .admin-search-bar input { flex: 1; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; }
@@ -2197,3 +2273,253 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 /* Profile: cover photo enlarge button + profile picture click cursor */
 .profile-cover-expand-btn { position: absolute; inset: 0; border: none; background: none; cursor: pointer; }
 .simple-image-lightbox-panel .photo-lightbox-image-wrap { max-height: 80vh; }
+
+/* ---------------- Podcasts ("#/podcasts", "#/podcast/:id", "#/podcast-episode/:id") ---------------- */
+.podcast-library-page, .podcast-channel-page, .podcast-episode-page { max-width: 760px; margin: 0 auto; padding: 0 4px 40px; }
+.podcast-eyebrow { color: var(--accent-text); font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; margin: 0 0 4px; }
+.podcast-title { font-family: var(--font-display); font-size: 26px; margin: 0 0 6px; color: var(--text-primary); }
+.podcast-subtitle { color: var(--text-secondary); font-size: 14px; margin: 0 0 18px; }
+
+.podcast-my-channel-card {
+  display: flex; align-items: center; gap: 12px; background: var(--bg-surface); border: 1px solid var(--gold);
+  border-radius: 14px; padding: 14px 16px; margin-bottom: 18px; text-decoration: none; color: var(--text-primary);
+  box-shadow: var(--card-shadow);
+}
+.podcast-my-channel-card-empty { border-style: dashed; }
+.podcast-my-channel-icon { font-size: 28px; flex-shrink: 0; }
+.podcast-my-channel-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.podcast-my-channel-text strong { font-size: 15px; }
+.podcast-my-channel-text span { font-size: 12.5px; color: var(--text-muted); }
+.podcast-my-channel-cta { color: var(--gold); font-weight: 700; font-size: 13px; white-space: nowrap; }
+
+.podcast-tabs { display: flex; gap: 8px; margin-bottom: 14px; border-bottom: 1px solid var(--border-color); }
+.podcast-tab-btn {
+  border: none; background: none; padding: 8px 4px; font-size: 14px; font-weight: 700; color: var(--text-muted);
+  cursor: pointer; border-bottom: 2px solid transparent;
+}
+.podcast-tab-btn.active { color: var(--text-primary); border-bottom-color: var(--gold); }
+
+.podcast-sort-row, .podcast-cat-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.podcast-sort-btn, .podcast-cat-chip {
+  border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-secondary);
+  border-radius: 999px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.podcast-sort-btn.active, .podcast-cat-chip.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+
+.podcast-search-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.podcast-search-row input { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary); }
+.podcast-search-row button { padding: 10px 16px; border-radius: 10px; border: none; background: var(--gold); color: var(--gold-text-on); font-weight: 700; cursor: pointer; }
+
+.podcast-episode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.podcast-episode-card {
+  display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: 14px; overflow: hidden; text-decoration: none; color: var(--text-primary); box-shadow: var(--card-shadow);
+}
+.podcast-episode-card-cover {
+  height: 120px; background: var(--bg-surface-alt); background-size: cover; background-position: center;
+  display: flex; align-items: center; justify-content: center; font-size: 34px;
+}
+.podcast-episode-card-info { padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; }
+.podcast-episode-card-info strong { font-size: 13.5px; line-height: 1.3; }
+.podcast-episode-card-channel { font-size: 12px; color: var(--text-muted); }
+.podcast-episode-card-stats { font-size: 11.5px; color: var(--text-muted); }
+
+.podcast-channel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.podcast-channel-card {
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; background: var(--bg-surface);
+  border: 1px solid var(--border-color); border-radius: 14px; padding: 16px 10px; text-decoration: none; color: var(--text-primary);
+  box-shadow: var(--card-shadow);
+}
+.podcast-channel-card-cover {
+  width: 64px; height: 64px; border-radius: 50%; background: var(--bg-surface-alt); background-size: cover; background-position: center;
+  display: flex; align-items: center; justify-content: center; font-size: 26px; margin-bottom: 6px;
+}
+.podcast-channel-card strong { font-size: 13.5px; }
+.podcast-channel-card-owner, .podcast-channel-card-stats { font-size: 11.5px; color: var(--text-muted); }
+
+.podcast-channel-header {
+  position: relative; border-radius: 16px; overflow: hidden; background: var(--accent); background-size: cover; background-position: center;
+  min-height: 200px; display: flex; align-items: flex-end; margin-bottom: 14px;
+}
+.podcast-channel-header-overlay {
+  width: 100%; padding: 18px; background: linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0.15));
+  color: #fff; display: flex; flex-direction: column; gap: 4px;
+}
+.podcast-channel-header-icon { font-size: 34px; }
+.podcast-channel-header-overlay h2 { font-family: var(--font-display); font-size: 22px; margin: 0; color: #fff; }
+.podcast-channel-owner, .podcast-channel-stats { font-size: 12.5px; color: rgba(255,255,255,0.85); margin: 0; }
+.podcast-channel-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.podcast-channel-description { color: var(--text-secondary); font-size: 14px; margin: 0 0 16px; }
+
+.podcast-episode-list { display: flex; flex-direction: column; gap: 8px; }
+.podcast-episode-row {
+  display: flex; align-items: center; gap: 12px; background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: 12px; padding: 10px 14px; text-decoration: none; color: var(--text-primary);
+}
+.podcast-episode-row-icon { font-size: 22px; flex-shrink: 0; }
+.podcast-episode-row-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.podcast-episode-row-info strong { font-size: 13.5px; }
+.podcast-episode-row-info span { font-size: 12px; color: var(--text-muted); }
+
+.podcast-player-cover {
+  width: 100%; aspect-ratio: 1.6/1; border-radius: 14px; background: var(--bg-surface-alt); background-size: cover; background-position: center;
+  display: flex; align-items: center; justify-content: center; font-size: 46px; margin-bottom: 14px;
+}
+.podcast-player-title { font-family: var(--font-display); font-size: 22px; margin: 0 0 4px; color: var(--text-primary); }
+.podcast-player-channel { font-size: 13px; color: var(--text-muted); margin: 0 0 14px; }
+.podcast-player-media { width: 100%; border-radius: 12px; margin-bottom: 14px; }
+.podcast-player-media.podcast-player-audio { height: 54px; }
+.podcast-player-actions { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+.podcast-like-btn {
+  border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-secondary);
+  border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.podcast-like-btn.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+.podcast-view-count { font-size: 13px; color: var(--text-muted); }
+.podcast-player-description { color: var(--text-secondary); font-size: 14px; line-height: 1.5; }
+
+.podcast-modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 500; display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.podcast-modal {
+  background: var(--bg-surface); border-radius: 16px; padding: 18px; width: 100%; max-width: 440px; max-height: 88vh; overflow-y: auto;
+  box-shadow: var(--card-shadow);
+}
+.podcast-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.podcast-modal-head p { font-weight: 800; font-size: 15px; margin: 0; color: var(--text-primary); }
+.podcast-modal-close { width: 30px; height: 30px; border-radius: 50%; border: none; background: var(--bg-surface-alt); color: var(--text-primary); font-size: 18px; cursor: pointer; }
+.podcast-modal form { display: flex; flex-direction: column; gap: 4px; }
+.podcast-modal form label { font-size: 12.5px; font-weight: 700; color: var(--text-secondary); margin-top: 8px; }
+.podcast-modal form input[type="text"], .podcast-modal form textarea, .podcast-modal form select, .podcast-modal form input[type="file"] {
+  padding: 9px 10px; border-radius: 9px; border: 1px solid var(--border-color); background: var(--bg-page); color: var(--text-primary); font-size: 13.5px;
+}
+.podcast-modal form button[type="submit"] { margin-top: 14px; padding: 11px; border-radius: 10px; border: none; font-weight: 800; font-size: 14px; cursor: pointer; }
+
+.podcast-ep-source-tabs { display: flex; gap: 6px; margin-top: 10px; }
+.podcast-ep-source-tab {
+  flex: 1; border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-secondary);
+  border-radius: 9px; padding: 8px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.podcast-ep-source-tab.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+#podcast-ep-existing-list { display: flex; flex-direction: column; gap: 6px; max-height: 160px; overflow-y: auto; margin-top: 4px; }
+.podcast-ep-existing-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left;
+  border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary);
+  border-radius: 9px; padding: 8px 10px; font-size: 12.5px; cursor: pointer;
+}
+
+/* ---- Dating (Tinder/Bumble-style, opt-in, black+gold styling) ---- */
+
+.friends-search-tab-dating {
+  display: flex; align-items: center; justify-content: center; text-decoration: none;
+  background: linear-gradient(135deg, var(--bg-surface), var(--bg-surface-alt)); border: 1px solid var(--gold);
+  color: var(--gold); font-weight: 800;
+}
+
+.dating-intro { max-width: 480px; margin: 0 auto; text-align: center; padding: 8px 12px 24px; }
+.dating-intro-icon { font-size: 48px; line-height: 1; margin-bottom: 6px; }
+.dating-intro-body { color: var(--text-secondary); font-size: 14.5px; margin: 8px 0 18px; }
+.dating-safety-box {
+  text-align: left; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 14px;
+  padding: 14px 16px; margin-bottom: 18px; box-shadow: var(--card-shadow);
+}
+.dating-safety-box h3 { margin: 0 0 8px; font-size: 14.5px; color: var(--gold); font-family: var(--font-display); }
+.dating-safety-list { margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; }
+.dating-safety-list li { margin-bottom: 6px; }
+
+.dating-setup-panel .dating-photo-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.dating-photo-thumb { position: relative; width: 76px; height: 76px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color); }
+.dating-photo-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dating-photo-remove {
+  position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,0.6); color: #fff; font-size: 13px; line-height: 1; cursor: pointer;
+}
+.dating-seeking-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.dating-seeking-chip {
+  display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px;
+  border: 1px solid var(--border-color); background: var(--bg-surface); font-size: 12.5px; color: var(--text-secondary); cursor: pointer;
+}
+.dating-seeking-chip input { accent-color: var(--gold); }
+
+.dating-deck-page { max-width: 420px; margin: 0 auto; padding-bottom: 24px; }
+.dating-deck-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.dating-deck-header-links { display: flex; gap: 14px; }
+.dating-deck-header-links a { font-size: 12.5px; font-weight: 700; color: var(--gold); text-decoration: none; }
+
+.dating-card-stack { position: relative; height: 520px; }
+.dating-card {
+  position: absolute; inset: 0; border-radius: 20px; overflow: hidden; background: var(--bg-surface);
+  border: 1px solid var(--border-color); box-shadow: var(--card-shadow); cursor: grab; user-select: none;
+}
+.dating-card:active { cursor: grabbing; }
+.dating-card-photo { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.dating-card-photo-placeholder {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  font-size: 64px; font-weight: 800; color: var(--gold-text-on); background: var(--gold);
+}
+.dating-card-overlay {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 16px 18px;
+  background: linear-gradient(to top, rgba(0,0,0,0.82), rgba(0,0,0,0.15) 70%, transparent);
+  color: #fff; pointer-events: none;
+}
+.dating-card-name { font-size: 19px; font-weight: 800; margin: 0 0 4px; font-family: var(--font-display); }
+.dating-card-bio { font-size: 13.5px; margin: 0 0 8px; opacity: 0.9; }
+.dating-card-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dating-chip { background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.3); border-radius: 999px; padding: 4px 10px; font-size: 11.5px; }
+.dating-card-swipe-hint {
+  position: absolute; top: 24px; padding: 6px 14px; border-radius: 8px; border: 3px solid; font-weight: 900;
+  font-size: 20px; text-transform: uppercase; letter-spacing: 1px; opacity: 0; transform: rotate(-12deg);
+  transition: opacity 0.15s ease;
+}
+.dating-card-hint-like { left: 20px; color: #2ecc71; border-color: #2ecc71; transform: rotate(-12deg); }
+.dating-card-hint-pass { right: 20px; color: #e74c3c; border-color: #e74c3c; transform: rotate(12deg); }
+.dating-card-lean-like .dating-card-hint-like { opacity: 1; }
+.dating-card-lean-pass .dating-card-hint-pass { opacity: 1; }
+
+.dating-deck-actions { display: flex; justify-content: center; gap: 28px; margin-top: 18px; }
+.dating-action-btn {
+  width: 62px; height: 62px; border-radius: 50%; border: 1px solid var(--border-color); background: var(--bg-surface);
+  box-shadow: var(--card-shadow); font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.dating-action-pass { color: #e74c3c; }
+.dating-action-like { color: var(--gold); border-color: var(--gold); }
+
+.dating-empty-state { text-align: center; padding: 60px 20px; color: var(--text-secondary); }
+.dating-empty-state p { margin-bottom: 14px; }
+
+.dating-match-overlay .modal-box.dating-match-box { text-align: center; max-width: 360px; }
+.dating-match-icon { font-size: 52px; margin-bottom: 6px; }
+
+.dating-matches-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+.dating-match-card {
+  background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 14px; overflow: hidden;
+  box-shadow: var(--card-shadow); display: flex; flex-direction: column;
+}
+.dating-match-photo { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block; }
+.dating-match-photo-placeholder {
+  width: 100%; aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
+  font-size: 32px; font-weight: 800; color: var(--gold-text-on); background: var(--gold);
+}
+.dating-match-name { font-weight: 700; font-size: 13.5px; padding: 8px 10px 4px; }
+.dating-match-actions { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 10px; }
+.dating-match-actions .btn { font-size: 12px; padding: 7px; text-align: center; }
+.btn-icon-text {
+  border: none; background: transparent; color: var(--text-secondary); font-size: 11.5px; text-decoration: underline;
+  cursor: pointer; padding: 2px 0; text-align: left;
+}
+.dating-block-btn, .dating-unmatch-btn { color: #e74c3c; }
+
+.dating-terms-page { max-width: 640px; }
+.dating-terms-draft-banner {
+  background: #7a1f1f; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 12.5px;
+  font-weight: 700; margin-bottom: 16px; line-height: 1.5;
+}
+.dating-terms-heading { font-size: 15px; color: var(--gold); margin: 18px 0 4px; font-family: var(--font-display); }
+.dating-terms-body { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+
+/* ---- Legal pages (Terms & Conditions / Privacy Policy) ---- */
+.legal-page { max-width: 640px; }
+.legal-updated { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }
+.legal-heading { font-size: 15px; color: var(--gold); margin: 18px 0 4px; font-family: var(--font-display); }
+.legal-body { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+.podcast-ep-existing-item.active { border-color: var(--gold); background: rgba(201,161,90,0.12); }
