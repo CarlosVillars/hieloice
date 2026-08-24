@@ -1943,6 +1943,39 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .stripe-inline-badge span:first-child { font-size: 11px; color: var(--text-muted); }
 .stripe-inline-wordmark { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-weight: 700; font-size: 14px; letter-spacing: -0.01em; color: #635BFF; }
 .stripe-inline-badge:hover .stripe-inline-wordmark { color: #8b85ff; }
+
+/* ---- Classics library (public-domain, Phase 1: browsing only) ---- */
+.classics-new-badge { position: absolute; top: 8px; right: 8px; margin-right: 0; background: var(--gold); color: var(--gold-text-on); font-weight: 800; text-transform: uppercase; letter-spacing: .03em; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+.classics-preview-row { display: flex; gap: 14px; overflow-x: auto; padding: 4px 2px 12px; scrollbar-width: thin; }
+.classics-preview-row .product-card { flex: 0 0 150px; }
+.classics-detail { display: flex; gap: 20px; flex-wrap: wrap; }
+.classics-detail-cover { width: 180px; flex-shrink: 0; position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,.25); aspect-ratio: 2 / 3; }
+.classics-detail-cover svg { width: 100%; height: auto; display: block; }
+.classics-detail-info { flex: 1; min-width: 220px; }
+.classics-cover-wrap { aspect-ratio: 2 / 3; overflow: hidden; position: relative; }
+.classics-cover-wrap svg { width: 100%; height: 100%; display: block; }
+
+/* Real museum-sourced public-domain cover art (Met Museum Open Access,
+   isPublicDomain:true only) - a photo cover with a soft bottom gradient
+   so the title/author stay legible over any painting. */
+.classics-cover-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.classics-cover-gradient { position: absolute; inset: 0; background: linear-gradient(to top, rgba(10,8,6,.92) 0%, rgba(10,8,6,.55) 32%, rgba(10,8,6,0) 60%); pointer-events: none; }
+.classics-cover-text { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 12px 12px; }
+.classics-cover-title { margin: 0; font-family: "Playfair Display", Georgia, serif; font-weight: 700; font-size: 15px; line-height: 1.2; color: #faf3e0; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.classics-cover-author { margin: 4px 0 0; font-family: Georgia, serif; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: #d4af6a; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.classics-cover-credit { margin-top: 10px; font-size: 11px; opacity: .65; font-style: normal; }
+.classics-cover-credit em { font-style: italic; }
+
+/* "Rehearsal" buy box - shows the full purchase layout (price line + Buy
+   button + Stripe badge) exactly as it will look once Lulu is connected,
+   but the button is disabled: no real price is ever shown or guessed here,
+   only "To be set", so this can never mislead anyone or misstate a cost. */
+.classics-buy-box { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface-alt); max-width: 320px; }
+.classics-buy-price { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.classics-buy-price-label { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+.classics-buy-price-value { font-size: 15px; font-weight: 700; color: var(--text-muted); font-style: italic; }
+.classics-buy-btn { width: 100%; }
+.classics-buy-box .stripe-inline-badge { margin-top: 12px; }
 .footer-social { display: flex; justify-content: center; gap: 14px; margin-bottom: 16px; }
 .footer-social-link { display: inline-flex; width: 38px; height: 38px; border-radius: 10px; overflow: hidden; transition: transform .15s ease, box-shadow .15s ease; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
 .footer-social-link:hover { transform: translateY(-2px) scale(1.06); box-shadow: 0 4px 10px rgba(0,0,0,.2); }

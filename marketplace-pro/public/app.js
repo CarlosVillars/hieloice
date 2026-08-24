@@ -430,6 +430,7 @@ function applyStaticI18n() {
   setText("icon-nav-marketplace-label", I18N.t("iconnav.marketplace"));
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
+  setText("icon-nav-dropdown-classics-label", I18N.t("classics.heading"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
   setText("icon-nav-create-camera-label", I18N.t("iconnav.createCamera"));
@@ -810,6 +811,8 @@ async function router() {
     if (parts[0] === "admin") return renderAdminPanel("reports");
     if (parts[0] === "orders" && parts[1]) return renderOrderDetail(parts[1]);
     if (parts[0] === "orders") return renderOrdersList();
+    if (parts[0] === "classics" && parts[1]) return renderClassicDetail(parts[1]);
+    if (parts[0] === "classics") return renderClassicsHub(query);
     viewEl.innerHTML = `<div class="not-found-state"><p>${I18N.t("common.notFound")}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
   } catch (e) {
     viewEl.innerHTML = `<div class="not-found-state"><p class="form-msg error">${escapeHtml(e.message)}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
@@ -1148,8 +1151,30 @@ function renderMarketplaceHome() {
     ${categoryTabsHtml("all")}
     <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
     <div class="category-grid">${categoryCardsHtml()}</div>
+    <div id="classics-preview-section" style="display:none;">
+      <h2 class="section-heading">${I18N.t("classics.previewHeading")}</h2>
+      <div class="classics-preview-row" id="classics-preview-row"></div>
+      <a class="back-link" href="#/classics">${I18N.t("classics.seeAll")} &rarr;</a>
+    </div>
   `;
   loadAdCarousel();
+  loadClassicsPreview();
+}
+
+async function loadClassicsPreview() {
+  const section = document.getElementById("classics-preview-section");
+  const row = document.getElementById("classics-preview-row");
+  if (!section || !row) return;
+  try {
+    const books = await api("/api/classics");
+    if (!books.length) return;
+    // A handful of picks, not the whole library - this row is a teaser that
+    // links to the full #/classics hub, not a duplicate of it.
+    row.innerHTML = books.slice(0, 10).map(classicCardHtml).join("");
+    section.style.display = "block";
+  } catch (e) {
+    // best-effort, same pattern as the ad carousel - never break the home page
+  }
 }
 
 async function loadHomeFeed() {
@@ -2019,6 +2044,299 @@ async function renderOrderDetail(id) {
       });
     });
   }
+}
+
+// ---------------- Classics (public-domain library, Phase 1: browsing only)
+// ----------------
+// Books come from Project Gutenberg's public-domain catalog. Per Carlos's
+// instruction this is connected "silently" - the source is never surfaced
+// in the UI copy - and no price/buy button appears yet, since real pricing
+// only gets wired once the live Lulu print-cost calculation (Phase 2) is
+// built and verified. Showing a wrong price is worse than showing none.
+const CLASSICS_CATEGORIES = [
+  "fiction_classics",
+  "world_literature",
+  "adventure_scifi",
+  "mystery_adventure",
+  "childrens",
+  "philosophy",
+  "history_ideas",
+  "poetry_drama",
+];
+
+function classicCategoryLabel(cat) {
+  return I18N.t("classics.category." + cat) || cat;
+}
+
+// Original, HieloIce-owned cover art (task: Carlos wants covers with zero
+// copyright ambiguity - Gutenberg's own cover thumbnails couldn't be
+// guaranteed 100% clear of any rights, so instead of using an external
+// image at all, every classic gets a generated typographic cover: just
+// title + author on a category-tinted background, drawn as inline SVG.
+// Nothing here is downloaded from anywhere - it's built from plain text,
+// so there is nothing to have a copyright dispute about.
+// Each theme is a soft top-to-bottom "night sky" gradient (tinted per
+// category) plus one accent color used for the border, icon, stars and
+// text - this is what gives the covers an elegant, of-their-era, dreamy
+// feel (Carlos's request: "elegantes, acorde a su epoca, invitar a sonar
+// y volar e imaginar") while staying 100% hand-drawn, zero external images.
+const CLASSICS_COVER_THEMES = {
+  fiction_classics: { top: "#6b2f37", bottom: "#241014", accent: "#f4d9a0" },
+  world_literature: { top: "#274a6b", bottom: "#0e1c2e", accent: "#f0e3c0" },
+  adventure_scifi: { top: "#1f5c54", bottom: "#0b2521", accent: "#eee7c8" },
+  mystery_adventure: { top: "#2c2c52", bottom: "#111122", accent: "#e6dfc4" },
+  childrens: { top: "#8a6a1c", bottom: "#382a08", accent: "#fff3d0" },
+  philosophy: { top: "#4a3068", bottom: "#1c132c", accent: "#e9dcf5" },
+  history_ideas: { top: "#33543f", bottom: "#112016", accent: "#e6ecd8" },
+  poetry_drama: { top: "#5c2648", bottom: "#230e1d", accent: "#f4d9e6" },
+};
+
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h << 5) - h + s.charCodeAt(i);
+    h |= 0;
+  }
+  return h;
+}
+
+// A small hand-drawn emblem per category - each one points at the same
+// idea (dreaming, soaring, imagining) through a motif that fits the
+// category: a crescent moon for classic fiction, a compass/globe for
+// world literature, a ship under the stars for adventure & sci-fi, a
+// lantern for mystery, a hot-air balloon for children's, an owl for
+// philosophy, a laurel wreath for history, a quill for poetry & drama.
+function classicCoverIcon(category, accent) {
+  switch (category) {
+    case "fiction_classics":
+      return `<path d="M108 45a12 12 0 1 0 0 24 9 9 0 1 1 0-24" fill="${accent}" opacity="0.9"/>
+        <circle cx="82" cy="38" r="1.3" fill="${accent}"/>
+        <circle cx="128" cy="52" r="1" fill="${accent}"/>
+        <circle cx="92" cy="60" r="0.8" fill="${accent}"/>`;
+    case "world_literature":
+      return `<circle cx="100" cy="49" r="15" fill="none" stroke="${accent}" stroke-width="1"/>
+        <ellipse cx="100" cy="49" rx="15" ry="6" fill="none" stroke="${accent}" stroke-width="0.7"/>
+        <ellipse cx="100" cy="49" rx="6.5" ry="15" fill="none" stroke="${accent}" stroke-width="0.7"/>
+        <line x1="100" y1="34" x2="100" y2="64" stroke="${accent}" stroke-width="0.7"/>
+        <circle cx="122" cy="34" r="1.2" fill="${accent}"/>`;
+    case "adventure_scifi":
+      return `<path d="M100 33 L100 58" stroke="${accent}" stroke-width="1"/>
+        <path d="M100 35 L116 55 L100 55 Z" fill="${accent}" opacity="0.85"/>
+        <path d="M100 40 L87 55 L100 55 Z" fill="${accent}" opacity="0.6"/>
+        <path d="M80 60 Q100 68 120 60 L116 64 Q100 71 84 64 Z" fill="${accent}"/>
+        <circle cx="131" cy="29" r="1" fill="${accent}"/>
+        <circle cx="71" cy="34" r="0.8" fill="${accent}"/>`;
+    case "mystery_adventure":
+      return `<circle cx="113" cy="39" r="9" fill="none" stroke="${accent}" stroke-width="0.7" opacity="0.55"/>
+        <rect x="92" y="45" width="14" height="17" rx="2" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M95 45 Q99 39 103 45" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="99" cy="53" r="1.8" fill="${accent}"/>`;
+    case "childrens":
+      return `<ellipse cx="100" cy="44" rx="11" ry="14" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M91 56 L94 64 L106 64 L109 56" fill="none" stroke="${accent}" stroke-width="1"/>
+        <rect x="96" y="64" width="8" height="5" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="76" cy="35" r="1.2" fill="${accent}"/>
+        <circle cx="125" cy="41" r="1" fill="${accent}"/>
+        <circle cx="118" cy="23" r="0.8" fill="${accent}"/>`;
+    case "philosophy":
+      return `<circle cx="92" cy="47" r="7.5" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="108" cy="47" r="7.5" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="92" cy="47" r="2.2" fill="${accent}"/>
+        <circle cx="108" cy="47" r="2.2" fill="${accent}"/>
+        <path d="M96 54 L100 60 L104 54" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M83 39 Q92 32 97 38" fill="none" stroke="${accent}" stroke-width="0.8"/>
+        <path d="M103 38 Q108 32 117 39" fill="none" stroke="${accent}" stroke-width="0.8"/>`;
+    case "history_ideas":
+      return `<path d="M84 60 Q78 44 90 32" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M116 60 Q122 44 110 32" fill="none" stroke="${accent}" stroke-width="1"/>
+        <ellipse cx="87" cy="41" rx="3" ry="1.6" fill="${accent}" transform="rotate(-30 87 41)"/>
+        <ellipse cx="82" cy="52" rx="3" ry="1.6" fill="${accent}" transform="rotate(-15 82 52)"/>
+        <ellipse cx="113" cy="41" rx="3" ry="1.6" fill="${accent}" transform="rotate(30 113 41)"/>
+        <ellipse cx="118" cy="52" rx="3" ry="1.6" fill="${accent}" transform="rotate(15 118 52)"/>`;
+    case "poetry_drama":
+      return `<path d="M90 62 Q99 29 116 32 Q103 38 99 50 Q107 46 111 38" fill="none" stroke="${accent}" stroke-width="1.1"/>
+        <circle cx="89" cy="64" r="1.4" fill="${accent}"/>`;
+    default:
+      return `<circle cx="100" cy="47" r="10" fill="none" stroke="${accent}" stroke-width="1"/>`;
+  }
+}
+
+function wrapCoverText(text, maxCharsPerLine, maxLines) {
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let current = "";
+  for (const w of words) {
+    const candidate = current ? current + " " + w : w;
+    if (candidate.length > maxCharsPerLine && current) {
+      lines.push(current);
+      current = w;
+    } else {
+      current = candidate;
+    }
+    if (lines.length === maxLines - 1) {
+      // last line gets whatever remains, truncated with an ellipsis if long
+      break;
+    }
+  }
+  const usedWords = lines.join(" ").split(/\s+/).filter(Boolean).length;
+  const remaining = words.slice(usedWords).join(" ");
+  if (remaining) {
+    lines.push(remaining.length > maxCharsPerLine + 3 ? remaining.slice(0, maxCharsPerLine) + "…" : remaining);
+  } else if (current && lines[lines.length - 1] !== current) {
+    lines.push(current);
+  }
+  return lines.slice(0, maxLines);
+}
+
+function classicCoverSvg(title, author, category) {
+  const theme = CLASSICS_COVER_THEMES[category] || CLASSICS_COVER_THEMES.fiction_classics;
+  const uid = "cvr" + Math.abs(hashStr(title + "|" + author)).toString(36);
+  const titleLines = wrapCoverText(title, 16, 4);
+  const titleStartY = 100;
+  const titleTspans = titleLines
+    .map((line, i) => `<tspan x="100" y="${titleStartY + i * 22}">${escapeHtml(line)}</tspan>`)
+    .join("");
+  const authorStartY = titleStartY + titleLines.length * 22 + 18;
+  const authorLines = wrapCoverText(author.toUpperCase(), 24, 2);
+  const authorTspans = authorLines
+    .map((line, i) => `<tspan x="100" y="${authorStartY + i * 16}">${escapeHtml(line)}</tspan>`)
+    .join("");
+  // A quiet scattered night sky - the same idea ("soar, dream, imagine")
+  // running underneath every category, regardless of its accent color.
+  const stars = [
+    [26, 26, 1.3, 0.85], [172, 32, 1, 0.7], [48, 18, 0.8, 0.6], [152, 20, 1.1, 0.75],
+    [20, 84, 0.7, 0.5], [180, 96, 0.9, 0.6], [16, 130, 0.6, 0.4], [186, 150, 0.85, 0.55],
+    [34, 258, 0.7, 0.45], [166, 268, 0.9, 0.5],
+  ]
+    .map(([x, y, r, o]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${theme.accent}" opacity="${o}"/>`)
+    .join("");
+  const dividerY = 78;
+  return `<svg viewBox="0 0 200 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHtml(title)}">
+    <defs>
+      <linearGradient id="${uid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${theme.top}" />
+        <stop offset="100%" stop-color="${theme.bottom}" />
+      </linearGradient>
+    </defs>
+    <rect width="200" height="300" fill="url(#${uid})" />
+    ${stars}
+    <rect x="9" y="9" width="182" height="282" fill="none" stroke="${theme.accent}" stroke-width="1" opacity="0.9" />
+    <rect x="13" y="13" width="174" height="274" fill="none" stroke="${theme.accent}" stroke-width="0.5" opacity="0.45" />
+    <path d="M9 24 L9 9 L24 9" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    <path d="M176 9 L191 9 L191 24" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    <path d="M9 276 L9 291 L24 291" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    <path d="M191 276 L191 291 L176 291" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    ${classicCoverIcon(category, theme.accent)}
+    <g opacity="0.85">
+      <line x1="68" y1="${dividerY}" x2="88" y2="${dividerY}" stroke="${theme.accent}" stroke-width="0.8"/>
+      <rect x="97" y="${dividerY - 3}" width="6" height="6" fill="${theme.accent}" transform="rotate(45 100 ${dividerY})"/>
+      <line x1="112" y1="${dividerY}" x2="132" y2="${dividerY}" stroke="${theme.accent}" stroke-width="0.8"/>
+    </g>
+    <text font-family="Playfair Display, Georgia, serif" font-weight="700" font-size="19" fill="#faf3e0" text-anchor="middle">${titleTspans}</text>
+    <text font-family="Georgia, serif" font-size="10" letter-spacing="1.5" fill="${theme.accent}" text-anchor="middle">${authorTspans}</text>
+    <text x="100" y="283" font-family="Georgia, serif" font-size="7" letter-spacing="2" fill="${theme.accent}" text-anchor="middle" opacity="0.85">HIELOICE CLASSICS</text>
+  </svg>`;
+}
+
+// Prefer a real, museum-verified public-domain painting (see cover_image_url,
+// sourced from the Met Museum's Open Access API, isPublicDomain:true only)
+// as the cover art - falls back to the hand-drawn SVG cover for the rare
+// book where no confident match was found, so every title always has art.
+function classicCoverMarkup(b) {
+  if (b.cover_image_url) {
+    return `
+      <img class="classics-cover-photo" src="${escapeHtml(b.cover_image_url_small || b.cover_image_url)}" alt="${escapeHtml(b.title)}" loading="lazy" />
+      <div class="classics-cover-gradient"></div>
+      <div class="classics-cover-text">
+        <p class="classics-cover-title">${escapeHtml(b.title)}</p>
+        <p class="classics-cover-author">${escapeHtml(b.author)}</p>
+      </div>`;
+  }
+  return classicCoverSvg(b.title, b.author, b.category);
+}
+
+function classicCardHtml(b) {
+  return `
+    <a class="product-card" href="#/classics/${b.id}">
+      <div class="product-thumb-wrap classics-cover-wrap">
+        ${classicCoverMarkup(b)}
+        <span class="badge classics-new-badge">${I18N.t("classics.newBadge")}</span>
+      </div>
+      <div class="product-card-body">
+        <p class="product-title">${escapeHtml(b.title)}</p>
+        <p class="product-location">${escapeHtml(b.author)}</p>
+      </div>
+    </a>`;
+}
+
+async function renderClassicsHub(query) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const activeCat = query && query.category ? query.category : "";
+  let books;
+  try {
+    const params = new URLSearchParams();
+    if (activeCat) params.set("category", activeCat);
+    books = await api("/api/classics?" + params.toString());
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const pillsHtml = `
+    <div class="category-tabs-row">
+      <a class="category-tab-pill ${!activeCat ? "active" : ""}" href="#/classics">${I18N.t("classics.allCategories")}</a>
+      ${CLASSICS_CATEGORIES.map(
+        (c) => `<a class="category-tab-pill ${activeCat === c ? "active" : ""}" href="#/classics?category=${c}">${classicCategoryLabel(c)}</a>`
+      ).join("")}
+    </div>
+  `;
+
+  viewEl.innerHTML = `
+    <div class="hero">
+      <h1>${I18N.t("classics.heading")}</h1>
+      <p>${I18N.t("classics.subheading")}</p>
+    </div>
+    ${pillsHtml}
+    <div class="category-grid">
+      ${books.length ? books.map(classicCardHtml).join("") : `<div class="empty-state">${I18N.t("category.noResults")}</div>`}
+    </div>
+  `;
+}
+
+async function renderClassicDetail(id) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let b;
+  try {
+    b = await api("/api/classics/" + id);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const creditHtml = b.cover_image_url && b.cover_artwork_title
+    ? `<p class="classics-cover-credit">${I18N.t("classics.coverCredit")}: <em>${escapeHtml(b.cover_artwork_title)}</em>${b.cover_artist ? ", " + escapeHtml(b.cover_artist) : ""}${b.cover_object_date ? " (" + escapeHtml(b.cover_object_date) + ")" : ""} &mdash; ${I18N.t("classics.metMuseum")}</p>`
+    : "";
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/classics">&larr; ${I18N.t("classics.heading")}</a>
+    <div class="form-panel classics-detail">
+      <div class="classics-detail-cover">${classicCoverMarkup(b)}</div>
+      <div class="classics-detail-info">
+        <span class="badge classics-new-badge">${I18N.t("classics.newBadge")}</span>
+        <h2 class="section-heading">${escapeHtml(b.title)}</h2>
+        <p class="product-location">${escapeHtml(b.author)}</p>
+        <p style="margin-top:10px;">${escapeHtml(b.description || "")}</p>
+        ${creditHtml}
+        <div class="classics-buy-box">
+          <div class="classics-buy-price">
+            <span class="classics-buy-price-label">${I18N.t("classics.priceLabel")}</span>
+            <span class="classics-buy-price-value">${I18N.t("classics.pricePending")}</span>
+          </div>
+          <button class="btn btn-primary classics-buy-btn" disabled title="${escapeHtml(I18N.t("classics.comingSoonNote"))}">${I18N.t("classics.buyButton")}</button>
+          <p class="form-msg" style="margin-top:10px;">${I18N.t("classics.comingSoonNote")}</p>
+          ${stripeInlineBadgeHtml()}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // ---------------- Report modal (report a listing or a user) ----------------
