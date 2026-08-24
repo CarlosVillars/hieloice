@@ -92,6 +92,21 @@ const SHIPPING_ALLOWED_COUNTRIES = [
   "AE", "SA", "IL", "ZA",
 ];
 
+// Flat shipping fee charged to the buyer at checkout (task #313, per
+// Carlos's decision 2026-08-24). Set near USPS Media Mail's real base rate
+// for a single book (~$4.13-4.50/lb as of 2026) plus a small buffer for
+// packaging/heavier or multi-item orders, so it realistically covers what
+// the seller actually pays to mail the book - this is what eventually funds
+// buying a real label once Shippo/EasyPost (task #312's "phase 2") is
+// connected. Charged as its own clearly-itemized Stripe line item, never
+// folded silently into the book price - a marketplace hiding a mandatory
+// fee from the total until checkout is a real legal problem (deceptive/
+// "drip" pricing), not just a UX nitpick, so this always shows as "Shipping"
+// on Stripe's own checkout page and is disclosed on the product page before
+// the buyer ever clicks Pay. "Subtle" here means calm, low-key styling -
+// small muted text, not a scary red banner - not hidden.
+const SHIPPING_FLAT_FEE = 4.99;
+
 // task #312 - basic shipping: address + tracking. eBay/Amazon-style flow at
 // a scope that fits HieloIce's current volume: Stripe's own hosted checkout
 // collects the buyer's address (no custom form to build/validate), the
@@ -439,6 +454,7 @@ function orderOut(o) {
     released_at, dispute_reason, dispute_status, dispute_opened_at, created_at,
     shipping_name, shipping_line1, shipping_line2, shipping_city, shipping_state,
     shipping_postal_code, shipping_country, tracking_carrier, tracking_number,
+    shipping_fee,
     ...rest
   } = o;
   // Buyer-provided delivery address (basic shipping, task #312): filled in by
@@ -473,6 +489,7 @@ function orderOut(o) {
     shippingAddress,
     trackingCarrier: tracking_carrier || null,
     trackingNumber: tracking_number || null,
+    shippingFee: shipping_fee != null ? Number(shipping_fee) : 0,
   };
 }
 
@@ -6799,12 +6816,19 @@ async function handleApi(req, res, pathname, query) {
     const platformFee = Math.round(amount * PLATFORM_FEE_RATE * 100) / 100;
     const sellerPayout = Math.round((amount - platformFee) * 100) / 100;
 
+    // Seller payout math is based only on the book's price, never on the
+    // shipping fee - the shipping fee is HieloIce's, meant to cover the
+    // actual postage cost when the label eventually gets bought (task #312
+    // phase 2), not something the seller's 90% cut is computed against.
+    const shippingFee = SHIPPING_FLAT_FEE;
+
     const order = {
       id: crypto.randomBytes(8).toString("hex"),
       product_id: product.id,
       buyer_id: me.id,
       seller_id: product.seller_id,
       amount,
+      shipping_fee: shippingFee,
       platform_fee: platformFee,
       seller_payout: sellerPayout,
       currency: "usd",
@@ -6823,6 +6847,18 @@ async function handleApi(req, res, pathname, query) {
             currency: "usd",
             unit_amount: Math.round(amount * 100),
             product_data: { name: String(product.title || "HieloIce book").slice(0, 250) },
+          },
+        },
+        {
+          // Its own line item on purpose - Stripe's hosted checkout page
+          // always shows every line item and the total before the buyer can
+          // pay, so this is disclosed by construction, never a surprise
+          // add-on. See the SHIPPING_FLAT_FEE comment for why this exists.
+          quantity: 1,
+          price_data: {
+            currency: "usd",
+            unit_amount: Math.round(shippingFee * 100),
+            product_data: { name: "Shipping" },
           },
         },
       ],
