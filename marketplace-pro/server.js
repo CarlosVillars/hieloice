@@ -1997,6 +1997,99 @@ async function handleApi(req, res, pathname, query) {
     }
   }
 
+  // ---- AI: review a listing photo (framing/lighting/condition-visibility) and
+  // suggest a fix ----
+  // Used from the photo editor (crop/rotate modal) and from the guided
+  // capture review step, right after a shot is taken - the goal is a photo
+  // that's sharp, well lit, tightly framed around the book (nothing else in
+  // shot), and shows the book's real condition as clearly as possible, since
+  // buyers on a used-book marketplace rely on the photo to judge condition.
+  // This never edits pixels server-side - it only returns brightness/
+  // contrast/saturation multipliers the client applies locally (via canvas
+  // ctx.filter) as a live preview the seller can accept or discard, plus a
+  // plain-language note on what to do (retake, get more light, crop tighter,
+  // wipe glare, etc.). Cheaper than analyze-book-photo: no web_search tool,
+  // smaller max_tokens, higher rate limit.
+  if (method === "POST" && pathname === "/api/ai/suggest-photo-fix") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!ANTHROPIC_API_KEY) return sendJson(res, 503, { error: "AI features are not configured on this server yet." });
+    if (!checkRateLimit("ai-photofix:" + me.id, 30, 60 * 60 * 1000)) {
+      return sendJson(res, 429, { error: "Too many AI requests. Please try again in a bit." });
+    }
+
+    const body = await readBody(req);
+    const image = typeof body.image === "string" ? body.image : "";
+    const m = image.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/);
+    if (!m) return sendJson(res, 400, { error: "Please provide a JPEG, PNG, or WEBP photo." });
+    const [, mediaType, base64Data] = m;
+    if (base64Data.length > 8 * 1024 * 1024) {
+      return sendJson(res, 400, { error: "Photo is too large." });
+    }
+    const locale = body.locale === "es" ? "es" : "en";
+    const langNote = locale === "es" ? "in Spanish" : "in English";
+
+    try {
+      const data = await callClaude({
+        model: "claude-sonnet-5",
+        max_tokens: 500,
+        system:
+          "You are a photo-quality reviewer for HieloIce, a marketplace for used books. You will be shown a " +
+          "photo intended for a book listing. Assess it specifically for marketplace-listing purposes: " +
+          "1) Is it in focus / sharp, not blurry? 2) Is the lighting good (not too dark, not blown out, no " +
+          "harsh glare)? 3) Is the book fully and tightly framed, with nothing irrelevant to the book in the " +
+          "shot (background clutter, other objects, hands, table edges, etc.)? 4) Does the photo clearly show " +
+          "the book's actual physical condition (cover wear, spine creases, page yellowing, stains, tears, " +
+          "dog-ears) as honestly and visibly as possible - this matters a lot on a used-book marketplace since " +
+          "buyers rely entirely on the photo to judge condition before buying. " +
+          "Return ONLY a single JSON object, no markdown fences, no text before or after it, in this exact " +
+          'shape: {"quality": "good", "issues": [], "suggestion": "...", "brightness": 1.0, "contrast": 1.0, ' +
+          '"saturation": 1.0, "cropSuggested": false}. quality must be exactly "good", "fair", or "poor". ' +
+          "issues is a short list (0-4 items) of specific problems you actually see, each under 60 characters, " +
+          "written " + langNote + " - if the photo is already good, return an empty array. suggestion is 1-2 " +
+          "short sentences " + langNote + " telling the seller in plain, friendly language what to do (retake " +
+          "with more light, get closer, wipe off glare, recrop tighter around the book, etc.) - focus " +
+          "especially on whatever would make the book's condition clearer to a buyer. If the photo is already " +
+          "good, suggestion should say so briefly. brightness/contrast/saturation are multipliers between 0.7 " +
+          "and 1.4 that a simple image filter will apply (1.0 = no change) - only move a value away from 1.0 " +
+          "if it would meaningfully fix a real lighting/color problem you identified, don't nudge values for " +
+          "no reason. cropSuggested must be true only if there is clearly irrelevant content in frame that " +
+          "should be cropped out.",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
+              { type: "text", text: "Review this book listing photo and return the JSON assessment." },
+            ],
+          },
+        ],
+      });
+      const raw = claudeText(data);
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI did not return JSON");
+      const parsed = JSON.parse(jsonMatch[0]);
+      const clamp = (n, fallback) => {
+        const v = Number(n);
+        return Number.isFinite(v) ? Math.max(0.7, Math.min(1.4, v)) : fallback;
+      };
+      const quality = ["good", "fair", "poor"].includes(parsed.quality) ? parsed.quality : "fair";
+      const issues = Array.isArray(parsed.issues) ? parsed.issues.map((s) => String(s).slice(0, 80)).slice(0, 4) : [];
+      return sendJson(res, 200, {
+        quality,
+        issues,
+        suggestion: String(parsed.suggestion || "").slice(0, 400),
+        brightness: clamp(parsed.brightness, 1),
+        contrast: clamp(parsed.contrast, 1),
+        saturation: clamp(parsed.saturation, 1),
+        cropSuggested: !!parsed.cropSuggested,
+      });
+    } catch (e) {
+      console.error("AI photo-fix suggestion failed:", e && e.message);
+      return sendJson(res, 502, { error: "AI could not review this photo right now. Please try again in a moment." });
+    }
+  }
+
   // ---- AI: suggest a short social caption + hashtags for a Moment/Loop photo ----
   // Same shape as analyze-book-photo above (auth, 503-if-unconfigured, rate
   // limit, base64 validation, "final message is pure JSON" contract) but
