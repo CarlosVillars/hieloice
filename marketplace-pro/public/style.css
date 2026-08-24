@@ -1935,6 +1935,14 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .footer-stripe-link { display: inline-flex; align-items: center; line-height: 0; }
 .footer-stripe-wordmark { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; color: #635BFF; }
 .footer-stripe-link:hover .footer-stripe-wordmark { color: #8b85ff; }
+
+/* Inline Stripe badge reused on buy button, order tracking, seller payment
+   setup - anywhere money moves - so Stripe's presence is visible at every
+   purchase touchpoint, not just the site footer. */
+.stripe-inline-badge { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; padding: 5px 12px; background: rgba(99, 91, 255, 0.08); border: 1px solid rgba(99, 91, 255, 0.35); border-radius: 999px; text-decoration: none; }
+.stripe-inline-badge span:first-child { font-size: 11px; color: var(--text-muted); }
+.stripe-inline-wordmark { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-weight: 700; font-size: 14px; letter-spacing: -0.01em; color: #635BFF; }
+.stripe-inline-badge:hover .stripe-inline-wordmark { color: #8b85ff; }
 .footer-social { display: flex; justify-content: center; gap: 14px; margin-bottom: 16px; }
 .footer-social-link { display: inline-flex; width: 38px; height: 38px; border-radius: 10px; overflow: hidden; transition: transform .15s ease, box-shadow .15s ease; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
 .footer-social-link:hover { transform: translateY(-2px) scale(1.06); box-shadow: 0 4px 10px rgba(0,0,0,.2); }

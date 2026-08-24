@@ -204,6 +204,16 @@ function fmtPrice(price) {
   return "$" + Number(price).toLocaleString("en-US");
 }
 
+// Task: show Stripe's presence in every purchase-related section (buy
+// button, order tracking, seller payment setup) - text wordmark in Stripe's
+// own brand purple, per Stripe's partner badge guidelines. Reused as a
+// small inline HTML snippet rather than duplicated markup everywhere.
+function stripeInlineBadgeHtml() {
+  return `<a href="https://stripe.com" target="_blank" rel="noopener noreferrer" class="stripe-inline-badge" title="Stripe">
+    <span>${I18N.t("orders.securedBy")}</span> <span class="stripe-inline-wordmark">Stripe</span>
+  </a>`;
+}
+
 function fmtDate(ts) {
   const d = new Date(ts);
   return d.toLocaleDateString();
@@ -1770,6 +1780,7 @@ function renderProductActions(p) {
         <button class="btn btn-gold" id="btn-pay-now">${I18N.t("product.payNow")}</button>
       </div>
       <p class="buy-safety-note">${I18N.t("product.escrowSafetyNote")}</p>
+      ${stripeInlineBadgeHtml()}
     `;
   }
   return `
@@ -1956,6 +1967,7 @@ async function renderOrderDetail(id) {
       <div id="order-action-area" class="action-row" style="margin-top:16px;">${actionHtml}</div>
       <div id="order-dispute-form"></div>
       <p id="order-msg" class="form-msg"></p>
+      ${stripeInlineBadgeHtml()}
     </div>
   `;
 
@@ -9544,12 +9556,13 @@ async function loadPaymentsStatusCard() {
     return;
   }
   if (status.payoutsEnabled) {
-    el.innerHTML = `<p class="form-msg ok">✅ ${I18N.t("orders.paymentsReady")}</p>`;
+    el.innerHTML = `<p class="form-msg ok">✅ ${I18N.t("orders.paymentsReady")}</p>${stripeInlineBadgeHtml()}`;
     return;
   }
   el.innerHTML = `
     <p class="form-msg">${status.connected ? I18N.t("orders.paymentsAlmostReady") : I18N.t("orders.paymentsNotSetUp")}</p>
     <button class="btn btn-gold" id="btn-setup-payments">${I18N.t("orders.setUpPayments")}</button>
+    ${stripeInlineBadgeHtml()}
   `;
   document.getElementById("btn-setup-payments").addEventListener("click", async (e) => {
     e.target.disabled = true;
