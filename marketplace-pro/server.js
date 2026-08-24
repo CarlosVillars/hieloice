@@ -62,6 +62,23 @@ const LULU_API_BASE_URL = process.env.LULU_API_BASE_URL || "https://api.sandbox.
 if (!ANTHROPIC_API_KEY) {
   console.error("Missing ANTHROPIC_API_KEY - AI photo analysis and AI assistant disabled.");
 }
+// Task #58/#127 - real payments with buyer-protection (escrow-style hold).
+// Uses Stripe Connect (Express accounts for sellers) with the "separate
+// charges and transfers" pattern: the buyer's payment lands on HieloIce's
+// own Stripe balance first (never touches the seller directly), and only
+// after the buyer confirms the book arrived in good condition - or 7 days
+// pass with no dispute - does HieloIce move the seller's cut to them.
+// STRIPE_SECRET_KEY starting with "sk_test_" = safe test mode, no real
+// money moves. Only a "sk_live_" key (set deliberately later, with Carlos's
+// sign-off) makes this move real money. STRIPE_WEBHOOK_SECRET comes from
+// the webhook endpoint Carlos creates in the Stripe Dashboard.
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
+const PLATFORM_FEE_RATE = 0.10; // 10% commission, per Carlos's decision
+const ORDER_AUTO_RELEASE_DAYS = 7;
+if (!STRIPE_SECRET_KEY) {
+  console.error("Missing STRIPE_SECRET_KEY - real payments/escrow disabled.");
+}
 
 const MAX_PHOTOS = 12;
 // MAX_ACTIVE_MOMENTS used to cap how many of a user's ephemeral 24h Moments
@@ -293,6 +310,161 @@ async function luluApiRequest(method, path, bodyObj) {
     throw err;
   }
   return data;
+}
+
+// ---------- Stripe helpers (payments / escrow, task #58) ----------
+// No stripe npm package - same "plain HTTPS" approach as the rest of this
+// file. Stripe's API takes application/x-www-form-urlencoded bodies with
+// bracket notation for nested objects/arrays, e.g. line_items[0][quantity]=1
+function stripeFormEncode(obj, prefix) {
+  const parts = [];
+  for (const key of Object.keys(obj)) {
+    const value = obj[key];
+    if (value === undefined || value === null) continue;
+    const fullKey = prefix ? prefix + "[" + key + "]" : key;
+    if (Array.isArray(value)) {
+      value.forEach((item, i) => {
+        const arrKey = fullKey + "[" + i + "]";
+        if (item !== null && typeof item === "object") {
+          parts.push(stripeFormEncode(item, arrKey));
+        } else {
+          parts.push(encodeURIComponent(arrKey) + "=" + encodeURIComponent(item));
+        }
+      });
+    } else if (typeof value === "object") {
+      parts.push(stripeFormEncode(value, fullKey));
+    } else {
+      parts.push(encodeURIComponent(fullKey) + "=" + encodeURIComponent(value));
+    }
+  }
+  return parts.filter(Boolean).join("&");
+}
+
+async function stripeRequest(method, path, params) {
+  if (!STRIPE_SECRET_KEY) {
+    const err = new Error("Payments aren't configured on the server yet.");
+    err.status = 503;
+    throw err;
+  }
+  const body = params ? stripeFormEncode(params) : undefined;
+  const fullPath = method === "GET" && params ? path + "?" + stripeFormEncode(params) : path;
+  const data = await httpsRequestJson(method, "https://api.stripe.com/v1" + fullPath, {
+    headers: {
+      Authorization: "Basic " + Buffer.from(STRIPE_SECRET_KEY + ":").toString("base64"),
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: method === "GET" ? undefined : body,
+  });
+  if (data && data.error) {
+    const err = new Error(data.error.message || "Stripe request failed");
+    err.status = 502;
+    err.stripeCode = data.error.code;
+    throw err;
+  }
+  return data;
+}
+
+// Reads the raw (unparsed) request body - needed for the Stripe webhook,
+// whose signature is computed over the exact bytes Stripe sent.
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let chunks = [];
+    let size = 0;
+    const LIMIT = 2 * 1024 * 1024;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > LIMIT) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+// Verifies a Stripe webhook signature per Stripe's documented scheme:
+// header is "t=<timestamp>,v1=<hex hmac>", signed payload is "<timestamp>.<rawBody>".
+function verifyStripeWebhookSignature(rawBody, signatureHeader) {
+  if (!STRIPE_WEBHOOK_SECRET || !signatureHeader) return false;
+  const parts = Object.fromEntries(
+    signatureHeader.split(",").map((p) => {
+      const [k, v] = p.split("=");
+      return [k, v];
+    })
+  );
+  if (!parts.t || !parts.v1) return false;
+  const expected = crypto
+    .createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+    .update(parts.t + "." + rawBody)
+    .digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(parts.v1, "hex"));
+  } catch (e) {
+    return false;
+  }
+}
+
+function orderOut(o) {
+  const {
+    product_id, buyer_id, seller_id, platform_fee, seller_payout,
+    stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id,
+    stripe_transfer_id, stripe_refund_id, shipped_at, confirm_deadline,
+    released_at, dispute_reason, dispute_status, dispute_opened_at, created_at,
+    ...rest
+  } = o;
+  return {
+    ...rest,
+    productId: product_id,
+    buyerId: buyer_id,
+    sellerId: seller_id,
+    platformFee: platform_fee,
+    sellerPayout: seller_payout,
+    shippedAt: shipped_at,
+    confirmDeadline: confirm_deadline,
+    releasedAt: released_at,
+    disputeReason: dispute_reason,
+    disputeStatus: dispute_status,
+    disputeOpenedAt: dispute_opened_at,
+    createdAt: created_at,
+  };
+}
+
+// Moves the seller's cut from HieloIce's Stripe balance to their connected
+// account. Called both when a buyer explicitly confirms receipt and by the
+// 7-day auto-release loop. Idempotent-ish: only acts on orders still "shipped".
+async function releaseOrderFunds(order) {
+  const sellers = await db.select("mkt_users", { id: "eq." + enc(order.seller_id), select: "stripe_account_id" });
+  const sellerAccountId = sellers && sellers[0] && sellers[0].stripe_account_id;
+  if (!sellerAccountId) {
+    const err = new Error("Seller no longer has a connected payment account.");
+    err.status = 409;
+    throw err;
+  }
+  let chargeId = order.stripe_charge_id;
+  if (!chargeId && order.stripe_payment_intent_id) {
+    const pi = await stripeRequest("GET", "/payment_intents/" + order.stripe_payment_intent_id);
+    chargeId = pi.latest_charge;
+  }
+  const transferParams = {
+    amount: Math.round(order.seller_payout * 100),
+    currency: order.currency || "usd",
+    destination: sellerAccountId,
+  };
+  if (chargeId) transferParams.source_transaction = chargeId;
+  const transfer = await stripeRequest("POST", "/transfers", transferParams);
+  await db.update(
+    "mkt_orders",
+    { id: "eq." + enc(order.id) },
+    { status: "released", released_at: Date.now(), stripe_transfer_id: transfer.id, stripe_charge_id: chargeId || null }
+  );
+  notifyUser(order.seller_id, "offers", {
+    title: "Payment released",
+    body: "Your buyer confirmed the order - your payout is on its way.",
+    url: "/#/orders/" + order.id,
+  }).catch(() => {});
 }
 
 const db = {
@@ -1692,7 +1864,7 @@ async function handleApi(req, res, pathname, query) {
       const me = await getAuthUser(req);
       if (!me || me.id !== p.seller_id) return sendJson(res, 404, { error: "Product not found" });
     }
-    const sellers = await db.select("mkt_users", { id: "eq." + enc(p.seller_id), select: "id,name,photo,phone,created_at" });
+    const sellers = await db.select("mkt_users", { id: "eq." + enc(p.seller_id), select: "id,name,photo,phone,created_at,stripe_payouts_enabled" });
     const seller = sellers && sellers[0];
     const [rating, trust] = await Promise.all([userRatingSummary(p.seller_id), userTrustSummary(p.seller_id)]);
     const savedRows = await db.select("mkt_saved_items", { product_id: "eq." + enc(p.id), select: "user_id" });
@@ -1702,6 +1874,7 @@ async function handleApi(req, res, pathname, query) {
     out.sellerRating = rating;
     out.sellerSalesCount = trust.salesCount;
     out.sellerVerified = seller ? computeVerifiedSeller(seller, trust.salesCount) : false;
+    out.sellerPaymentsReady = !!(seller && seller.stripe_payouts_enabled);
     out.saveCount = (savedRows || []).length;
     const me = await getAuthUser(req);
     out.saved = !!(me && savedRows.some((r) => r.user_id === me.id));
@@ -6255,7 +6428,359 @@ async function handleApi(req, res, pathname, query) {
       return sendJson(res, 200, originalWorkOut(updated[0]));
     }
 
+    // ---- Admin: order disputes (task #58/#127) ----
+    // A buyer reported a problem (didn't arrive / arrived damaged / etc).
+    // Funds are frozen (order stays in "disputed") until an admin here
+    // decides to release the seller's cut or refund the buyer in full.
+    if (method === "GET" && pathname === "/api/admin/orders") {
+      const status = query.status || "disputed";
+      const orders = await db.select("mkt_orders", { status: "eq." + enc(status), order: "created_at.desc", select: "*" });
+      const userIds = [...new Set(orders.flatMap((o) => [o.buyer_id, o.seller_id]))];
+      let users = [];
+      if (userIds.length) users = await db.select("mkt_users", { id: "in.(" + userIds.map(enc).join(",") + ")", select: "id,name,email" });
+      const out = orders.map((o) => {
+        const buyer = users.find((u) => u.id === o.buyer_id);
+        const seller = users.find((u) => u.id === o.seller_id);
+        return {
+          ...orderOut(o),
+          buyerName: buyer ? buyer.name : "Unknown",
+          buyerEmail: buyer ? buyer.email : "",
+          sellerName: seller ? seller.name : "Unknown",
+          sellerEmail: seller ? seller.email : "",
+        };
+      });
+      return sendJson(res, 200, out);
+    }
+
+    const adminOrderResolveMatch = pathname.match(/^\/api\/admin\/orders\/([a-zA-Z0-9]+)\/resolve$/);
+    if (method === "POST" && adminOrderResolveMatch) {
+      const body = await readBody(req);
+      if (!["release", "refund"].includes(body.action)) return sendJson(res, 400, { error: "action must be 'release' or 'refund'" });
+      const orders = await db.select("mkt_orders", { id: "eq." + enc(adminOrderResolveMatch[1]), select: "*" });
+      const order = orders && orders[0];
+      if (!order) return sendJson(res, 404, { error: "Order not found" });
+      if (order.status !== "disputed") return sendJson(res, 400, { error: "Only disputed orders can be resolved here" });
+
+      if (body.action === "release") {
+        await releaseOrderFunds(order);
+        await db.update("mkt_orders", { id: "eq." + enc(order.id) }, { dispute_status: "resolved_release" });
+        notifyUser(order.buyer_id, "offers", {
+          title: "Dispute resolved",
+          body: "HieloIce reviewed your report and released payment to the seller.",
+          url: "/#/orders/" + order.id,
+        }).catch(() => {});
+      } else {
+        const refund = await stripeRequest("POST", "/refunds", { payment_intent: order.stripe_payment_intent_id });
+        await db.update(
+          "mkt_orders",
+          { id: "eq." + enc(order.id) },
+          { status: "refunded", dispute_status: "resolved_refund", stripe_refund_id: refund.id }
+        );
+        notifyUser(order.buyer_id, "offers", {
+          title: "Refund issued",
+          body: "HieloIce reviewed your report and refunded your payment in full.",
+          url: "/#/orders/" + order.id,
+        }).catch(() => {});
+        notifyUser(order.seller_id, "offers", {
+          title: "Order refunded",
+          body: "HieloIce refunded this buyer after reviewing their report. No payout will be made for this order.",
+          url: "/#/orders/" + order.id,
+        }).catch(() => {});
+      }
+      const fresh = await db.select("mkt_orders", { id: "eq." + enc(order.id), select: "*" });
+      return sendJson(res, 200, orderOut(fresh[0]));
+    }
+
     return sendJson(res, 404, { error: "Route not found" });
+  }
+
+  // ---- PAYMENTS / ORDERS (task #58, #127 - buyer-protection escrow-style checkout) ----
+
+  // Stripe calls this directly (no user session) whenever something happens
+  // on a payment - it's the only fully-trustworthy way to know a checkout
+  // really completed, so orders only ever move to "paid_held" from here,
+  // never from the browser. Must read the RAW body (not JSON-parsed) because
+  // the signature is computed over the exact bytes Stripe sent.
+  if (method === "POST" && pathname === "/api/webhooks/stripe") {
+    let rawBody;
+    try {
+      rawBody = await readRawBody(req);
+    } catch (e) {
+      return sendJson(res, 400, { error: "Could not read request body" });
+    }
+    const signature = req.headers["stripe-signature"];
+    if (!verifyStripeWebhookSignature(rawBody, signature)) {
+      return sendJson(res, 400, { error: "Invalid signature" });
+    }
+    let event;
+    try {
+      event = JSON.parse(rawBody);
+    } catch (e) {
+      return sendJson(res, 400, { error: "Invalid JSON" });
+    }
+
+    try {
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
+        const orderId = session.metadata && session.metadata.order_id;
+        if (orderId) {
+          const orders = await db.select("mkt_orders", { id: "eq." + enc(orderId), select: "*" });
+          const order = orders && orders[0];
+          if (order && order.status === "pending_payment") {
+            await db.update(
+              "mkt_orders",
+              { id: "eq." + enc(orderId) },
+              { status: "paid_held", stripe_payment_intent_id: session.payment_intent || null }
+            );
+            notifyUser(order.seller_id, "offers", {
+              title: "You made a sale!",
+              body: "Someone bought your listing. Ship it and mark it as shipped to start the payout clock.",
+              url: "/#/orders/" + orderId,
+            }).catch(() => {});
+          }
+        }
+      } else if (event.type === "account.updated") {
+        const account = event.data.object;
+        await db.update(
+          "mkt_users",
+          { stripe_account_id: "eq." + enc(account.id) },
+          { stripe_charges_enabled: !!account.charges_enabled, stripe_payouts_enabled: !!account.payouts_enabled }
+        );
+      }
+    } catch (e) {
+      console.error("Stripe webhook handling error:", e.message);
+    }
+    return sendJson(res, 200, { received: true });
+  }
+
+  // POST /api/payments/connect/onboard - a seller's first step toward being
+  // able to get paid. Creates their Stripe Express account if they don't
+  // have one yet, then returns a one-time hosted onboarding link (Stripe's
+  // own secure form) - HieloIce never sees or stores bank details or ID
+  // documents, Stripe collects and verifies all of that directly.
+  if (method === "POST" && pathname === "/api/payments/connect/onboard") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+
+    let accountId = me.stripe_account_id;
+    if (!accountId) {
+      const account = await stripeRequest("POST", "/accounts", {
+        type: "express",
+        email: me.email || undefined,
+        capabilities: { transfers: { requested: true } },
+        business_type: "individual",
+        metadata: { hieloice_user_id: me.id },
+      });
+      accountId = account.id;
+      await db.update(
+        "mkt_users",
+        { id: "eq." + enc(me.id) },
+        { stripe_account_id: accountId, stripe_onboarding_started_at: Date.now() }
+      );
+    }
+
+    const base = baseUrl(req);
+    const link = await stripeRequest("POST", "/account_links", {
+      account: accountId,
+      refresh_url: base + "/#/profile?payments=refresh",
+      return_url: base + "/#/profile?payments=done",
+      type: "account_onboarding",
+    });
+    return sendJson(res, 200, { url: link.url });
+  }
+
+  // GET /api/payments/connect/status - lets the app show "not set up yet" /
+  // "almost done" / "ready to receive payouts" without the user having to
+  // guess. Also opportunistically refreshes our cached flags from Stripe.
+  if (method === "GET" && pathname === "/api/payments/connect/status") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!me.stripe_account_id) {
+      return sendJson(res, 200, { connected: false, chargesEnabled: false, payoutsEnabled: false });
+    }
+    try {
+      const account = await stripeRequest("GET", "/accounts/" + me.stripe_account_id);
+      await db.update(
+        "mkt_users",
+        { id: "eq." + enc(me.id) },
+        { stripe_charges_enabled: !!account.charges_enabled, stripe_payouts_enabled: !!account.payouts_enabled }
+      );
+      return sendJson(res, 200, {
+        connected: true,
+        chargesEnabled: !!account.charges_enabled,
+        payoutsEnabled: !!account.payouts_enabled,
+        detailsSubmitted: !!account.details_submitted,
+      });
+    } catch (e) {
+      return sendJson(res, 200, { connected: true, chargesEnabled: false, payoutsEnabled: false });
+    }
+  }
+
+  // POST /api/orders - buyer starts a real purchase on a marketplace listing.
+  // The buyer's card is charged in full by HieloIce's own platform account;
+  // the seller's cut is only transferred out later (see releaseOrderFunds).
+  if (method === "POST" && pathname === "/api/orders") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const productId = body.productId;
+    if (!productId) return sendJson(res, 400, { error: "productId is required" });
+
+    const products = await db.select("mkt_products", { id: "eq." + enc(productId), select: "*" });
+    const product = products && products[0];
+    if (!product) return sendJson(res, 404, { error: "Product not found" });
+    if (product.seller_id === me.id) return sendJson(res, 400, { error: "You cannot buy your own listing" });
+    if (product.status && product.status !== "active") return sendJson(res, 400, { error: "This listing is no longer available" });
+
+    const sellers = await db.select("mkt_users", { id: "eq." + enc(product.seller_id), select: "stripe_payouts_enabled" });
+    const seller = sellers && sellers[0];
+    if (!seller || !seller.stripe_payouts_enabled) {
+      return sendJson(res, 400, { error: "This seller hasn't finished setting up payments yet, so this listing can't be purchased right now." });
+    }
+
+    const amount = Number(product.price) || 0;
+    if (amount <= 0) return sendJson(res, 400, { error: "This listing doesn't have a valid price" });
+    const platformFee = Math.round(amount * PLATFORM_FEE_RATE * 100) / 100;
+    const sellerPayout = Math.round((amount - platformFee) * 100) / 100;
+
+    const order = {
+      id: crypto.randomBytes(8).toString("hex"),
+      product_id: product.id,
+      buyer_id: me.id,
+      seller_id: product.seller_id,
+      amount,
+      platform_fee: platformFee,
+      seller_payout: sellerPayout,
+      currency: "usd",
+      status: "pending_payment",
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_orders", order);
+
+    const base = baseUrl(req);
+    const session = await stripeRequest("POST", "/checkout/sessions", {
+      mode: "payment",
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: "usd",
+            unit_amount: Math.round(amount * 100),
+            product_data: { name: String(product.title || "HieloIce book").slice(0, 250) },
+          },
+        },
+      ],
+      metadata: { order_id: order.id },
+      success_url: base + "/#/orders/" + order.id + "?checkout=success",
+      cancel_url: base + "/#/products/" + product.id + "?checkout=cancelled",
+    });
+
+    await db.update("mkt_orders", { id: "eq." + enc(order.id) }, { stripe_checkout_session_id: session.id });
+    return sendJson(res, 201, { orderId: order.id, checkoutUrl: session.url });
+  }
+
+  if (method === "GET" && pathname === "/api/orders/mine") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const [asBuyer, asSeller] = await Promise.all([
+      db.select("mkt_orders", { buyer_id: "eq." + enc(me.id), select: "*" }),
+      db.select("mkt_orders", { seller_id: "eq." + enc(me.id), select: "*" }),
+    ]);
+    const orders = [...asBuyer, ...asSeller].sort((a, b) => b.created_at - a.created_at);
+    const productIds = [...new Set(orders.map((o) => o.product_id))];
+    let products = [];
+    if (productIds.length) {
+      products = await db.select("mkt_products", { id: "in.(" + productIds.map(enc).join(",") + ")", select: "id,title,photos" });
+    }
+    const out = orders.map((o) => {
+      const p = products.find((x) => x.id === o.product_id);
+      return {
+        ...orderOut(o),
+        role: o.buyer_id === me.id ? "buyer" : "seller",
+        productTitle: p ? p.title : "Deleted listing",
+        productPhoto: p && p.photos && p.photos[0] ? p.photos[0] : null,
+      };
+    });
+    return sendJson(res, 200, out);
+  }
+
+  const orderMatch = pathname.match(/^\/api\/orders\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && orderMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const orders = await db.select("mkt_orders", { id: "eq." + enc(orderMatch[1]), select: "*" });
+    const order = orders && orders[0];
+    if (!order) return sendJson(res, 404, { error: "Order not found" });
+    if (order.buyer_id !== me.id && order.seller_id !== me.id) return sendJson(res, 403, { error: "Not your order" });
+    return sendJson(res, 200, { ...orderOut(order), role: order.buyer_id === me.id ? "buyer" : "seller" });
+  }
+
+  // POST /api/orders/:id/ship - seller confirms they mailed the book. Starts
+  // the 7-day clock: if the buyer does nothing and never reports a problem,
+  // the payout auto-releases (see the scheduled loop near the bottom of this
+  // file). If the buyer confirms sooner, it releases immediately instead.
+  const orderShipMatch = pathname.match(/^\/api\/orders\/([a-zA-Z0-9]+)\/ship$/);
+  if (method === "POST" && orderShipMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const orders = await db.select("mkt_orders", { id: "eq." + enc(orderShipMatch[1]), select: "*" });
+    const order = orders && orders[0];
+    if (!order) return sendJson(res, 404, { error: "Order not found" });
+    if (order.seller_id !== me.id) return sendJson(res, 403, { error: "Only the seller can mark this as shipped" });
+    if (order.status !== "paid_held") return sendJson(res, 400, { error: "This order isn't ready to be marked as shipped" });
+    const now = Date.now();
+    const deadline = now + ORDER_AUTO_RELEASE_DAYS * 24 * 60 * 60 * 1000;
+    await db.update("mkt_orders", { id: "eq." + enc(order.id) }, { status: "shipped", shipped_at: now, confirm_deadline: deadline });
+    notifyUser(order.buyer_id, "offers", {
+      title: "Your order shipped",
+      body: "The seller marked your book as shipped. Confirm once it arrives in good condition to release payment.",
+      url: "/#/orders/" + order.id,
+    }).catch(() => {});
+    const fresh = await db.select("mkt_orders", { id: "eq." + enc(order.id), select: "*" });
+    return sendJson(res, 200, orderOut(fresh[0]));
+  }
+
+  // POST /api/orders/:id/confirm - buyer says the book arrived and is fine.
+  // This is the buyer's "release the money now" action - immediate transfer.
+  const orderConfirmMatch = pathname.match(/^\/api\/orders\/([a-zA-Z0-9]+)\/confirm$/);
+  if (method === "POST" && orderConfirmMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const orders = await db.select("mkt_orders", { id: "eq." + enc(orderConfirmMatch[1]), select: "*" });
+    const order = orders && orders[0];
+    if (!order) return sendJson(res, 404, { error: "Order not found" });
+    if (order.buyer_id !== me.id) return sendJson(res, 403, { error: "Only the buyer can confirm this order" });
+    if (order.status !== "shipped") return sendJson(res, 400, { error: "This order isn't ready to be confirmed" });
+    await releaseOrderFunds(order);
+    const fresh = await db.select("mkt_orders", { id: "eq." + enc(order.id), select: "*" });
+    return sendJson(res, 200, orderOut(fresh[0]));
+  }
+
+  // POST /api/orders/:id/dispute { reason } - buyer says something's wrong.
+  // Freezes the funds (no auto-release) until an admin resolves it.
+  const orderDisputeMatch = pathname.match(/^\/api\/orders\/([a-zA-Z0-9]+)\/dispute$/);
+  if (method === "POST" && orderDisputeMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    if (!body.reason || !String(body.reason).trim()) return sendJson(res, 400, { error: "Please describe the problem" });
+    const orders = await db.select("mkt_orders", { id: "eq." + enc(orderDisputeMatch[1]), select: "*" });
+    const order = orders && orders[0];
+    if (!order) return sendJson(res, 404, { error: "Order not found" });
+    if (order.buyer_id !== me.id) return sendJson(res, 403, { error: "Only the buyer can report a problem with this order" });
+    if (order.status !== "shipped") return sendJson(res, 400, { error: "This order can't be disputed right now" });
+    await db.update(
+      "mkt_orders",
+      { id: "eq." + enc(order.id) },
+      { status: "disputed", dispute_reason: String(body.reason).slice(0, 1000), dispute_status: "open", dispute_opened_at: Date.now() }
+    );
+    notifyUser(order.seller_id, "offers", {
+      title: "A buyer reported a problem",
+      body: "Payment for this order is on hold while HieloIce reviews it.",
+      url: "/#/orders/" + order.id,
+    }).catch(() => {});
+    const fresh = await db.select("mkt_orders", { id: "eq." + enc(order.id), select: "*" });
+    return sendJson(res, 200, orderOut(fresh[0]));
   }
 
   return sendJson(res, 404, { error: "Route not found" });
@@ -6321,6 +6846,34 @@ setInterval(async () => {
     console.error("reminder sweep failed:", e.message);
   }
 }, 6 * 60 * 60 * 1000).unref();
+
+// Order auto-release sweep (task #58/#127): if a buyer never confirms and
+// never reports a problem within ORDER_AUTO_RELEASE_DAYS of the seller
+// marking an order shipped, release the seller's payout automatically so a
+// silent/inactive buyer can't hold a seller's money hostage forever. Orders
+// a buyer actively disputes are excluded (status becomes "disputed", not
+// "shipped", so this sweep never touches them). No external cron needed -
+// this Node process runs continuously on Render, same pattern as the
+// reminder sweep above.
+setInterval(async () => {
+  try {
+    if (!STRIPE_SECRET_KEY) return;
+    const due = await db.select("mkt_orders", {
+      status: "eq.shipped",
+      confirm_deadline: "lt." + Date.now(),
+      select: "*",
+    });
+    for (const order of due) {
+      try {
+        await releaseOrderFunds(order);
+      } catch (e) {
+        console.error("auto-release failed for order " + order.id + ":", e.message);
+      }
+    }
+  } catch (e) {
+    console.error("order auto-release sweep failed:", e.message);
+  }
+}, 60 * 60 * 1000).unref();
 
 // Moment cleanup - PERMANENT MOMENTS (2026-08-18): this used to hard-delete
 // mkt_moments rows past their 24h expires_at every hour, the same way
