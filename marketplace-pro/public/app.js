@@ -2956,9 +2956,14 @@ function renderPhotoGrid() {
   let html = "";
   for (let i = 0; i < MAX_PHOTOS; i++) {
     if (photoBuffer[i]) {
-      html += `<div class="photo-slot"><img src="${photoBuffer[i]}" /><button class="remove-photo" data-i="${i}" aria-label="${I18N.t("postAd.removePhoto")}">&times;</button></div>`;
+      html += `
+        <div class="photo-slot">
+          <img src="${photoBuffer[i]}" data-i="${i}" class="photo-slot-img" />
+          <button type="button" class="edit-photo" data-i="${i}" aria-label="${I18N.t("postAd.editPhotoBtn")}">&#9998;</button>
+          <button type="button" class="remove-photo" data-i="${i}" aria-label="${I18N.t("postAd.removePhoto")}">&times;</button>
+        </div>`;
     } else {
-      html += `<div class="photo-slot">+</div>`;
+      html += `<button type="button" class="photo-slot photo-slot-add" aria-label="${I18N.t("postAd.addPhotoSlot")}">+</button>`;
     }
   }
   grid.innerHTML = html;
@@ -2967,6 +2972,164 @@ function renderPhotoGrid() {
       photoBuffer.splice(Number(btn.dataset.i), 1);
       renderPhotoGrid();
     });
+  });
+  // Tapping the photo itself, or the pencil icon, opens the crop/rotate editor
+  // for that slot. Tapping an empty "+" slot opens the same file picker as
+  // the "Elegir archivos" button below, so every "+" is a real, working
+  // shortcut into the folder picker instead of just decoration.
+  grid.querySelectorAll(".edit-photo, .photo-slot-img").forEach((el) => {
+    el.addEventListener("click", () => openPhotoEditor(Number(el.dataset.i)));
+  });
+  grid.querySelectorAll(".photo-slot-add").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const input = document.getElementById("p-photos");
+      if (input) input.click();
+    });
+  });
+}
+
+// ---------------- Photo editor (crop / rotate a single listing photo) ----------------
+// Opened by tapping an existing thumbnail (or its pencil icon) in the Post Ad
+// photo grid. The visible canvas *is* the crop output - drag to pan, the
+// slider to zoom, a button to rotate 90 deg at a time - so "Apply" just reads
+// the canvas back out with toDataURL() instead of needing a separate export
+// step. Kept deliberately simple (no external cropper library, consistent
+// with the rest of this hand-rolled vanilla-JS app).
+function openPhotoEditor(index) {
+  const src = photoBuffer[index];
+  if (!src) return;
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay photo-editor-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box photo-editor-box">
+      <h2 class="section-heading">${I18N.t("postAd.editPhoto")}</h2>
+      <div class="photo-editor-canvas-wrap">
+        <canvas id="photo-editor-canvas" class="photo-editor-canvas" width="800" height="1000"></canvas>
+      </div>
+      <div class="photo-editor-controls">
+        <span class="photo-editor-zoom-icon">&#128269;</span>
+        <input type="range" id="photo-editor-zoom" min="1" max="3" step="0.01" value="1" />
+        <button type="button" class="btn btn-outline" id="photo-editor-rotate">&#8635; ${I18N.t("postAd.rotate")}</button>
+      </div>
+      <div class="action-row">
+        <button class="btn btn-primary" id="photo-editor-apply">${I18N.t("postAd.applyEdit")}</button>
+        <button class="btn btn-secondary" id="photo-editor-cancel">${I18N.t("common.cancel")}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const canvas = document.getElementById("photo-editor-canvas");
+  const ctx = canvas.getContext("2d");
+  const CW = canvas.width;
+  const CH = canvas.height;
+
+  const img = new Image();
+  let rotation = 0;
+  let zoom = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let dragging = false;
+  let lastX = 0;
+  let lastY = 0;
+  let ready = false;
+
+  function fitScale() {
+    const w = rotation % 180 === 0 ? img.naturalWidth : img.naturalHeight;
+    const h = rotation % 180 === 0 ? img.naturalHeight : img.naturalWidth;
+    return Math.max(CW / w, CH / h);
+  }
+
+  function clampOffsets(scale) {
+    const w = (rotation % 180 === 0 ? img.naturalWidth : img.naturalHeight) * scale;
+    const h = (rotation % 180 === 0 ? img.naturalHeight : img.naturalWidth) * scale;
+    const maxX = Math.max(0, (w - CW) / 2);
+    const maxY = Math.max(0, (h - CH) / 2);
+    offsetX = Math.max(-maxX, Math.min(maxX, offsetX));
+    offsetY = Math.max(-maxY, Math.min(maxY, offsetY));
+  }
+
+  function draw() {
+    if (!ready) return;
+    const scale = fitScale() * zoom;
+    clampOffsets(scale);
+    ctx.save();
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, CW, CH);
+    ctx.translate(CW / 2 + offsetX, CH / 2 + offsetY);
+    ctx.rotate((rotation * Math.PI) / 180);
+    ctx.drawImage(
+      img,
+      (-img.naturalWidth * scale) / 2,
+      (-img.naturalHeight * scale) / 2,
+      img.naturalWidth * scale,
+      img.naturalHeight * scale
+    );
+    ctx.restore();
+  }
+
+  img.onload = () => {
+    ready = true;
+    draw();
+  };
+  img.src = src;
+
+  const zoomInput = document.getElementById("photo-editor-zoom");
+  zoomInput.addEventListener("input", () => {
+    zoom = Number(zoomInput.value);
+    draw();
+  });
+
+  document.getElementById("photo-editor-rotate").addEventListener("click", () => {
+    rotation = (rotation + 90) % 360;
+    offsetX = 0;
+    offsetY = 0;
+    zoom = 1;
+    zoomInput.value = "1";
+    draw();
+  });
+
+  function pointFromEvent(e) {
+    return e.touches && e.touches[0] ? e.touches[0] : e;
+  }
+  function pointerDown(e) {
+    if (!ready) return;
+    dragging = true;
+    const p = pointFromEvent(e);
+    lastX = p.clientX;
+    lastY = p.clientY;
+  }
+  function pointerMove(e) {
+    if (!dragging) return;
+    const p = pointFromEvent(e);
+    offsetX += p.clientX - lastX;
+    offsetY += p.clientY - lastY;
+    lastX = p.clientX;
+    lastY = p.clientY;
+    draw();
+    if (e.cancelable) e.preventDefault();
+  }
+  function pointerUp() {
+    dragging = false;
+  }
+  canvas.addEventListener("mousedown", pointerDown);
+  window.addEventListener("mousemove", pointerMove);
+  window.addEventListener("mouseup", pointerUp);
+  canvas.addEventListener("touchstart", pointerDown, { passive: true });
+  canvas.addEventListener("touchmove", pointerMove, { passive: false });
+  canvas.addEventListener("touchend", pointerUp);
+
+  function cleanup() {
+    window.removeEventListener("mousemove", pointerMove);
+    window.removeEventListener("mouseup", pointerUp);
+    overlay.remove();
+  }
+
+  document.getElementById("photo-editor-cancel").addEventListener("click", cleanup);
+  document.getElementById("photo-editor-apply").addEventListener("click", () => {
+    photoBuffer[index] = canvas.toDataURL("image/jpeg", 0.9);
+    cleanup();
+    renderPhotoGrid();
   });
 }
 

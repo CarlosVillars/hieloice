@@ -1258,6 +1258,30 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
    44px comfortable-tap-target guideline) - the visual "x" glyph still
    looks the same size via font-size, just easier to hit on a phone. */
 .photo-slot .remove-photo { position: absolute; top: 0; right: 0; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 32px; height: 32px; font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.photo-slot .edit-photo { position: absolute; bottom: 0; left: 0; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 6px 0 6px 0; width: 32px; height: 28px; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.photo-slot-img { cursor: pointer; }
+/* Empty "+" tiles are real buttons now (openable to the device file picker
+   via p-photos.click()), not decorative divs - reset button chrome so they
+   keep looking exactly like the filled .photo-slot cells. */
+.photo-slot-add { font: inherit; cursor: pointer; font-size: 22px; }
+.photo-slot-add:hover { border-color: var(--gold); color: var(--gold); }
+
+/* ---- Photo editor (crop/rotate) modal, opened from the Post Ad photo grid ---- */
+.photo-editor-box { max-width: 380px; text-align: center; }
+.photo-editor-canvas-wrap { display: flex; justify-content: center; margin: 10px 0; }
+.photo-editor-canvas {
+  width: 100%;
+  max-width: 280px;
+  aspect-ratio: 4 / 5;
+  display: block;
+  border-radius: 10px;
+  background: #000;
+  touch-action: none;
+  cursor: grab;
+}
+.photo-editor-controls { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
+.photo-editor-controls input[type="range"] { flex: 1; }
+.photo-editor-zoom-icon { font-size: 15px; opacity: 0.7; }
 
 /* ---- Profile (Facebook-style: cover photo + overlapping avatar) ---- */
 .profile-cover-wrap { position: relative; margin-bottom: 56px; }
