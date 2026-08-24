@@ -6783,6 +6783,29 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, orderOut(fresh[0]));
   }
 
+  // ---------------- Classics catalog (public-domain books via Project
+  // Gutenberg, sold as new printed copies through Lulu print-on-demand).
+  // Phase 1 only: browsing. No price/purchase field is ever returned here -
+  // that only gets wired once the real, live Lulu cost calculation (Phase 2)
+  // is built and verified, so nobody can ever be shown a wrong price.
+  if (method === "GET" && pathname === "/api/classics") {
+    const filters = { active: "eq.true", order: "author.asc", select: "id,title,author,category,description,cover_url,cover_image_url,cover_image_url_small,cover_artwork_title,cover_artist,cover_object_date" };
+    if (query.category) filters.category = "eq." + enc(query.category);
+    const rows = await db.select("classic_books", filters);
+    return sendJson(res, 200, rows || []);
+  }
+
+  const classicMatch = pathname.match(/^\/api\/classics\/(\d+)$/);
+  if (method === "GET" && classicMatch) {
+    const rows = await db.select("classic_books", {
+      id: "eq." + enc(classicMatch[1]),
+      select: "id,title,author,category,description,cover_url,cover_image_url,cover_image_url_small,cover_artwork_title,cover_artist,cover_object_date",
+    });
+    const book = rows && rows[0];
+    if (!book) return sendJson(res, 404, { error: "Not found" });
+    return sendJson(res, 200, book);
+  }
+
   return sendJson(res, 404, { error: "Route not found" });
 }
 
