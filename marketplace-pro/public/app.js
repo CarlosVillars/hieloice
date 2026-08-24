@@ -1173,10 +1173,6 @@ function openBarcodeScanner(onDetected) {
 function renderMarketplaceHome() {
   viewEl.innerHTML = `
     <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
-    <div class="hero">
-      <h1>${escapeHtml(I18N.t("site.name"))}</h1>
-      <p>${escapeHtml(I18N.t("site.tagline"))}</p>
-    </div>
     <h2 class="section-heading">${I18N.t("home.allBooksHeading")}</h2>
     <div class="product-grid" id="home-all-products"><p>${I18N.t("common.loading")}</p></div>
     <a class="back-link" href="#/category/all">${I18N.t("home.seeAllBooks")} &rarr;</a>
