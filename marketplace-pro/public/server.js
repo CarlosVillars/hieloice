@@ -49,6 +49,16 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 // Until this is set, /api/music/search just answers { configured: false }
 // and the camera falls back to its own generated sound presets (task #203).
 const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID || "";
+// Task #278 - Lulu (lulu.com) print-on-demand: prints and ships a physical
+// copy of a book directly to a customer's address, with no inventory held by
+// HieloIce. Configured against the SANDBOX API by default (see
+// LULU_API_BASE_URL) so nothing here can print or charge anything real until
+// Carlos deliberately points it at https://api.lulu.com with production
+// keys. Client key/secret come from https://developers.lulu.com (or the
+// .sandbox. version) -> Profile -> API Keys -> Generate Client.
+const LULU_CLIENT_KEY = process.env.LULU_CLIENT_KEY || "";
+const LULU_CLIENT_SECRET = process.env.LULU_CLIENT_SECRET || "";
+const LULU_API_BASE_URL = process.env.LULU_API_BASE_URL || "https://api.sandbox.lulu.com";
 if (!ANTHROPIC_API_KEY) {
   console.error("Missing ANTHROPIC_API_KEY - AI photo analysis and AI assistant disabled.");
 }
@@ -230,6 +240,59 @@ function claudeText(data) {
     .map((b) => b.text)
     .join("\n")
     .trim();
+}
+
+// ---------- Lulu (print-on-demand book fulfillment, task #278) ----------
+// OAuth2 client-credentials token, cached in memory and refreshed a little
+// before it actually expires. This is a per-server-process cache (fine here:
+// Render runs this as a single instance), not a DB-backed one - losing it on
+// restart just costs one extra token request, no real consequence.
+let luluTokenCache = { token: "", expiresAt: 0 };
+function getLuluAccessToken() {
+  if (!LULU_CLIENT_KEY || !LULU_CLIENT_SECRET) {
+    return Promise.reject(Object.assign(new Error("Lulu print-on-demand isn't configured yet."), { status: 503 }));
+  }
+  if (luluTokenCache.token && Date.now() < luluTokenCache.expiresAt) {
+    return Promise.resolve(luluTokenCache.token);
+  }
+  const basicAuth = Buffer.from(LULU_CLIENT_KEY + ":" + LULU_CLIENT_SECRET).toString("base64");
+  return httpsRequestJson("POST", LULU_API_BASE_URL + "/auth/realms/glasstree/protocol/openid-connect/token", {
+    headers: {
+      Authorization: "Basic " + basicAuth,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=client_credentials",
+  }).then((data) => {
+    if (!data || !data.access_token) {
+      const err = new Error("Lulu didn't return an access token - check the client key/secret.");
+      err.status = 502;
+      throw err;
+    }
+    luluTokenCache = {
+      token: data.access_token,
+      // Refresh 60s early so a request never fires with an about-to-expire token.
+      expiresAt: Date.now() + (Number(data.expires_in || 3600) - 60) * 1000,
+    };
+    return data.access_token;
+  });
+}
+
+// Authenticated JSON call to any Lulu Print API endpoint (e.g. "/print-job-cost-calculations/").
+async function luluApiRequest(method, path, bodyObj) {
+  const token = await getLuluAccessToken();
+  const data = await httpsRequestJson(method, LULU_API_BASE_URL + path, {
+    headers: {
+      Authorization: "Bearer " + token,
+      "Content-Type": "application/json",
+    },
+    body: bodyObj !== undefined ? JSON.stringify(bodyObj) : undefined,
+  });
+  if (data && data.detail && !data.access_token) {
+    const err = new Error(typeof data.detail === "string" ? data.detail : "Lulu API request failed");
+    err.status = 502;
+    throw err;
+  }
+  return data;
 }
 
 const db = {
@@ -5916,6 +5979,24 @@ async function handleApi(req, res, pathname, query) {
   if (pathname.startsWith("/api/admin/")) {
     const me = await getAuthUser(req);
     if (!isAdmin(me)) return sendJson(res, 403, { error: "Not authorized" });
+
+    // GET /api/admin/lulu-status - admin-only, read-only connectivity check
+    // for the Lulu print-on-demand integration (task #278). Does nothing
+    // more than request an OAuth token from Lulu using the configured
+    // LULU_CLIENT_KEY/SECRET - it never creates a cost calculation or a
+    // print job, so it's completely free and side-effect-free to call as
+    // often as needed while setting this up.
+    if (method === "GET" && pathname === "/api/admin/lulu-status") {
+      if (!LULU_CLIENT_KEY || !LULU_CLIENT_SECRET) {
+        return sendJson(res, 200, { configured: false, connected: false, message: "LULU_CLIENT_KEY/LULU_CLIENT_SECRET are not set on the server yet." });
+      }
+      try {
+        await getLuluAccessToken();
+        return sendJson(res, 200, { configured: true, connected: true, baseUrl: LULU_API_BASE_URL, message: "Connected to Lulu successfully." });
+      } catch (e) {
+        return sendJson(res, 200, { configured: true, connected: false, baseUrl: LULU_API_BASE_URL, message: (e && e.message) || "Could not connect to Lulu." });
+      }
+    }
 
     // GET /api/admin/users?q=&suspended=true&flagged=true
     if (method === "GET" && pathname === "/api/admin/users") {

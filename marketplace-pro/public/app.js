@@ -11721,6 +11721,7 @@ function adminTabsMarkup(active) {
     { key: "products", label: I18N.t("admin.tabProducts") },
     { key: "users", label: I18N.t("admin.tabUsers") },
     { key: "books", label: I18N.t("admin.tabBooks") },
+    { key: "integrations", label: I18N.t("admin.tabIntegrations") },
   ];
   return `<div class="admin-tabs">${tabs
     .map((t) => `<a href="#/admin/${t.key}" class="admin-tab${active === t.key ? " active" : ""}">${t.label}</a>`)
@@ -11741,7 +11742,42 @@ async function renderAdminPanel(section) {
   if (section === "users") return renderAdminUsers();
   if (section === "products") return renderAdminProducts();
   if (section === "books") return renderAdminBookSubmissions();
+  if (section === "integrations") return renderAdminIntegrations();
   return renderAdminReports();
+}
+
+// Task #278 - a simple one-click way for a non-technical admin to check
+// whether the Lulu print-on-demand connection is actually working, without
+// touching any code or curl. Read-only: never creates a cost calculation or
+// a print job, just asks the server to fetch an OAuth token from Lulu.
+async function renderAdminIntegrations() {
+  const content = document.getElementById("admin-content");
+  content.innerHTML = `
+    <div class="form-panel">
+      <h3 class="section-heading" style="font-size:16px;">${I18N.t("admin.luluTitle")}</h3>
+      <p style="color:var(--text-secondary);font-size:13px;">${I18N.t("admin.luluDesc")}</p>
+      <button class="btn btn-primary" id="lulu-check-btn">${I18N.t("admin.luluCheckButton")}</button>
+      <div id="lulu-status-result" style="margin-top:14px;"></div>
+    </div>
+  `;
+  const resultEl = document.getElementById("lulu-status-result");
+  async function checkStatus() {
+    resultEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    try {
+      const data = await api("/api/admin/lulu-status", { auth: true });
+      if (!data.configured) {
+        resultEl.innerHTML = `<p class="form-msg error">${I18N.t("admin.luluNotConfigured")}</p>`;
+      } else if (data.connected) {
+        resultEl.innerHTML = `<p class="form-msg success">✅ ${I18N.t("admin.luluConnected")} (${escapeHtml(data.baseUrl || "")})</p>`;
+      } else {
+        resultEl.innerHTML = `<p class="form-msg error">❌ ${escapeHtml(data.message || I18N.t("admin.luluFailed"))}</p>`;
+      }
+    } catch (e) {
+      resultEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    }
+  }
+  document.getElementById("lulu-check-btn").addEventListener("click", checkStatus);
+  checkStatus();
 }
 
 // Task #244 - team review queue for the "Publish a Book" independent-
