@@ -902,12 +902,11 @@ function openBrowseCategoriesOverlay() {
 function renderHome() {
   if (!state.token) return renderMarketplaceHome();
 
-  // No ad-carousel here on purpose: Home is now a full-bleed content feed,
-  // and a banner above it would eat into the swipe viewport and compete
-  // with the feed the same way the old friends-post list used to. Ads still
-  // run on Marketplace (renderMarketplaceHome), which is the shopping-intent
-  // page where they belong.
+  // Ad carousel restored here per Carlos's request (moved back from
+  // Marketplace, where it had been living): sits above the stories strip,
+  // same as the original Home layout.
   viewEl.innerHTML = `
+    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
     <div class="home-stories-strip" id="home-stories-strip">
       <div class="moments-bar" id="home-loops-bar"></div>
     </div>
@@ -926,6 +925,7 @@ function renderHome() {
   });
   wireHomeSwipeFeedResize();
   sizeHomeSwipeFeed();
+  loadAdCarousel();
   loadHomeStoriesStrip();
   loadHomeSwipeFeed();
 }
@@ -1172,7 +1172,6 @@ function openBarcodeScanner(onDetected) {
 // guests at "#/" and by logged-in users via the Marketplace icon-nav button.
 function renderMarketplaceHome() {
   viewEl.innerHTML = `
-    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
     <h2 class="section-heading">${I18N.t("home.allBooksHeading")}</h2>
     <div class="product-grid" id="home-all-products"><p>${I18N.t("common.loading")}</p></div>
     <a class="back-link" href="#/category/all">${I18N.t("home.seeAllBooks")} &rarr;</a>
@@ -1196,7 +1195,6 @@ function renderMarketplaceHome() {
   `;
   const toggleBtn = document.getElementById("toggle-categories-btn");
   if (toggleBtn) toggleBtn.addEventListener("click", openBrowseCategoriesOverlay);
-  loadAdCarousel();
   loadAllProductsPreview();
   loadClassicsPreview();
 }
@@ -2978,7 +2976,16 @@ function renderPhotoGrid() {
   // the "Elegir archivos" button below, so every "+" is a real, working
   // shortcut into the folder picker instead of just decoration.
   grid.querySelectorAll(".edit-photo, .photo-slot-img").forEach((el) => {
-    el.addEventListener("click", () => openPhotoEditor(Number(el.dataset.i)));
+    el.addEventListener("click", () => {
+      const i = Number(el.dataset.i);
+      openPhotoEditor({
+        src: photoBuffer[i],
+        onApply: (out) => {
+          photoBuffer[i] = out;
+          renderPhotoGrid();
+        },
+      });
+    });
   });
   grid.querySelectorAll(".photo-slot-add").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -2988,15 +2995,21 @@ function renderPhotoGrid() {
   });
 }
 
-// ---------------- Photo editor (crop / rotate a single listing photo) ----------------
-// Opened by tapping an existing thumbnail (or its pencil icon) in the Post Ad
-// photo grid. The visible canvas *is* the crop output - drag to pan, the
-// slider to zoom, a button to rotate 90 deg at a time - so "Apply" just reads
-// the canvas back out with toDataURL() instead of needing a separate export
-// step. Kept deliberately simple (no external cropper library, consistent
-// with the rest of this hand-rolled vanilla-JS app).
-function openPhotoEditor(index) {
-  const src = photoBuffer[index];
+// ---------------- Photo editor (crop / rotate / AI-improve a listing photo) ----------------
+// Opened both from the Post Ad photo grid (tapping an existing thumbnail or
+// its pencil icon) and from the guided-capture review screen (a "Crop"
+// button right after a shot is taken) - one shared editor, called with
+// { src, onApply } so each caller decides where the result gets written back
+// to (photoBuffer[i] vs. a guidedCapture shot). The visible canvas *is* the
+// crop output - drag to pan, the slider to zoom, a button to rotate 90 deg -
+// so "Apply" just reads the canvas back out with toDataURL(). The "Mejorar
+// con IA" button sends that same canvas to /api/ai/suggest-photo-fix, which
+// reviews focus/lighting/framing/how-clearly-the-condition-shows and returns
+// brightness/contrast/saturation multipliers; those are applied live via
+// ctx.filter as a preview the seller can keep (Apply) or discard (Cancel) -
+// the AI never edits pixels itself, it only proposes numbers this canvas
+// then renders.
+function openPhotoEditor({ src, onApply }) {
   if (!src) return;
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay photo-editor-overlay";
@@ -3011,6 +3024,8 @@ function openPhotoEditor(index) {
         <input type="range" id="photo-editor-zoom" min="1" max="3" step="0.01" value="1" />
         <button type="button" class="btn btn-outline" id="photo-editor-rotate">&#8635; ${I18N.t("postAd.rotate")}</button>
       </div>
+      <button type="button" class="btn btn-ai-suggest" id="photo-editor-ai-btn" style="width:100%;margin-bottom:10px;">&#10024; ${I18N.t("postAd.aiImprovePhoto")}</button>
+      <p class="post-isbn-lookup-hint" id="photo-editor-ai-hint"></p>
       <div class="action-row">
         <button class="btn btn-primary" id="photo-editor-apply">${I18N.t("postAd.applyEdit")}</button>
         <button class="btn btn-secondary" id="photo-editor-cancel">${I18N.t("common.cancel")}</button>
@@ -3033,6 +3048,9 @@ function openPhotoEditor(index) {
   let lastX = 0;
   let lastY = 0;
   let ready = false;
+  let brightness = 1;
+  let contrast = 1;
+  let saturation = 1;
 
   function fitScale() {
     const w = rotation % 180 === 0 ? img.naturalWidth : img.naturalHeight;
@@ -3056,6 +3074,7 @@ function openPhotoEditor(index) {
     ctx.save();
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, CW, CH);
+    ctx.filter = `brightness(${brightness}) contrast(${contrast}) saturate(${saturation})`;
     ctx.translate(CW / 2 + offsetX, CH / 2 + offsetY);
     ctx.rotate((rotation * Math.PI) / 180);
     ctx.drawImage(
@@ -3127,9 +3146,51 @@ function openPhotoEditor(index) {
 
   document.getElementById("photo-editor-cancel").addEventListener("click", cleanup);
   document.getElementById("photo-editor-apply").addEventListener("click", () => {
-    photoBuffer[index] = canvas.toDataURL("image/jpeg", 0.9);
+    const out = canvas.toDataURL("image/jpeg", 0.9);
     cleanup();
-    renderPhotoGrid();
+    onApply(out);
+  });
+
+  const aiBtn = document.getElementById("photo-editor-ai-btn");
+  const aiHint = document.getElementById("photo-editor-ai-hint");
+  aiBtn.addEventListener("click", async () => {
+    if (!ready) return;
+    aiBtn.disabled = true;
+    aiHint.textContent = I18N.t("postAd.aiPhotoThinking");
+    aiHint.className = "post-isbn-lookup-hint";
+    try {
+      // Send exactly what's currently framed (crop/rotate/zoom already
+      // applied) so the AI reviews the same thing the seller is about to
+      // publish, not the original unedited photo.
+      const currentFilter = ctx.filter;
+      ctx.filter = "none";
+      draw();
+      ctx.filter = "brightness(1) contrast(1) saturate(1)";
+      const snapshot = canvas.toDataURL("image/jpeg", 0.9);
+      ctx.filter = currentFilter;
+      draw();
+      const data = await api("/api/ai/suggest-photo-fix", {
+        method: "POST",
+        auth: true,
+        body: { image: snapshot, locale: I18N.lang },
+      });
+      brightness = data.brightness || 1;
+      contrast = data.contrast || 1;
+      saturation = data.saturation || 1;
+      draw();
+      let msg = data.issues && data.issues.length ? data.issues.join(" · ") + ". " : "";
+      msg += data.suggestion || (data.quality === "good" ? I18N.t("postAd.aiPhotoGood") : "");
+      const noAdjust = brightness === 1 && contrast === 1 && saturation === 1;
+      if (!noAdjust) msg += " " + I18N.t("postAd.aiPhotoApplied");
+      if (data.cropSuggested) msg += " " + I18N.t("postAd.aiPhotoCropHint");
+      aiHint.textContent = msg.trim();
+      aiHint.className = "post-isbn-lookup-hint " + (data.quality === "poor" ? "error" : "ok");
+    } catch (e) {
+      aiHint.textContent = e.message || I18N.t("postAd.aiPhotoError");
+      aiHint.className = "post-isbn-lookup-hint error";
+    } finally {
+      aiBtn.disabled = false;
+    }
   });
 }
 
@@ -3264,6 +3325,7 @@ function drawGuidedCapture() {
       ${
         shot.dataUrl
           ? `<button class="btn btn-secondary" id="guided-retake">${I18N.t("postAd.guidedRetake")}</button>
+             <button class="btn btn-outline" id="guided-crop">&#9986; ${I18N.t("postAd.cropBtn")}</button>
              <button class="btn btn-primary" id="guided-next">${guidedCapture.index === n - 1 ? I18N.t("postAd.guidedFinish") : I18N.t("postAd.guidedNext")}</button>`
           : `<div class="wizard-fs-capture-wrap"><button class="wizard-fs-capture-btn" id="guided-shutter" aria-label="${I18N.t("create.capturePhoto")}"></button></div>`
       }
@@ -3278,6 +3340,20 @@ function drawGuidedCapture() {
   if (shot.dataUrl) {
     document.getElementById("guided-retake").addEventListener("click", guidedRetake);
     document.getElementById("guided-next").addEventListener("click", guidedAdvance);
+    // Crop right here in the review step, per Carlos's requirement that the
+    // seller be able to remove anything outside the book "al momento de
+    // tomar las fotografias" - not just later in the Post Ad grid. Same
+    // shared editor, writes the result back into this exact shot.
+    document.getElementById("guided-crop").addEventListener("click", () => {
+      const shotIndex = guidedCapture.index;
+      openPhotoEditor({
+        src: guidedCapture.shots[shotIndex].dataUrl,
+        onApply: (out) => {
+          guidedCapture.shots[shotIndex].dataUrl = out;
+          drawGuidedCapture();
+        },
+      });
+    });
   } else {
     const shutter = document.getElementById("guided-shutter");
     if (shutter) shutter.addEventListener("click", guidedCaptureShot);
