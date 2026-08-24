@@ -59,6 +59,33 @@ const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID || "";
 const LULU_CLIENT_KEY = process.env.LULU_CLIENT_KEY || "";
 const LULU_CLIENT_SECRET = process.env.LULU_CLIENT_SECRET || "";
 const LULU_API_BASE_URL = process.env.LULU_API_BASE_URL || "https://api.sandbox.lulu.com";
+// Task #313 phase 2, per Carlos's decision 2026-08-24: buyers should be able
+// to pick their own real carrier/rate (USPS, FedEx, UPS...) instead of a
+// single guessed flat fee, and HieloIce should earn a small, disclosed
+// commission on every shipment it facilitates rather than hide it in the
+// price. EasyPost (easypost.com) is the label-purchase API this runs on -
+// free "Wallet Carriers" plan covers up to 3,000 labels/month with no
+// monthly fee and already-discounted USPS/UPS/FedEx rates, no need for
+// Carlos to open a separate account with each carrier. Get a key at
+// https://www.easypost.com -> sign up -> API Keys. Until this is set, the
+// site automatically falls back to the old flat $4.99 fee (SHIPPING_FLAT_FEE
+// below) so nothing breaks - see EASYPOST_ENABLED.
+const EASYPOST_API_KEY = process.env.EASYPOST_API_KEY || "";
+const EASYPOST_ENABLED = !!EASYPOST_API_KEY;
+if (!EASYPOST_ENABLED) {
+  console.error("Missing EASYPOST_API_KEY - using flat-fee shipping fallback (real carrier rates disabled).");
+}
+// HieloIce's commission on top of the real carrier rate EasyPost quotes, per
+// Carlos's decision 2026-08-24. Applied to every live rate before it's shown
+// to the buyer, so it's baked into the price they see and pick - never a
+// surprise add-on at the end. 0.10 = 10%.
+const SHIPPING_COMMISSION_RATE = 0.10;
+// Default parcel used for rate-shopping since HieloIce doesn't collect
+// per-listing weight/dimensions yet - a single used book, padded envelope.
+// Good enough for the vast majority of listings; a seller with something
+// unusually heavy (e.g. a boxed set) can be revisited later if it becomes a
+// real problem. Weight in ounces, dimensions in inches (EasyPost's units).
+const DEFAULT_BOOK_PARCEL = { length: 9, width: 6, height: 1.5, weight: 16 };
 if (!ANTHROPIC_API_KEY) {
   console.error("Missing ANTHROPIC_API_KEY - AI photo analysis and AI assistant disabled.");
 }
@@ -403,6 +430,83 @@ async function stripeRequest(method, path, params) {
   return data;
 }
 
+// EasyPost REST helper (task #313 phase 2) - same "throw a clear 503 if not
+// configured" pattern as stripeRequest above. EasyPost uses HTTP Basic auth
+// with the API key as the username and a blank password, and a plain JSON
+// body/response (unlike Stripe's form-encoded style).
+async function easypostRequest(method, path, jsonBody) {
+  if (!EASYPOST_ENABLED) {
+    const err = new Error("Live shipping rates aren't configured on the server yet.");
+    err.status = 503;
+    throw err;
+  }
+  const body = jsonBody !== undefined ? JSON.stringify(jsonBody) : undefined;
+  const data = await httpsRequestJson(method, "https://api.easypost.com/v2" + path, {
+    headers: {
+      Authorization: "Basic " + Buffer.from(EASYPOST_API_KEY + ":").toString("base64"),
+      "Content-Type": "application/json",
+    },
+    body,
+  });
+  if (data && data.error) {
+    const err = new Error((data.error.message || (data.error.errors && data.error.errors[0] && data.error.errors[0].message)) || "EasyPost request failed");
+    err.status = 502;
+    throw err;
+  }
+  return data;
+}
+
+// Builds an EasyPost "shipment" request for a given seller->buyer pair, using
+// the default book parcel (see DEFAULT_BOOK_PARCEL). Returns the raw
+// EasyPost shipment object, which includes a `rates` array (one per
+// carrier/service combo EasyPost could quote for this route).
+async function createShipmentForRates(seller, toAddress) {
+  if (!seller.ship_from_line1) {
+    const err = new Error("This seller hasn't set up a shipping address yet, so this listing can't be purchased right now.");
+    err.status = 400;
+    throw err;
+  }
+  return easypostRequest("POST", "/shipments", {
+    shipment: {
+      from_address: {
+        name: seller.ship_from_name || undefined,
+        street1: seller.ship_from_line1,
+        street2: seller.ship_from_line2 || undefined,
+        city: seller.ship_from_city || undefined,
+        state: seller.ship_from_state || undefined,
+        zip: seller.ship_from_postal_code || undefined,
+        country: seller.ship_from_country || "US",
+      },
+      to_address: {
+        name: toAddress.name || undefined,
+        street1: toAddress.line1,
+        street2: toAddress.line2 || undefined,
+        city: toAddress.city || undefined,
+        state: toAddress.state || undefined,
+        zip: toAddress.postalCode || undefined,
+        country: toAddress.country || "US",
+      },
+      parcel: DEFAULT_BOOK_PARCEL,
+    },
+  });
+}
+
+// Applies HieloIce's disclosed commission (SHIPPING_COMMISSION_RATE) on top
+// of a raw EasyPost rate and shapes it for the frontend's rate picker.
+// Cheapest-first is left to the caller (sort after mapping).
+function rateWithCommission(r) {
+  const base = Number(r.rate) || 0;
+  const price = Math.round(base * (1 + SHIPPING_COMMISSION_RATE) * 100) / 100;
+  return {
+    id: r.id,
+    carrier: r.carrier,
+    service: r.service,
+    deliveryDays: r.delivery_days != null ? r.delivery_days : null,
+    price,
+    baseRate: base,
+  };
+}
+
 // Reads the raw (unparsed) request body - needed for the Stripe webhook,
 // whose signature is computed over the exact bytes Stripe sent.
 function readRawBody(req) {
@@ -454,7 +558,7 @@ function orderOut(o) {
     released_at, dispute_reason, dispute_status, dispute_opened_at, created_at,
     shipping_name, shipping_line1, shipping_line2, shipping_city, shipping_state,
     shipping_postal_code, shipping_country, tracking_carrier, tracking_number,
-    shipping_fee,
+    shipping_fee, easypost_shipment_id, easypost_rate_id, label_url, carrier_base_rate,
     ...rest
   } = o;
   // Buyer-provided delivery address (basic shipping, task #312): filled in by
@@ -490,6 +594,7 @@ function orderOut(o) {
     trackingCarrier: tracking_carrier || null,
     trackingNumber: tracking_number || null,
     shippingFee: shipping_fee != null ? Number(shipping_fee) : 0,
+    labelUrl: label_url || null,
   };
 }
 
@@ -671,7 +776,13 @@ function ownUser(u) {
 
 function toCamelUser(u) {
   if (!u) return u;
-  const { created_at, cover_photo, chat_privacy, is_page, page_category, subscription_mode, suspended_reason, suspended_at, is_premium, ...rest } = u;
+  const {
+    created_at, cover_photo, chat_privacy, is_page, page_category, subscription_mode,
+    suspended_reason, suspended_at, is_premium,
+    ship_from_name, ship_from_line1, ship_from_line2, ship_from_city,
+    ship_from_state, ship_from_postal_code, ship_from_country,
+    ...rest
+  } = u;
   return {
     ...rest,
     createdAt: created_at,
@@ -684,6 +795,13 @@ function toCamelUser(u) {
     suspendedReason: suspended_reason || "",
     suspendedAt: suspended_at || null,
     isPremium: !!is_premium,
+    shipFromName: ship_from_name || "",
+    shipFromLine1: ship_from_line1 || "",
+    shipFromLine2: ship_from_line2 || "",
+    shipFromCity: ship_from_city || "",
+    shipFromState: ship_from_state || "",
+    shipFromPostalCode: ship_from_postal_code || "",
+    shipFromCountry: ship_from_country || "",
   };
 }
 
@@ -1634,6 +1752,18 @@ async function handleApi(req, res, pathname, query) {
     if (body.subscriptionMode !== undefined && ["auto", "manual"].includes(body.subscriptionMode)) {
       patch.subscription_mode = body.subscriptionMode;
     }
+    // Task #313 phase 2: a seller's real ship-from street address, needed by
+    // EasyPost to quote live carrier rates and actually print a label. Kept
+    // separate from the free-text "location" field above (which is just a
+    // display string like "Glennville, GA") since carriers need structured,
+    // validatable fields.
+    if (body.shipFromName !== undefined) patch.ship_from_name = String(body.shipFromName).trim().slice(0, 100);
+    if (body.shipFromLine1 !== undefined) patch.ship_from_line1 = String(body.shipFromLine1).trim().slice(0, 150);
+    if (body.shipFromLine2 !== undefined) patch.ship_from_line2 = String(body.shipFromLine2).trim().slice(0, 150);
+    if (body.shipFromCity !== undefined) patch.ship_from_city = String(body.shipFromCity).trim().slice(0, 100);
+    if (body.shipFromState !== undefined) patch.ship_from_state = String(body.shipFromState).trim().slice(0, 100);
+    if (body.shipFromPostalCode !== undefined) patch.ship_from_postal_code = String(body.shipFromPostalCode).trim().slice(0, 20);
+    if (body.shipFromCountry !== undefined) patch.ship_from_country = String(body.shipFromCountry).trim().slice(0, 2).toUpperCase();
     const updated = await db.update("mkt_users", { id: "eq." + enc(me.id) }, patch);
     const u = updated && updated[0];
     const rating = await userRatingSummary(u.id);
@@ -1936,6 +2066,11 @@ async function handleApi(req, res, pathname, query) {
     out.sellerSalesCount = trust.salesCount;
     out.sellerVerified = seller ? computeVerifiedSeller(seller, trust.salesCount) : false;
     out.sellerPaymentsReady = !!(seller && seller.stripe_payouts_enabled);
+    // Task #313 phase 2 - tells the frontend whether it's worth showing the
+    // live shipping-rate picker at checkout at all. False until Carlos adds
+    // EASYPOST_API_KEY, in which case checkout stays exactly as it was
+    // before (flat fee, Stripe collects the address).
+    out.liveShippingEnabled = EASYPOST_ENABLED;
     out.saveCount = (savedRows || []).length;
     const me = await getAuthUser(req);
     out.saved = !!(me && savedRows.some((r) => r.user_id === me.id));
@@ -6705,6 +6840,36 @@ async function handleApi(req, res, pathname, query) {
               { id: "eq." + enc(orderId) },
               { status: "paid_held", stripe_payment_intent_id: session.payment_intent || null, ...shippingFields }
             );
+
+            // Task #313 phase 2: if the buyer went through the live rate
+            // picker, the order already has an EasyPost shipment + the exact
+            // rate they picked (see POST /api/orders above) - now that
+            // payment has actually cleared, buy that label for real. This
+            // gets the seller a ready-to-print label and the buyer a real
+            // tracking number automatically, no manual typing needed. Not
+            // fatal if it fails - the payment already succeeded and is held
+            // safely in escrow; the seller can still fall back to entering
+            // their own tracking number by hand (POST /api/orders/:id/ship).
+            if (EASYPOST_ENABLED && order.easypost_shipment_id && order.easypost_rate_id) {
+              try {
+                const bought = await easypostRequest(
+                  "POST",
+                  "/shipments/" + encodeURIComponent(order.easypost_shipment_id) + "/buy",
+                  { rate: { id: order.easypost_rate_id } }
+                );
+                const labelUrl = bought.postage_label && bought.postage_label.label_url;
+                const trackingCode = bought.tracking_code || (bought.tracker && bought.tracker.tracking_code) || null;
+                const carrierName = (bought.selected_rate && bought.selected_rate.carrier) || null;
+                await db.update(
+                  "mkt_orders",
+                  { id: "eq." + enc(orderId) },
+                  { label_url: labelUrl || null, tracking_number: trackingCode, tracking_carrier: carrierName }
+                );
+              } catch (e) {
+                console.error("EasyPost label purchase failed for order " + orderId + ":", e.message);
+              }
+            }
+
             notifyUser(order.seller_id, "offers", {
               title: "You made a sale!",
               body: "Someone bought your listing. Ship it and mark it as shipped to start the payout clock.",
@@ -6789,6 +6954,56 @@ async function handleApi(req, res, pathname, query) {
     }
   }
 
+  // POST /api/orders/shipping-rates - task #313 phase 2. Buyer has entered
+  // their shipping address; this asks EasyPost what it would actually cost
+  // to mail this book from the seller's address to theirs, via every carrier
+  // EasyPost can quote (USPS, UPS, FedEx...), and returns each option with
+  // HieloIce's disclosed commission already added, cheapest first, so the
+  // buyer picks freely. If EASYPOST_API_KEY isn't configured yet, returns
+  // configured:false so the frontend can fall back to the old flat fee.
+  if (method === "POST" && pathname === "/api/orders/shipping-rates") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    if (!EASYPOST_ENABLED) return sendJson(res, 200, { configured: false });
+
+    const body = await readBody(req);
+    const productId = body.productId;
+    const addr = body.address || {};
+    if (!productId) return sendJson(res, 400, { error: "productId is required" });
+    if (!addr.line1 || !addr.city || !addr.postalCode || !addr.country) {
+      return sendJson(res, 400, { error: "A complete shipping address is required" });
+    }
+
+    const products = await db.select("mkt_products", { id: "eq." + enc(productId), select: "id,seller_id,status" });
+    const product = products && products[0];
+    if (!product) return sendJson(res, 404, { error: "Product not found" });
+    if (product.seller_id === me.id) return sendJson(res, 400, { error: "You cannot buy your own listing" });
+    if (product.status && product.status !== "active") return sendJson(res, 400, { error: "This listing is no longer available" });
+
+    const sellers = await db.select("mkt_users", {
+      id: "eq." + enc(product.seller_id),
+      select: "stripe_payouts_enabled,ship_from_name,ship_from_line1,ship_from_line2,ship_from_city,ship_from_state,ship_from_postal_code,ship_from_country",
+    });
+    const seller = sellers && sellers[0];
+    if (!seller || !seller.stripe_payouts_enabled) {
+      return sendJson(res, 400, { error: "This seller hasn't finished setting up payments yet, so this listing can't be purchased right now." });
+    }
+
+    try {
+      const shipment = await createShipmentForRates(seller, addr);
+      const rates = (shipment.rates || [])
+        .map(rateWithCommission)
+        .filter((r) => r.price > 0)
+        .sort((a, b) => a.price - b.price);
+      if (!rates.length) {
+        return sendJson(res, 200, { configured: true, shipmentId: shipment.id, rates: [] });
+      }
+      return sendJson(res, 200, { configured: true, shipmentId: shipment.id, rates });
+    } catch (e) {
+      return sendJson(res, e.status || 502, { error: e.message || "Could not fetch live shipping rates" });
+    }
+  }
+
   // POST /api/orders - buyer starts a real purchase on a marketplace listing.
   // The buyer's card is charged in full by HieloIce's own platform account;
   // the seller's cut is only transferred out later (see releaseOrderFunds).
@@ -6817,10 +7032,40 @@ async function handleApi(req, res, pathname, query) {
     const sellerPayout = Math.round((amount - platformFee) * 100) / 100;
 
     // Seller payout math is based only on the book's price, never on the
-    // shipping fee - the shipping fee is HieloIce's, meant to cover the
-    // actual postage cost when the label eventually gets bought (task #312
-    // phase 2), not something the seller's 90% cut is computed against.
-    const shippingFee = SHIPPING_FLAT_FEE;
+    // shipping fee - the shipping fee is HieloIce's/the carrier's, never
+    // something the seller's cut is computed against.
+    //
+    // Task #313 phase 2, per Carlos's decision 2026-08-24: if the buyer went
+    // through the live rate picker (see POST /api/orders/shipping-rates),
+    // body carries the EasyPost shipmentId/rateId/address they chose. We
+    // re-fetch the shipment from EasyPost ourselves rather than trusting a
+    // client-supplied price, so a tampered request can't under-pay for
+    // shipping. If no rate was chosen (buyer never saw the picker, or
+    // EASYPOST_API_KEY isn't configured yet), fall back to the old flat fee
+    // so checkout never breaks.
+    let shippingFee = SHIPPING_FLAT_FEE;
+    let easypostShipmentId = null;
+    let easypostRateId = null;
+    let carrierBaseRate = null;
+    let shippingLineLabel = "Shipping";
+    let buyerAddress = null;
+    let useStripeAddressCollection = true;
+
+    if (EASYPOST_ENABLED && body.shipmentId && body.rateId && body.address && body.address.line1) {
+      const shipment = await easypostRequest("GET", "/shipments/" + encodeURIComponent(body.shipmentId));
+      const chosenRate = (shipment.rates || []).find((r) => r.id === body.rateId);
+      if (!chosenRate) {
+        return sendJson(res, 400, { error: "That shipping option is no longer available - please pick again." });
+      }
+      const marked = rateWithCommission(chosenRate);
+      shippingFee = marked.price;
+      carrierBaseRate = marked.baseRate;
+      easypostShipmentId = shipment.id;
+      easypostRateId = chosenRate.id;
+      shippingLineLabel = "Shipping - " + marked.carrier + " " + marked.service;
+      buyerAddress = body.address;
+      useStripeAddressCollection = false; // we already have a verified address, no need to collect it twice
+    }
 
     const order = {
       id: crypto.randomBytes(8).toString("hex"),
@@ -6834,11 +7079,23 @@ async function handleApi(req, res, pathname, query) {
       currency: "usd",
       status: "pending_payment",
       created_at: Date.now(),
+      easypost_shipment_id: easypostShipmentId,
+      easypost_rate_id: easypostRateId,
+      carrier_base_rate: carrierBaseRate,
     };
+    if (buyerAddress) {
+      order.shipping_name = buyerAddress.name || null;
+      order.shipping_line1 = buyerAddress.line1 || null;
+      order.shipping_line2 = buyerAddress.line2 || null;
+      order.shipping_city = buyerAddress.city || null;
+      order.shipping_state = buyerAddress.state || null;
+      order.shipping_postal_code = buyerAddress.postalCode || null;
+      order.shipping_country = buyerAddress.country || null;
+    }
     await db.insert("mkt_orders", order);
 
     const base = baseUrl(req);
-    const session = await stripeRequest("POST", "/checkout/sessions", {
+    const sessionParams = {
       mode: "payment",
       line_items: [
         {
@@ -6858,15 +7115,20 @@ async function handleApi(req, res, pathname, query) {
           price_data: {
             currency: "usd",
             unit_amount: Math.round(shippingFee * 100),
-            product_data: { name: "Shipping" },
+            product_data: { name: shippingLineLabel },
           },
         },
       ],
       metadata: { order_id: order.id },
-      shipping_address_collection: { allowed_countries: SHIPPING_ALLOWED_COUNTRIES },
       success_url: base + "/#/orders/" + order.id + "?checkout=success",
       cancel_url: base + "/#/products/" + product.id + "?checkout=cancelled",
-    });
+    };
+    // Only ask Stripe's own checkout page to collect an address when we
+    // don't already have a verified one from the live rate picker above.
+    if (useStripeAddressCollection) {
+      sessionParams.shipping_address_collection = { allowed_countries: SHIPPING_ALLOWED_COUNTRIES };
+    }
+    const session = await stripeRequest("POST", "/checkout/sessions", sessionParams);
 
     await db.update("mkt_orders", { id: "eq." + enc(order.id) }, { stripe_checkout_session_id: session.id });
     return sendJson(res, 201, { orderId: order.id, checkoutUrl: session.url });
@@ -6925,9 +7187,15 @@ async function handleApi(req, res, pathname, query) {
     // get stuck if they haven't shipped yet in person, but strongly
     // encouraged client-side: without it, the buyer has no way to see the
     // book is actually moving, which is the whole point of doing this.
+    //
+    // Task #313 phase 2: if EasyPost already auto-purchased a label for this
+    // order (see the webhook), tracking_carrier/tracking_number are already
+    // filled in - only overwrite them here if the seller actually typed
+    // something, so submitting this form with the fields left blank never
+    // wipes out a real, already-correct tracking number.
     const body = await readBody(req);
-    const trackingCarrier = body.trackingCarrier ? String(body.trackingCarrier).trim().slice(0, 60) : null;
-    const trackingNumber = body.trackingNumber ? String(body.trackingNumber).trim().slice(0, 100) : null;
+    const trackingCarrier = body.trackingCarrier ? String(body.trackingCarrier).trim().slice(0, 60) : order.tracking_carrier || null;
+    const trackingNumber = body.trackingNumber ? String(body.trackingNumber).trim().slice(0, 100) : order.tracking_number || null;
     const now = Date.now();
     const deadline = now + ORDER_AUTO_RELEASE_DAYS * 24 * 60 * 60 * 1000;
     await db.update(
