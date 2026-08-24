@@ -3011,30 +3011,43 @@ function renderPhotoGrid() {
 // then renders.
 function openPhotoEditor({ src, onApply }) {
   if (!src) return;
+  // Guard against a second overlay stacking on top of the first (e.g. the
+  // user tapping Crop/pencil more than once before the modal finishes
+  // mounting - easy to do, and it's what happened to Carlos). Two overlays
+  // both using the same element ids meant document.getElementById() always
+  // resolved to the FIRST (hidden, underneath) one, so the buttons the user
+  // could actually see and tap had no listeners attached - a dead screen
+  // with no way out. Fix: only ever allow one instance, and look up every
+  // element scoped to *this* overlay (overlay.querySelector) instead of the
+  // global document, so this class of bug can't happen even indirectly.
+  const already = document.getElementById("photo-editor-overlay");
+  if (already) already.remove();
+
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay photo-editor-overlay";
+  overlay.id = "photo-editor-overlay";
   overlay.innerHTML = `
     <div class="modal-box photo-editor-box">
       <h2 class="section-heading">${I18N.t("postAd.editPhoto")}</h2>
       <div class="photo-editor-canvas-wrap">
-        <canvas id="photo-editor-canvas" class="photo-editor-canvas" width="800" height="1000"></canvas>
+        <canvas class="photo-editor-canvas" data-role="canvas" width="800" height="1000"></canvas>
       </div>
       <div class="photo-editor-controls">
         <span class="photo-editor-zoom-icon">&#128269;</span>
-        <input type="range" id="photo-editor-zoom" min="1" max="3" step="0.01" value="1" />
-        <button type="button" class="btn btn-outline" id="photo-editor-rotate">&#8635; ${I18N.t("postAd.rotate")}</button>
+        <input type="range" data-role="zoom" min="1" max="3" step="0.01" value="1" />
+        <button type="button" class="btn btn-outline" data-role="rotate">&#8635; ${I18N.t("postAd.rotate")}</button>
       </div>
-      <button type="button" class="btn btn-ai-suggest" id="photo-editor-ai-btn" style="width:100%;margin-bottom:10px;">&#10024; ${I18N.t("postAd.aiImprovePhoto")}</button>
-      <p class="post-isbn-lookup-hint" id="photo-editor-ai-hint"></p>
+      <button type="button" class="btn btn-ai-suggest" data-role="ai-btn" style="width:100%;margin-bottom:10px;">&#10024; ${I18N.t("postAd.aiImprovePhoto")}</button>
+      <p class="post-isbn-lookup-hint" data-role="ai-hint"></p>
       <div class="action-row">
-        <button class="btn btn-primary" id="photo-editor-apply">${I18N.t("postAd.applyEdit")}</button>
-        <button class="btn btn-secondary" id="photo-editor-cancel">${I18N.t("common.cancel")}</button>
+        <button class="btn btn-primary" data-role="apply">${I18N.t("postAd.applyEdit")}</button>
+        <button class="btn btn-secondary" data-role="cancel">${I18N.t("common.cancel")}</button>
       </div>
     </div>
   `;
   document.body.appendChild(overlay);
 
-  const canvas = document.getElementById("photo-editor-canvas");
+  const canvas = overlay.querySelector('[data-role="canvas"]');
   const ctx = canvas.getContext("2d");
   const CW = canvas.width;
   const CH = canvas.height;
@@ -3091,15 +3104,24 @@ function openPhotoEditor({ src, onApply }) {
     ready = true;
     draw();
   };
+  img.onerror = () => {
+    // Broken/unreadable source - don't leave the seller staring at a black
+    // canvas with no explanation; let them back out via Cancel.
+    const hint = overlay.querySelector('[data-role="ai-hint"]');
+    if (hint) {
+      hint.textContent = I18N.t("postAd.aiPhotoError");
+      hint.className = "post-isbn-lookup-hint error";
+    }
+  };
   img.src = src;
 
-  const zoomInput = document.getElementById("photo-editor-zoom");
+  const zoomInput = overlay.querySelector('[data-role="zoom"]');
   zoomInput.addEventListener("input", () => {
     zoom = Number(zoomInput.value);
     draw();
   });
 
-  document.getElementById("photo-editor-rotate").addEventListener("click", () => {
+  overlay.querySelector('[data-role="rotate"]').addEventListener("click", () => {
     rotation = (rotation + 90) % 360;
     offsetX = 0;
     offsetY = 0;
@@ -3144,15 +3166,21 @@ function openPhotoEditor({ src, onApply }) {
     overlay.remove();
   }
 
-  document.getElementById("photo-editor-cancel").addEventListener("click", cleanup);
-  document.getElementById("photo-editor-apply").addEventListener("click", () => {
+  // Wire into the same history-guard every other full-screen overlay in the
+  // app uses, so the phone/browser Back button closes this editor instead
+  // of leaving it stuck on screen (this is the "no pude salir" part of what
+  // went wrong for Carlos - this modal had never been hooked up to it).
+  guardOverlayForBack(cleanup);
+
+  overlay.querySelector('[data-role="cancel"]').addEventListener("click", () => closeOverlayViaBack(cleanup));
+  overlay.querySelector('[data-role="apply"]').addEventListener("click", () => {
     const out = canvas.toDataURL("image/jpeg", 0.9);
-    cleanup();
+    closeOverlayViaBack(cleanup);
     onApply(out);
   });
 
-  const aiBtn = document.getElementById("photo-editor-ai-btn");
-  const aiHint = document.getElementById("photo-editor-ai-hint");
+  const aiBtn = overlay.querySelector('[data-role="ai-btn"]');
+  const aiHint = overlay.querySelector('[data-role="ai-hint"]');
   aiBtn.addEventListener("click", async () => {
     if (!ready) return;
     aiBtn.disabled = true;
