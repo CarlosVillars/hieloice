@@ -75,6 +75,30 @@ if (!ANTHROPIC_API_KEY) {
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
 const PLATFORM_FEE_RATE = 0.10; // 10% commission, per Carlos's decision
+
+// Countries Stripe Checkout is allowed to collect a shipping address for
+// (task #312 - basic shipping: address + tracking). Stripe requires an
+// explicit allowlist to turn shipping_address_collection on at all; this is
+// a broad practical list covering the Americas, Europe, and major
+// Asia-Pacific/Middle East markets rather than every ISO country, since
+// that's realistically where buyers are. Adding a country later is a
+// one-line change here - no other code needs to know about it.
+const SHIPPING_ALLOWED_COUNTRIES = [
+  "US", "CA", "MX", "BR", "AR", "CL", "CO", "PE", "EC", "UY", "PY", "BO",
+  "GT", "HN", "SV", "NI", "CR", "PA", "DO", "PR",
+  "GB", "IE", "FR", "DE", "ES", "PT", "IT", "NL", "BE", "LU", "CH", "AT",
+  "SE", "NO", "DK", "FI", "PL", "CZ", "GR", "RO", "HU",
+  "AU", "NZ", "JP", "KR", "SG", "IN", "PH", "MY",
+  "AE", "SA", "IL", "ZA",
+];
+
+// task #312 - basic shipping: address + tracking. eBay/Amazon-style flow at
+// a scope that fits HieloIce's current volume: Stripe's own hosted checkout
+// collects the buyer's address (no custom form to build/validate), the
+// webhook copies it onto the order, and the seller types in a tracking
+// number when they mark the order shipped. No label-purchase API (Shippo/
+// EasyPost) yet - that's a real "phase 2" once order volume justifies the
+// extra integration and per-label cost; discussed with Carlos 2026-08-24.
 const ORDER_AUTO_RELEASE_DAYS = 7;
 if (!STRIPE_SECRET_KEY) {
   console.error("Missing STRIPE_SECRET_KEY - real payments/escrow disabled.");
@@ -413,8 +437,25 @@ function orderOut(o) {
     stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id,
     stripe_transfer_id, stripe_refund_id, shipped_at, confirm_deadline,
     released_at, dispute_reason, dispute_status, dispute_opened_at, created_at,
+    shipping_name, shipping_line1, shipping_line2, shipping_city, shipping_state,
+    shipping_postal_code, shipping_country, tracking_carrier, tracking_number,
     ...rest
   } = o;
+  // Buyer-provided delivery address (basic shipping, task #312): filled in by
+  // Stripe's own hosted address form during checkout (shipping_address_collection)
+  // and copied onto the order by the webhook - never typed into our own UI, so
+  // there's no separate validation to maintain. null until the buyer has paid.
+  const shippingAddress = shipping_line1
+    ? {
+        name: shipping_name || null,
+        line1: shipping_line1,
+        line2: shipping_line2 || null,
+        city: shipping_city || null,
+        state: shipping_state || null,
+        postalCode: shipping_postal_code || null,
+        country: shipping_country || null,
+      }
+    : null;
   return {
     ...rest,
     productId: product_id,
@@ -429,6 +470,9 @@ function orderOut(o) {
     disputeStatus: dispute_status,
     disputeOpenedAt: dispute_opened_at,
     createdAt: created_at,
+    shippingAddress,
+    trackingCarrier: tracking_carrier || null,
+    trackingNumber: tracking_number || null,
   };
 }
 
@@ -6620,10 +6664,29 @@ async function handleApi(req, res, pathname, query) {
           const orders = await db.select("mkt_orders", { id: "eq." + enc(orderId), select: "*" });
           const order = orders && orders[0];
           if (order && order.status === "pending_payment") {
+            // Stripe's own hosted checkout page collected this address (via
+            // shipping_address_collection on the session) - copy it onto the
+            // order now so the seller has somewhere to actually mail the
+            // book. shipping_details is the modern field; customer_details
+            // is kept as a fallback for older Stripe API versions.
+            const shipTo =
+              session.shipping_details || (session.customer_details && session.customer_details.address ? session.customer_details : null);
+            const addr = shipTo && shipTo.address ? shipTo.address : null;
+            const shippingFields = addr
+              ? {
+                  shipping_name: shipTo.name || null,
+                  shipping_line1: addr.line1 || null,
+                  shipping_line2: addr.line2 || null,
+                  shipping_city: addr.city || null,
+                  shipping_state: addr.state || null,
+                  shipping_postal_code: addr.postal_code || null,
+                  shipping_country: addr.country || null,
+                }
+              : {};
             await db.update(
               "mkt_orders",
               { id: "eq." + enc(orderId) },
-              { status: "paid_held", stripe_payment_intent_id: session.payment_intent || null }
+              { status: "paid_held", stripe_payment_intent_id: session.payment_intent || null, ...shippingFields }
             );
             notifyUser(order.seller_id, "offers", {
               title: "You made a sale!",
@@ -6764,6 +6827,7 @@ async function handleApi(req, res, pathname, query) {
         },
       ],
       metadata: { order_id: order.id },
+      shipping_address_collection: { allowed_countries: SHIPPING_ALLOWED_COUNTRIES },
       success_url: base + "/#/orders/" + order.id + "?checkout=success",
       cancel_url: base + "/#/products/" + product.id + "?checkout=cancelled",
     });
@@ -6821,9 +6885,20 @@ async function handleApi(req, res, pathname, query) {
     if (!order) return sendJson(res, 404, { error: "Order not found" });
     if (order.seller_id !== me.id) return sendJson(res, 403, { error: "Only the seller can mark this as shipped" });
     if (order.status !== "paid_held") return sendJson(res, 400, { error: "This order isn't ready to be marked as shipped" });
+    // Carrier + tracking number (task #312) - both optional so a seller can't
+    // get stuck if they haven't shipped yet in person, but strongly
+    // encouraged client-side: without it, the buyer has no way to see the
+    // book is actually moving, which is the whole point of doing this.
+    const body = await readBody(req);
+    const trackingCarrier = body.trackingCarrier ? String(body.trackingCarrier).trim().slice(0, 60) : null;
+    const trackingNumber = body.trackingNumber ? String(body.trackingNumber).trim().slice(0, 100) : null;
     const now = Date.now();
     const deadline = now + ORDER_AUTO_RELEASE_DAYS * 24 * 60 * 60 * 1000;
-    await db.update("mkt_orders", { id: "eq." + enc(order.id) }, { status: "shipped", shipped_at: now, confirm_deadline: deadline });
+    await db.update(
+      "mkt_orders",
+      { id: "eq." + enc(order.id) },
+      { status: "shipped", shipped_at: now, confirm_deadline: deadline, tracking_carrier: trackingCarrier, tracking_number: trackingNumber }
+    );
     notifyUser(order.buyer_id, "offers", {
       title: "Your order shipped",
       body: "The seller marked your book as shipped. Confirm once it arrives in good condition to release payment.",
