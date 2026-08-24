@@ -844,6 +844,43 @@ function categoryCardsHtml() {
   ).join("");
 }
 
+// Full-screen "Browse Categories" sheet: a stacked, one-per-row list of every
+// genre (big icon + label), opened from the "Browse Categories" button on the
+// Marketplace home page. Kept separate from the inline categoryTabsHtml() pill
+// row on purpose - the pills are for a quick single-tap jump to a genre that's
+// already visible, this full sheet is for scanning the whole list at once.
+// Tapping any row navigates via its href and this closes itself in response.
+function openBrowseCategoriesOverlay() {
+  if (document.getElementById("browse-categories-overlay")) return;
+  const overlay = document.createElement("div");
+  overlay.className = "browse-categories-overlay";
+  overlay.id = "browse-categories-overlay";
+  overlay.innerHTML = `
+    <div class="browse-categories-handle"></div>
+    <div class="browse-categories-header">
+      <h2 class="browse-categories-title">${I18N.t("home.categoriesHeading")}</h2>
+      <button type="button" class="browse-categories-close" aria-label="${escapeHtml(I18N.t("common.close"))}">&times;</button>
+    </div>
+    <div class="browse-categories-list">
+      ${CATEGORY_LIST.map(
+        (c) => `
+        <a class="browse-category-row" href="#/category/${c.slug}">
+          ${c.img ? `<img class="browse-category-icon browse-category-icon-img" src="${c.img}" alt="" />` : `<span class="browse-category-icon">${c.icon}</span>`}
+          <span class="browse-category-label">${I18N.lang === "es" ? c.es : c.en}</span>
+        </a>`
+      ).join("")}
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.body.style.overflow = "hidden";
+  const close = () => {
+    overlay.remove();
+    document.body.style.overflow = "";
+  };
+  overlay.querySelector(".browse-categories-close").addEventListener("click", close);
+  overlay.querySelectorAll(".browse-category-row").forEach((row) => row.addEventListener("click", close));
+}
+
 // Home ("#/"): a single ranked vertical feed mixing every author's video AND
 // photo moments (Facebook-style focus on sharing, TikTok-style continuous
 // swipe), falling back to the marketplace grid for guests who have nothing
@@ -1140,6 +1177,9 @@ function renderMarketplaceHome() {
       <h1>${escapeHtml(I18N.t("site.name"))}</h1>
       <p>${escapeHtml(I18N.t("site.tagline"))}</p>
     </div>
+    <h2 class="section-heading">${I18N.t("home.allBooksHeading")}</h2>
+    <div class="product-grid" id="home-all-products"><p>${I18N.t("common.loading")}</p></div>
+    <a class="back-link" href="#/category/all">${I18N.t("home.seeAllBooks")} &rarr;</a>
     <a href="#/post" class="sell-books-banner">
       <span class="sell-books-banner-icon">&#128218;</span>
       <span class="ai-listing-banner-text">
@@ -1149,16 +1189,36 @@ function renderMarketplaceHome() {
       <span class="sell-books-banner-arrow">&#8250;</span>
     </a>
     ${categoryTabsHtml("all")}
-    <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
-    <div class="category-grid">${categoryCardsHtml()}</div>
+    <button type="button" id="toggle-categories-btn" class="btn btn-outline categories-toggle-btn">
+      ${I18N.t("home.categoriesHeading")} <span class="categories-toggle-caret">&#9662;</span>
+    </button>
     <div id="classics-preview-section" style="display:none;">
       <h2 class="section-heading">${I18N.t("classics.previewHeading")}</h2>
       <div class="classics-preview-row" id="classics-preview-row"></div>
       <a class="back-link" href="#/classics">${I18N.t("classics.seeAll")} &rarr;</a>
     </div>
   `;
+  const toggleBtn = document.getElementById("toggle-categories-btn");
+  if (toggleBtn) toggleBtn.addEventListener("click", openBrowseCategoriesOverlay);
   loadAdCarousel();
+  loadAllProductsPreview();
   loadClassicsPreview();
+}
+
+// Task: Carlos reported that landing on Marketplace forced people to pick a
+// category before seeing any book - fixed by showing real listings right
+// away (this loader) and moving the category grid behind the toggle above.
+async function loadAllProductsPreview() {
+  const el = document.getElementById("home-all-products");
+  if (!el) return;
+  try {
+    const products = await api("/api/products"); // defaults to newest-first server-side
+    el.innerHTML = products.length
+      ? products.slice(0, 24).map(productCardHtml).join("")
+      : `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+  }
 }
 
 async function loadClassicsPreview() {
@@ -1542,26 +1602,8 @@ async function loadAdCarousel() {
 
 // ---------------- Category listing ----------------
 
-async function renderCategory(slug, query) {
-  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
-
-  const params = new URLSearchParams();
-  if (slug !== "all") params.set("category", slug);
-  if (query.q) params.set("q", query.q);
-  if (query.country) params.set("country", query.country);
-  if (query.state) params.set("state", query.state);
-  if (query.city) params.set("city", query.city);
-  if (query.minPrice) params.set("minPrice", query.minPrice);
-  if (query.maxPrice) params.set("maxPrice", query.maxPrice);
-  if (query.sort) params.set("sort", query.sort);
-
-  const products = await api("/api/products?" + params.toString());
-  const heading = slug === "all" ? (query.q || "") : I18N.categoryName(slug);
-
-  const cards = products.length
-    ? products
-        .map(
-          (p) => `
+function productCardHtml(p) {
+  return `
       <a class="product-card" href="#/product/${p.id}">
         <div class="product-thumb-wrap">
           ${
@@ -1581,10 +1623,26 @@ async function renderCategory(slug, query) {
             ${ratingMarkup(p.sellerRating)}
           </div>
         </div>
-      </a>`
-        )
-        .join("")
-    : `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+      </a>`;
+}
+
+async function renderCategory(slug, query) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  const params = new URLSearchParams();
+  if (slug !== "all") params.set("category", slug);
+  if (query.q) params.set("q", query.q);
+  if (query.country) params.set("country", query.country);
+  if (query.state) params.set("state", query.state);
+  if (query.city) params.set("city", query.city);
+  if (query.minPrice) params.set("minPrice", query.minPrice);
+  if (query.maxPrice) params.set("maxPrice", query.maxPrice);
+  if (query.sort) params.set("sort", query.sort);
+
+  const products = await api("/api/products?" + params.toString());
+  const heading = slug === "all" ? (query.q || "") : I18N.categoryName(slug);
+
+  const cards = products.length ? products.map(productCardHtml).join("") : `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
 
   viewEl.innerHTML = `
     <a class="back-link" href="#/">&larr; ${I18N.t("category.back")}</a>
