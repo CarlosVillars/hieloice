@@ -983,6 +983,30 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .product-seller-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); margin-top: 4px; flex-wrap: wrap; }
 .mini-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; background: var(--bg-surface-alt); }
 .empty-state { color: var(--text-muted); padding: 40px; text-align: center; grid-column: 1/-1; background: var(--bg-surface); border-radius: 10px; border: 1px dashed var(--border-color); }
+
+/* Marketplace home's "All Books" grid: a library shelf, not a couple of
+   oversized cards. Smaller than the default .product-grid (220px min) so
+   several books fit per row even on a phone, with an invisible sentinel at
+   the bottom that triggers loading the next page as the user scrolls - see
+   loadAllProductsPreview()/renderMoreHomeProducts() in app.js. */
+.product-grid-library { grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 10px; }
+.product-grid-library .product-thumb,
+.product-grid-library .product-thumb-empty { height: 128px; }
+.product-grid-library .product-card-body { padding: 8px; gap: 2px; }
+.product-grid-library .product-title { font-size: 12.5px; }
+.product-grid-library .product-price { font-size: 14px; }
+.home-products-sentinel { grid-column: 1/-1; height: 1px; }
+@media (max-width: 420px) {
+  .product-grid-library { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* My Listings: a compact horizontal row reusing the same "small, harmonious"
+   treatment as the Classics preview row, right under the sell-books banner
+   near the top of Marketplace - so a seller's own book doesn't accidentally
+   render as one giant lone card at the top of "All Books" (it used to, just
+   because it was the newest listing and the grid above was too wide). */
+#my-listings-section { margin-bottom: 6px; }
+#my-listings-section .classics-preview-row .product-card { flex: 0 0 140px; }
 /* Dead-end screens (404, unexpected errors) always offer a way back to Home
    instead of leaving the visitor stuck with only the phone back button. */
 .not-found-state { text-align: center; padding: 60px 20px; display: flex; flex-direction: column; align-items: center; gap: 14px; color: var(--text-secondary); }

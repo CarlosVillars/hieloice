@@ -1172,9 +1172,6 @@ function openBarcodeScanner(onDetected) {
 // guests at "#/" and by logged-in users via the Marketplace icon-nav button.
 function renderMarketplaceHome() {
   viewEl.innerHTML = `
-    <h2 class="section-heading">${I18N.t("home.allBooksHeading")}</h2>
-    <div class="product-grid" id="home-all-products"><p>${I18N.t("common.loading")}</p></div>
-    <a class="back-link" href="#/category/all">${I18N.t("home.seeAllBooks")} &rarr;</a>
     <a href="#/post" class="sell-books-banner">
       <span class="sell-books-banner-icon">&#128218;</span>
       <span class="ai-listing-banner-text">
@@ -1183,6 +1180,13 @@ function renderMarketplaceHome() {
       </span>
       <span class="sell-books-banner-arrow">&#8250;</span>
     </a>
+    <div id="my-listings-section" style="display:none;">
+      <h2 class="section-heading">${I18N.t("home.myListingsHeading")}</h2>
+      <div class="classics-preview-row" id="my-listings-row"></div>
+    </div>
+    <h2 class="section-heading">${I18N.t("home.allBooksHeading")}</h2>
+    <div class="product-grid product-grid-library" id="home-all-products"><p>${I18N.t("common.loading")}</p></div>
+    <a class="back-link" href="#/category/all">${I18N.t("home.seeAllBooks")} &rarr;</a>
     ${categoryTabsHtml("all")}
     <button type="button" id="toggle-categories-btn" class="btn btn-outline categories-toggle-btn">
       ${I18N.t("home.categoriesHeading")} <span class="categories-toggle-caret">&#9662;</span>
@@ -1197,21 +1201,98 @@ function renderMarketplaceHome() {
   if (toggleBtn) toggleBtn.addEventListener("click", openBrowseCategoriesOverlay);
   loadAllProductsPreview();
   loadClassicsPreview();
+  loadMyListingsPreview();
 }
 
 // Task: Carlos reported that landing on Marketplace forced people to pick a
 // category before seeing any book - fixed by showing real listings right
 // away (this loader) and moving the category grid behind the toggle above.
+// Library-style browsing: instead of dumping every result at once (or
+// capping at a couple of oversized cards and forcing a click to "see all"),
+// fetch a decent-sized batch and reveal it a page at a time as the user
+// scrolls, like turning pages in a library shelf. See renderMoreHomeProducts
+// / wireHomeProductsInfiniteScroll below.
+const HOME_PRODUCTS_PAGE_SIZE = 12;
+let homeProductsAll = [];
+let homeProductsShown = 0;
+let homeProductsObserver = null;
+
 async function loadAllProductsPreview() {
   const el = document.getElementById("home-all-products");
   if (!el) return;
+  if (homeProductsObserver) {
+    homeProductsObserver.disconnect();
+    homeProductsObserver = null;
+  }
   try {
     const products = await api("/api/products"); // defaults to newest-first server-side
-    el.innerHTML = products.length
-      ? products.slice(0, 24).map(productCardHtml).join("")
-      : `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+    homeProductsAll = products.slice(0, 60);
+    homeProductsShown = 0;
+    if (!homeProductsAll.length) {
+      el.innerHTML = `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+      return;
+    }
+    el.innerHTML = "";
+    renderMoreHomeProducts();
   } catch (e) {
     el.innerHTML = `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+  }
+}
+
+function renderMoreHomeProducts() {
+  const el = document.getElementById("home-all-products");
+  if (!el) return;
+  const oldSentinel = document.getElementById("home-products-sentinel");
+  if (oldSentinel) oldSentinel.remove();
+  const next = homeProductsAll.slice(homeProductsShown, homeProductsShown + HOME_PRODUCTS_PAGE_SIZE);
+  el.insertAdjacentHTML("beforeend", next.map(productCardHtml).join(""));
+  homeProductsShown += next.length;
+  if (homeProductsShown < homeProductsAll.length) {
+    el.insertAdjacentHTML(
+      "beforeend",
+      `<div id="home-products-sentinel" class="home-products-sentinel" aria-hidden="true"></div>`
+    );
+    wireHomeProductsInfiniteScroll();
+  } else if (homeProductsObserver) {
+    homeProductsObserver.disconnect();
+    homeProductsObserver = null;
+  }
+}
+
+function wireHomeProductsInfiniteScroll() {
+  if (homeProductsObserver) homeProductsObserver.disconnect();
+  const sentinel = document.getElementById("home-products-sentinel");
+  if (!sentinel) return;
+  // Fire a bit before the sentinel actually enters the viewport (rootMargin)
+  // so the next page is already in place by the time the user reaches it -
+  // that's what makes it feel like scrolling reveals more books, not like
+  // waiting for a spinner.
+  homeProductsObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries[0].isIntersecting) renderMoreHomeProducts();
+    },
+    { rootMargin: "400px" }
+  );
+  homeProductsObserver.observe(sentinel);
+}
+
+// Compact row of the logged-in seller's own active listings, shown near the
+// top of Marketplace (right under the sell-books banner) so a seller can see
+// their own book(s) at a glance without it hijacking the general "All Books"
+// grid below - previously a seller's own newest listing would just be
+// whatever happened to sort first in that grid, rendered at full card size
+// with nothing marking it as "yours".
+async function loadMyListingsPreview() {
+  const section = document.getElementById("my-listings-section");
+  const row = document.getElementById("my-listings-row");
+  if (!section || !row || !state.token || !state.user) return;
+  try {
+    const products = await api("/api/products?sellerId=" + encodeURIComponent(state.user.id));
+    if (!products.length) return;
+    row.innerHTML = products.slice(0, 10).map(productCardHtml).join("");
+    section.style.display = "block";
+  } catch (e) {
+    // best-effort, same pattern as the ad carousel / classics preview
   }
 }
 
