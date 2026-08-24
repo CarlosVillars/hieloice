@@ -1822,7 +1822,11 @@ async function renderProductDetail(id) {
         </div>
         ${
           !isOwnerOfListing && p.sellerPaymentsReady
-            ? `<p class="detail-shipping-note">${I18N.t("product.plusShippingNote").replace("{fee}", fmtPrice(SHIPPING_FLAT_FEE_DISPLAY))}</p>`
+            ? `<p class="detail-shipping-note">${
+                p.liveShippingEnabled
+                  ? I18N.t("product.plusShippingNoteLive")
+                  : I18N.t("product.plusShippingNote").replace("{fee}", fmtPrice(SHIPPING_FLAT_FEE_DISPLAY))
+              }</p>`
             : ""
         }
         <div class="detail-meta">\u{1F4CD} ${escapeHtml(locationLabel(p)) || "-"} &middot; ${fmtDate(p.createdAt)}</div>
@@ -2026,19 +2030,176 @@ function wireProductActions(p) {
 
   const btnPayNow = document.getElementById("btn-pay-now");
   if (btnPayNow) {
-    btnPayNow.addEventListener("click", async () => {
-      btnPayNow.disabled = true;
-      btnPayNow.textContent = I18N.t("product.redirectingToCheckout");
-      try {
-        const data = await api("/api/orders", { method: "POST", auth: true, body: { productId: p.id } });
-        window.location.href = data.checkoutUrl;
-      } catch (e) {
-        btnPayNow.disabled = false;
-        btnPayNow.textContent = I18N.t("product.payNow");
-        offerArea.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    btnPayNow.addEventListener("click", () => {
+      if (p.liveShippingEnabled) {
+        openShippingCheckoutOverlay(p);
+      } else {
+        goToPlainCheckout(p, btnPayNow, offerArea);
       }
     });
   }
+}
+
+// Old flat-fee checkout path (task #313, before live rates) - still used as
+// the fallback whenever live carrier rates aren't available: EASYPOST_API_KEY
+// not configured yet, the seller hasn't added a ship-from address, or the
+// live rate lookup itself failed for any reason. Stripe's own hosted page
+// collects the buyer's address in this path, same as before.
+async function goToPlainCheckout(p, btnPayNow, offerArea) {
+  btnPayNow.disabled = true;
+  btnPayNow.textContent = I18N.t("product.redirectingToCheckout");
+  try {
+    const data = await api("/api/orders", { method: "POST", auth: true, body: { productId: p.id } });
+    window.location.href = data.checkoutUrl;
+  } catch (e) {
+    btnPayNow.disabled = false;
+    btnPayNow.textContent = I18N.t("product.payNow");
+    offerArea.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// Task #313 phase 2, per Carlos's decision 2026-08-24: buyer picks their own
+// real shipping address, sees live carrier options (USPS/UPS/FedEx/...) each
+// already including HieloIce's disclosed commission, and picks freely. Falls
+// back to the old single-fee flow (goToPlainCheckout above) the moment
+// anything about live rates doesn't pan out, so checkout never gets stuck.
+function openShippingCheckoutOverlay(p) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box shipping-checkout-box">
+      <h2 class="section-heading">${I18N.t("orders.chooseShippingHeading")}</h2>
+      <form id="shipping-address-form">
+        <div class="form-group">
+          <label>${I18N.t("orders.shipToNameLabel")}</label>
+          <input type="text" id="ship-to-name" value="${escapeHtml((state.user && state.user.name) || "")}" required />
+        </div>
+        <div class="form-group">
+          <label>${I18N.t("orders.shipLine1Placeholder")}</label>
+          <input type="text" id="ship-to-line1" required />
+        </div>
+        <div class="form-group">
+          <label>${I18N.t("orders.shipLine2Placeholder")}</label>
+          <input type="text" id="ship-to-line2" />
+        </div>
+        <div class="form-row-split">
+          <div class="form-group">
+            <label>${I18N.t("orders.shipCityPlaceholder")}</label>
+            <input type="text" id="ship-to-city" required />
+          </div>
+          <div class="form-group">
+            <label>${I18N.t("orders.shipStatePlaceholder")}</label>
+            <input type="text" id="ship-to-state" />
+          </div>
+        </div>
+        <div class="form-row-split">
+          <div class="form-group">
+            <label>${I18N.t("orders.shipPostalPlaceholder")}</label>
+            <input type="text" id="ship-to-postal" required />
+          </div>
+          <div class="form-group">
+            <label>${I18N.t("orders.shipCountryPlaceholder")}</label>
+            <input type="text" id="ship-to-country" maxlength="2" value="US" required />
+          </div>
+        </div>
+        <div class="action-row">
+          <button type="submit" class="btn btn-gold" id="ship-rates-continue">${I18N.t("orders.seeShippingOptions")}</button>
+          <button type="button" class="btn btn-secondary" id="ship-rates-cancel">${I18N.t("common.cancel")}</button>
+        </div>
+        <p class="form-msg" id="shipping-checkout-msg"></p>
+      </form>
+      <div id="shipping-rates-list" style="display:none;"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.getElementById("ship-rates-cancel").addEventListener("click", () => overlay.remove());
+
+  document.getElementById("shipping-address-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msgEl = document.getElementById("shipping-checkout-msg");
+    const continueBtn = document.getElementById("ship-rates-continue");
+    const address = {
+      name: document.getElementById("ship-to-name").value.trim(),
+      line1: document.getElementById("ship-to-line1").value.trim(),
+      line2: document.getElementById("ship-to-line2").value.trim(),
+      city: document.getElementById("ship-to-city").value.trim(),
+      state: document.getElementById("ship-to-state").value.trim(),
+      postalCode: document.getElementById("ship-to-postal").value.trim(),
+      country: document.getElementById("ship-to-country").value.trim().toUpperCase(),
+    };
+    continueBtn.disabled = true;
+    msgEl.textContent = I18N.t("orders.lookingUpRates");
+    msgEl.className = "form-msg";
+    try {
+      const res = await api("/api/orders/shipping-rates", { method: "POST", auth: true, body: { productId: p.id, address } });
+      if (!res.configured || !res.rates || !res.rates.length) {
+        // No live rates available for this address/seller right now - fall
+        // back to the old flow rather than leaving the buyer stuck.
+        overlay.remove();
+        const data = await api("/api/orders", { method: "POST", auth: true, body: { productId: p.id } });
+        window.location.href = data.checkoutUrl;
+        return;
+      }
+      renderShippingRatesList(overlay, p, address, res.shipmentId, res.rates);
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+      continueBtn.disabled = false;
+    }
+  });
+}
+
+function renderShippingRatesList(overlay, p, address, shipmentId, rates) {
+  const formEl = overlay.querySelector("#shipping-address-form");
+  const listEl = overlay.querySelector("#shipping-rates-list");
+  formEl.style.display = "none";
+  listEl.style.display = "block";
+  listEl.innerHTML = `
+    <p class="buy-safety-note" style="margin-bottom:10px;">${I18N.t("orders.shippingRatesHint")}</p>
+    ${rates
+      .map(
+        (r, i) => `
+      <label class="shipping-rate-option">
+        <input type="radio" name="shipping-rate" value="${escapeHtml(r.id)}" ${i === 0 ? "checked" : ""} />
+        <span class="shipping-rate-carrier">${escapeHtml(r.carrier)} ${escapeHtml(r.service)}</span>
+        <span class="shipping-rate-days">${r.deliveryDays ? I18N.t("orders.deliveryDays").replace("{days}", r.deliveryDays) : ""}</span>
+        <span class="shipping-rate-price">${fmtPrice(r.price)}</span>
+      </label>
+    `
+      )
+      .join("")}
+    <div class="action-row" style="margin-top:14px;">
+      <button type="button" class="btn btn-gold" id="ship-rate-confirm">${I18N.t("product.payNow")}</button>
+      <button type="button" class="btn btn-secondary" id="ship-rate-back">${I18N.t("common.back")}</button>
+    </div>
+    <p class="form-msg" id="shipping-rate-msg"></p>
+  `;
+  overlay.querySelector("#ship-rate-back").addEventListener("click", () => {
+    listEl.style.display = "none";
+    formEl.style.display = "block";
+    document.getElementById("ship-rates-continue").disabled = false;
+  });
+  overlay.querySelector("#ship-rate-confirm").addEventListener("click", async () => {
+    const confirmBtn = overlay.querySelector("#ship-rate-confirm");
+    const msgEl = overlay.querySelector("#shipping-rate-msg");
+    const chosen = overlay.querySelector('input[name="shipping-rate"]:checked');
+    if (!chosen) return;
+    confirmBtn.disabled = true;
+    msgEl.textContent = I18N.t("product.redirectingToCheckout");
+    msgEl.className = "form-msg";
+    try {
+      const data = await api("/api/orders", {
+        method: "POST",
+        auth: true,
+        body: { productId: p.id, shipmentId, rateId: chosen.value, address },
+      });
+      window.location.href = data.checkoutUrl;
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+      confirmBtn.disabled = false;
+    }
+  });
 }
 
 // ---------------- Orders (task #58/#127 - real payments, buyer protection) ----------------
@@ -2142,25 +2303,40 @@ async function renderOrderDetail(id) {
     ? `<div class="order-shipping-block">
         <h3 class="order-shipping-heading">${I18N.t("orders.trackingHeading")}</h3>
         <p class="order-shipping-address">${o.trackingCarrier ? escapeHtml(o.trackingCarrier) + " &mdash; " : ""}${escapeHtml(o.trackingNumber || "")}</p>
+        ${o.role === "seller" && o.labelUrl ? `<a class="btn btn-outline" style="margin-top:10px;" href="${escapeHtml(o.labelUrl)}" target="_blank" rel="noopener">${I18N.t("orders.downloadLabel")}</a>` : ""}
       </div>`
     : "";
 
   let actionHtml = "";
   if (o.role === "seller" && o.status === "paid_held") {
-    actionHtml = `
-      <div class="order-ship-form">
-        <div class="form-group">
-          <label>${I18N.t("orders.trackingCarrierLabel")}</label>
-          <input type="text" id="order-tracking-carrier" placeholder="${escapeHtml(I18N.t("orders.trackingCarrierPlaceholder"))}" />
+    // Task #313 phase 2: if EasyPost already auto-purchased a label and
+    // tracking number (see trackingHtml/labelUrl above), there's nothing
+    // left to type - just confirm the book actually went out. Only sellers
+    // without a live label yet (EasyPost not configured, or the buyer went
+    // through the old flat-fee flow) see the manual entry fields.
+    if (o.trackingNumber) {
+      actionHtml = `
+        <div class="order-ship-form">
+          <p class="buy-safety-note">${I18N.t("orders.labelReadyHint")}</p>
+          <button class="btn btn-gold" id="order-ship-btn">${I18N.t("orders.markShipped")}</button>
         </div>
-        <div class="form-group">
-          <label>${I18N.t("orders.trackingNumberLabel")}</label>
-          <input type="text" id="order-tracking-number" placeholder="${escapeHtml(I18N.t("orders.trackingNumberPlaceholder"))}" />
+      `;
+    } else {
+      actionHtml = `
+        <div class="order-ship-form">
+          <div class="form-group">
+            <label>${I18N.t("orders.trackingCarrierLabel")}</label>
+            <input type="text" id="order-tracking-carrier" placeholder="${escapeHtml(I18N.t("orders.trackingCarrierPlaceholder"))}" />
+          </div>
+          <div class="form-group">
+            <label>${I18N.t("orders.trackingNumberLabel")}</label>
+            <input type="text" id="order-tracking-number" placeholder="${escapeHtml(I18N.t("orders.trackingNumberPlaceholder"))}" />
+          </div>
+          <p class="buy-safety-note">${I18N.t("orders.trackingHint")}</p>
+          <button class="btn btn-gold" id="order-ship-btn">${I18N.t("orders.markShipped")}</button>
         </div>
-        <p class="buy-safety-note">${I18N.t("orders.trackingHint")}</p>
-        <button class="btn btn-gold" id="order-ship-btn">${I18N.t("orders.markShipped")}</button>
-      </div>
-    `;
+      `;
+    }
   } else if (o.role === "buyer" && o.status === "shipped") {
     actionHtml = `
       <button class="btn btn-gold" id="order-confirm-btn">${I18N.t("orders.confirmArrival")}</button>
@@ -10371,6 +10547,62 @@ async function loadPaymentsStatusCard() {
   });
 }
 
+// Task #313 phase 2 - a seller's real ship-from address, used by EasyPost to
+// quote live carrier rates and print a real label. Reuses state.user (kept
+// fresh by the /api/users/me PUT below) rather than a fresh fetch, since this
+// renders right after the profile page's own load.
+function loadShipAddressForm() {
+  const el = document.getElementById("profile-ship-address");
+  if (!el || !state.user) return;
+  const u = state.user;
+  el.innerHTML = `
+    <form id="ship-address-form" class="ship-address-form">
+      <div class="form-row">
+        <input type="text" id="ship-line1" placeholder="${escapeHtml(I18N.t("orders.shipLine1Placeholder"))}" value="${escapeHtml(u.shipFromLine1 || "")}" required />
+      </div>
+      <div class="form-row">
+        <input type="text" id="ship-line2" placeholder="${escapeHtml(I18N.t("orders.shipLine2Placeholder"))}" value="${escapeHtml(u.shipFromLine2 || "")}" />
+      </div>
+      <div class="form-row form-row-split">
+        <input type="text" id="ship-city" placeholder="${escapeHtml(I18N.t("orders.shipCityPlaceholder"))}" value="${escapeHtml(u.shipFromCity || "")}" required />
+        <input type="text" id="ship-state" placeholder="${escapeHtml(I18N.t("orders.shipStatePlaceholder"))}" value="${escapeHtml(u.shipFromState || "")}" />
+      </div>
+      <div class="form-row form-row-split">
+        <input type="text" id="ship-postal" placeholder="${escapeHtml(I18N.t("orders.shipPostalPlaceholder"))}" value="${escapeHtml(u.shipFromPostalCode || "")}" required />
+        <input type="text" id="ship-country" maxlength="2" placeholder="${escapeHtml(I18N.t("orders.shipCountryPlaceholder"))}" value="${escapeHtml(u.shipFromCountry || "")}" required />
+      </div>
+      <button type="submit" class="btn btn-outline">${I18N.t("orders.shipAddressSave")}</button>
+      <p class="form-msg" id="ship-address-msg"></p>
+    </form>
+  `;
+  document.getElementById("ship-address-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msgEl = document.getElementById("ship-address-msg");
+    try {
+      const res = await api("/api/users/me", {
+        method: "PUT",
+        auth: true,
+        body: {
+          shipFromName: u.name || "",
+          shipFromLine1: document.getElementById("ship-line1").value.trim(),
+          shipFromLine2: document.getElementById("ship-line2").value.trim(),
+          shipFromCity: document.getElementById("ship-city").value.trim(),
+          shipFromState: document.getElementById("ship-state").value.trim(),
+          shipFromPostalCode: document.getElementById("ship-postal").value.trim(),
+          shipFromCountry: document.getElementById("ship-country").value.trim(),
+        },
+      });
+      state.user = res.user;
+      localStorage.setItem("authUser", JSON.stringify(res.user));
+      msgEl.textContent = I18N.t("orders.shipAddressSaved");
+      msgEl.className = "form-msg ok";
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+    }
+  });
+}
+
 async function renderProfile(userId) {
   if (!userId) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
@@ -10494,6 +10726,16 @@ async function renderProfile(userId) {
             <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("orders.sellingAndPayments")}</h2>
             <a class="btn btn-outline" href="#/orders" style="margin-bottom:10px;">${I18N.t("orders.myOrders")}</a>
             <div id="profile-payments-status"><p class="form-msg">${I18N.t("common.loading")}</p></div>
+          </div>`
+        : ""
+    }
+
+    ${
+      isMe
+        ? `<div class="profile-about-card">
+            <h2 class="section-heading" style="margin-bottom:6px;">${I18N.t("orders.shipFromHeading")}</h2>
+            <p class="buy-safety-note" style="margin-bottom:12px;">${I18N.t("orders.shipFromHint")}</p>
+            <div id="profile-ship-address"></div>
           </div>`
         : ""
     }
@@ -10673,6 +10915,7 @@ async function renderProfile(userId) {
       openEditProfileModal({ ...profile, phone: state.user ? state.user.phone : "" })
     );
     loadPaymentsStatusCard();
+    loadShipAddressForm();
     const coverBtn = document.getElementById("btn-edit-cover");
     const coverInput = document.getElementById("cover-input");
     if (coverBtn && coverInput) {
