@@ -5922,7 +5922,13 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, (rows || []).map((a) => audiobookOut(a, { includeChapters: false })));
   }
 
-  const audiobookMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)$/);
+  // [a-zA-Z0-9-]+ (not just [a-zA-Z0-9]+) because the free public-domain
+  // seed catalog uses hyphenated ids like "seed-pride-and-prejudice" -
+  // the old alphanumeric-only pattern silently failed to match any of
+  // those ids, so this route (and every other /api/audiobooks/:id/...
+  // route below) 404'd for all 4 free books with "Audiobook not found",
+  // even though the rows existed in the database the whole time.
+  const audiobookMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9-]+)$/);
   if (method === "GET" && audiobookMatch) {
     const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(audiobookMatch[1]), select: "*" });
     const a = rows && rows[0];
@@ -5981,6 +5987,34 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 201, audiobookOut(created, { includeChapters: true }));
   }
 
+  // DELETE /api/audiobooks/:id - let an author remove one of their own
+  // audiobooks (mainly for clearing out an unwanted draft - there was no way
+  // to do this before, so an abandoned/renamed draft was stuck forever).
+  // Only the author or an admin can delete, and a published book that
+  // someone has already bought/acquired is protected rather than silently
+  // vanishing out from under a buyer's library - the author has to reach out
+  // to support for that case instead.
+  if (method === "DELETE" && audiobookMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(audiobookMatch[1]), select: "*" });
+    const a = rows && rows[0];
+    if (!a) return sendJson(res, 404, { error: "Audiobook not found" });
+    if (a.author_id !== me.id && !isAdmin(me)) return sendJson(res, 403, { error: "Not your audiobook" });
+    if (a.status === "published") {
+      const owned = await db.select("mkt_audiobook_purchases", {
+        audiobook_id: "eq." + enc(a.id),
+        status: "in.(paid,granted)",
+        select: "id",
+      });
+      if (owned && owned[0]) {
+        return sendJson(res, 400, { error: "This audiobook has already been acquired by at least one reader, so it can't be deleted. Contact support if you need it taken down." });
+      }
+    }
+    await db.remove("mkt_audiobooks", { id: "eq." + enc(a.id) });
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (method === "PATCH" && audiobookMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -6023,7 +6057,7 @@ async function handleApi(req, res, pathname, query) {
   // One file per call on purpose (not the whole book at once) so a slow
   // connection uploading a long book doesn't have to redo it all after a
   // failure, and so each request stays well under the server's body-size cap.
-  const audiobookChaptersMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/chapters$/);
+  const audiobookChaptersMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9-]+)\/chapters$/);
   if (method === "POST" && audiobookChaptersMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -6065,7 +6099,7 @@ async function handleApi(req, res, pathname, query) {
   }
 
   // DELETE /api/audiobooks/:id/chapters/:index - remove one chapter by position.
-  const audiobookChapterMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/chapters\/(\d+)$/);
+  const audiobookChapterMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9-]+)\/chapters\/(\d+)$/);
   if (method === "DELETE" && audiobookChapterMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -6095,7 +6129,7 @@ async function handleApi(req, res, pathname, query) {
   // automated AI pre-screen like the text-book pipeline has - there's no
   // honest audio-understanding step in this codebase to run one, so this
   // goes straight to human review.
-  const audiobookSubmitMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/submit$/);
+  const audiobookSubmitMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9-]+)\/submit$/);
   if (method === "POST" && audiobookSubmitMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -6127,7 +6161,7 @@ async function handleApi(req, res, pathname, query) {
   // POST /api/audiobooks/:id/publish - author's final step once our team
   // approved it. Kept as its own explicit action so nothing goes live the
   // instant it's approved without the author choosing the moment.
-  const audiobookPublishMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/publish$/);
+  const audiobookPublishMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9-]+)\/publish$/);
   if (method === "POST" && audiobookPublishMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -6146,7 +6180,7 @@ async function handleApi(req, res, pathname, query) {
   // paid original one. Digital delivery, so unlike a physical book order
   // there's no shipping and no 7-day hold - the author is paid as soon as
   // the payment itself clears (see the webhook below).
-  const audiobookAcquireMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/acquire$/);
+  const audiobookAcquireMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9-]+)\/acquire$/);
   if (method === "POST" && audiobookAcquireMatch) {
     const me = await getAuthUser(req);
     if (!me) return sendJson(res, 401, { error: "Not authenticated" });
@@ -7285,7 +7319,7 @@ async function handleApi(req, res, pathname, query) {
     }
 
     // POST /api/admin/audiobooks/:id/decision { decision: 'approve'|'reject', notes? }
-    const adminAudiobookDecisionMatch = pathname.match(/^\/api\/admin\/audiobooks\/([a-zA-Z0-9]+)\/decision$/);
+    const adminAudiobookDecisionMatch = pathname.match(/^\/api\/admin\/audiobooks\/([a-zA-Z0-9-]+)\/decision$/);
     if (method === "POST" && adminAudiobookDecisionMatch) {
       const body = await readBody(req);
       if (!["approve", "reject"].includes(body.decision)) return sendJson(res, 400, { error: "Invalid decision" });
