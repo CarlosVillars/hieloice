@@ -286,8 +286,12 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 #nav-post-dropdown { position: fixed; top: auto; left: auto; transform: none; }
 /* Same clipping bug, same fix, for the Marketplace icon's dropdown (which
    now also holds the Audiobooks entries) - see wireIconNav() in app.js,
-   which sets top/left here at click time from the button's real position. */
-#icon-nav-marketplace-dropdown { position: fixed; top: auto; left: auto; transform: none; }
+   which sets top/left here at click time from the button's real position.
+   z-index bumped above #chatbot-widget's 300 (see its rule further down) -
+   that floating help bubble sits at bottom:20px/right:20px, the same corner
+   this dropdown opens into on a phone, and at the default z-index:60 it was
+   rendering on top of and covering the last couple of menu items. */
+#icon-nav-marketplace-dropdown { position: fixed; top: auto; left: auto; transform: none; z-index: 310; }
 
 /* On narrow phones, shrink the text/padding/gaps a bit so the row reads as
    one clean line instead of relying on horizontal scroll as much. */
@@ -387,7 +391,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
    badge off. Taking it out of flow entirely (position:absolute, pinned to
    the corner of the bell icon) means it no longer adds to the row's content
    height, so there's nothing left for that row to clip. */
-.nav-messages-badge { position: absolute; top: -4px; right: -6px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; align-items: center; justify-content: center; line-height: 15px; }
+.nav-messages-badge { position: absolute; top: -6px; right: -8px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; line-height: 1; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
 .icon-nav-dropdown-wrap { position: relative; }
 .icon-nav-dropdown {
   position: absolute;
