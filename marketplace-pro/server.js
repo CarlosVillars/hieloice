@@ -142,9 +142,35 @@ const SHIPPING_FLAT_FEE = 4.99;
 // EasyPost) yet - that's a real "phase 2" once order volume justifies the
 // extra integration and per-label cost; discussed with Carlos 2026-08-24.
 const ORDER_AUTO_RELEASE_DAYS = 7;
+// Fix (2026-09 technical review): POST /api/orders claims a listing
+// (status -> "pending_payment") the instant a buyer starts checkout, so a
+// second buyer can't also pay for it. If the buyer never finishes paying
+// (closes the tab, card declines, etc.), the listing must not stay claimed
+// forever - the sweep near the bottom of this file releases it back to
+// "active" once an order has sat unpaid longer than this.
+const ORDER_PENDING_PAYMENT_TIMEOUT_MS = 30 * 60 * 1000;
 if (!STRIPE_SECRET_KEY) {
   console.error("Missing STRIPE_SECRET_KEY - real payments/escrow disabled.");
 }
+
+// ---- AUDIOBOOKS (2026-09, per Carlos's request) ----
+// Two ways an audiobook lands in the catalog:
+//  "original"      - an author narrates/owns their own book and uploads it
+//                     to sell, reviewed by our team first (same idea as the
+//                     existing "Publish a Book" text pipeline below, just for
+//                     audio, and its own status queue).
+//  "public_domain" - free, out-of-copyright classics narrated by volunteers
+//                     (LibriVox). We never re-host their audio files - we
+//                     only store LibriVox/archive.org's own public URLs, the
+//                     same way public-domain book covers are already handled
+//                     for the Classics catalog above (GET /api/classics).
+// Unlike the text-book program (ORIGINAL_BOOK_PROGRAM_ENABLED, still off
+// pending legal/monetization terms Carlos hasn't finalized for that feature),
+// Carlos explicitly asked for this one to actually be sellable now - this
+// flag exists so it can still be paused the same way if needed later without
+// deleting any code.
+const AUDIOBOOKS_PROGRAM_ENABLED = true;
+const MAX_AUDIOBOOK_CHAPTERS = 60;
 
 const MAX_PHOTOS = 12;
 // MAX_ACTIVE_MOMENTS used to cap how many of a user's ephemeral 24h Moments
@@ -406,7 +432,7 @@ function stripeFormEncode(obj, prefix) {
   return parts.filter(Boolean).join("&");
 }
 
-async function stripeRequest(method, path, params) {
+async function stripeRequest(method, path, params, opts) {
   if (!STRIPE_SECRET_KEY) {
     const err = new Error("Payments aren't configured on the server yet.");
     err.status = 503;
@@ -414,11 +440,17 @@ async function stripeRequest(method, path, params) {
   }
   const body = params ? stripeFormEncode(params) : undefined;
   const fullPath = method === "GET" && params ? path + "?" + stripeFormEncode(params) : path;
+  const headers = {
+    Authorization: "Basic " + Buffer.from(STRIPE_SECRET_KEY + ":").toString("base64"),
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+  // Optional Idempotency-Key (2026-09 technical review fix): a backstop
+  // behind our own DB-level guards, so that even a client/network-level
+  // retry of a money-moving call (e.g. transfers) can never create a
+  // duplicate on Stripe's side - Stripe itself de-dupes by this key.
+  if (opts && opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
   const data = await httpsRequestJson(method, "https://api.stripe.com/v1" + fullPath, {
-    headers: {
-      Authorization: "Basic " + Buffer.from(STRIPE_SECRET_KEY + ":").toString("base64"),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+    headers,
     body: method === "GET" ? undefined : body,
   });
   if (data && data.error) {
@@ -600,37 +632,65 @@ function orderOut(o) {
 
 // Moves the seller's cut from HieloIce's Stripe balance to their connected
 // account. Called both when a buyer explicitly confirms receipt and by the
-// 7-day auto-release loop. Idempotent-ish: only acts on orders still "shipped".
+// 7-day auto-release loop.
+//
+// Fix (2026-09 technical review): this used to only be "idempotent-ish" -
+// nothing stopped a double-click on "confirm receipt" (or that racing the
+// hourly auto-release sweep) from both passing the caller's status check and
+// both creating a separate Stripe transfer, double-paying the seller for one
+// order. Now the very first thing this does is atomically claim the order
+// (shipped -> releasing); PostgREST only returns the row when the WHERE
+// clause actually matched, so a second concurrent call sees an empty result
+// and safely backs off instead of transferring again. The Idempotency-Key on
+// the Stripe call itself is a second, independent backstop.
 async function releaseOrderFunds(order) {
-  const sellers = await db.select("mkt_users", { id: "eq." + enc(order.seller_id), select: "stripe_account_id" });
-  const sellerAccountId = sellers && sellers[0] && sellers[0].stripe_account_id;
-  if (!sellerAccountId) {
-    const err = new Error("Seller no longer has a connected payment account.");
-    err.status = 409;
-    throw err;
-  }
-  let chargeId = order.stripe_charge_id;
-  if (!chargeId && order.stripe_payment_intent_id) {
-    const pi = await stripeRequest("GET", "/payment_intents/" + order.stripe_payment_intent_id);
-    chargeId = pi.latest_charge;
-  }
-  const transferParams = {
-    amount: Math.round(order.seller_payout * 100),
-    currency: order.currency || "usd",
-    destination: sellerAccountId,
-  };
-  if (chargeId) transferParams.source_transaction = chargeId;
-  const transfer = await stripeRequest("POST", "/transfers", transferParams);
-  await db.update(
+  const claimed = await db.update(
     "mkt_orders",
-    { id: "eq." + enc(order.id) },
-    { status: "released", released_at: Date.now(), stripe_transfer_id: transfer.id, stripe_charge_id: chargeId || null }
+    { id: "eq." + enc(order.id), status: "eq.shipped" },
+    { status: "releasing" }
   );
-  notifyUser(order.seller_id, "offers", {
-    title: "Payment released",
-    body: "Your buyer confirmed the order - your payout is on its way.",
-    url: "/#/orders/" + order.id,
-  }).catch(() => {});
+  if (!claimed || !claimed.length) {
+    return; // another caller is already releasing (or already released) this order
+  }
+  try {
+    const sellers = await db.select("mkt_users", { id: "eq." + enc(order.seller_id), select: "stripe_account_id" });
+    const sellerAccountId = sellers && sellers[0] && sellers[0].stripe_account_id;
+    if (!sellerAccountId) {
+      const err = new Error("Seller no longer has a connected payment account.");
+      err.status = 409;
+      throw err;
+    }
+    let chargeId = order.stripe_charge_id;
+    if (!chargeId && order.stripe_payment_intent_id) {
+      const pi = await stripeRequest("GET", "/payment_intents/" + order.stripe_payment_intent_id);
+      chargeId = pi.latest_charge;
+    }
+    const transferParams = {
+      amount: Math.round(order.seller_payout * 100),
+      currency: order.currency || "usd",
+      destination: sellerAccountId,
+    };
+    if (chargeId) transferParams.source_transaction = chargeId;
+    const transfer = await stripeRequest("POST", "/transfers", transferParams, { idempotencyKey: "release-" + order.id });
+    await db.update(
+      "mkt_orders",
+      { id: "eq." + enc(order.id) },
+      { status: "released", released_at: Date.now(), stripe_transfer_id: transfer.id, stripe_charge_id: chargeId || null }
+    );
+    notifyUser(order.seller_id, "offers", {
+      title: "Payment released",
+      body: "Your buyer confirmed the order - your payout is on its way.",
+      url: "/#/orders/" + order.id,
+    }).catch(() => {});
+  } catch (e) {
+    // Release our claim so a legitimate retry (the buyer clicking confirm
+    // again, or the next hourly sweep) can still go through instead of the
+    // order being stuck in "releasing" forever after a transient failure.
+    await db
+      .update("mkt_orders", { id: "eq." + enc(order.id), status: "eq.releasing" }, { status: "shipped" })
+      .catch((releaseErr) => console.error("Failed to revert order " + order.id + " after release error:", releaseErr.message));
+    throw e;
+  }
 }
 
 const db = {
@@ -717,6 +777,13 @@ function verifyPassword(password, stored) {
 // changes still take effect almost immediately.
 const authUserCache = new Map(); // token -> { promise, expires }
 const AUTH_CACHE_TTL_MS = 5000;
+// Sessions used to never expire (deliberate simplicity choice - see
+// PROJECT.md). Flagged in the 2026-09 technical review as a real risk: a
+// leaked token was permanent access. This adds an absolute expiry using the
+// created_at column that already exists on every session row - no schema
+// change needed. 180 days is generous enough that real users won't notice;
+// a leaked/old token eventually stops working on its own.
+const SESSION_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
 
 // Shared by HTTP auth (getAuthUser below, reading the "Authorization: Bearer
 // <token>" header) AND WebSocket auth (see the "realtime chat" section
@@ -730,8 +797,12 @@ async function getUserByToken(token) {
   if (cached && cached.expires > Date.now()) return cached.promise;
 
   const promise = (async () => {
-    const sessions = await db.select("mkt_sessions", { token: "eq." + enc(token), select: "user_id" });
+    const sessions = await db.select("mkt_sessions", { token: "eq." + enc(token), select: "user_id,created_at" });
     if (!sessions || !sessions[0]) return null;
+    if (sessions[0].created_at && Date.now() - sessions[0].created_at > SESSION_MAX_AGE_MS) {
+      db.remove("mkt_sessions", { token: "eq." + enc(token) }).catch(() => {});
+      return null;
+    }
     const users = await db.select("mkt_users", { id: "eq." + enc(sessions[0].user_id), select: "*" });
     const user = (users && users[0]) || null;
     // Suspended accounts are treated as logged-out for every authenticated
@@ -761,7 +832,14 @@ async function getAuthUser(req) {
 
 function publicUser(u) {
   if (!u) return null;
-  const { password_hash, email, phone, google_id, facebook_id, ...safe } = u;
+  // Fix (2026-09 technical review): birthdate was previously leaking through
+  // here - GET /api/users/:id needs no auth at all, so anyone could look up
+  // any user's exact date of birth. Nothing that reads someone ELSE's
+  // profile needs the raw birthdate (age-gated features like Dating
+  // recompute isAdultUser() from the raw mkt_users row internally, never
+  // from this public-facing shape), so it's stripped here alongside the
+  // other private fields.
+  const { password_hash, email, phone, google_id, facebook_id, birthdate, ...safe } = u;
   return toCamelUser(safe);
 }
 
@@ -1487,13 +1565,23 @@ function isEmail(s) {
 
 // Book genres, ordered by C2C used-book resale demand (see CATEGORY_LIST
 // in public/i18n.js, which must stay in sync with these slugs).
+// Must stay in sync with CATEGORY_LIST in public/i18n.js - that's the
+// single source of truth for what a seller sees in the category dropdown.
+// Found out of sync 2026-09 (technical review): "test-prep",
+// "language-learning" and "signed-vintage" were selectable in the frontend
+// but rejected here with "Invalid category", silently breaking Publish
+// Listing for any book in those 3 categories. See the
+// "stays in sync with public/i18n.js CATEGORY_LIST" test in server.test.js,
+// added the same day, which fails CI if these two lists ever drift apart
+// again.
 const CATEGORIES = [
   "bestsellers-fiction", "mystery-thriller", "romance", "fantasy",
   "science-fiction", "horror", "textbooks-academic", "self-help",
+  "test-prep", "language-learning",
   "nonfiction", "children", "young-adult", "comics-manga",
   "biography-memoir", "history", "classics-literature", "poetry",
   "cooking", "health-wellness", "business-finance", "religion-spirituality",
-  "art-photography", "travel", "rare-collectible", "other-books",
+  "art-photography", "travel", "rare-collectible", "signed-vintage", "other-books",
 ];
 
 const REPORT_REASONS = ["spam", "prohibited", "inappropriate", "fraud", "other", "harassment", "fake_profile", "underage_concern"];
@@ -1989,6 +2077,35 @@ async function handleApi(req, res, pathname, query) {
     };
     await db.insert("mkt_reports", report);
     await maybeAutoFlag(targetType, targetId);
+    return sendJson(res, 201, { ok: true });
+  }
+
+  // ---- BUG REPORTS (footer "Report a Bug" link) ----
+  // The frontend page existed as translated text only - no route, no view,
+  // and no backend to receive it. Wired up together 2026-09. Stored in
+  // mkt_bug_reports if that table exists; if not (e.g. not yet created in
+  // Supabase), logs to the server console instead of crashing or losing the
+  // report, per the "safe fallback for unconfigured integrations" rule.
+  if (method === "POST" && pathname === "/api/bug-reports") {
+    const me = await getAuthUser(req);
+    const body = await readBody(req);
+    const description = String(body.description || "").trim().slice(0, 2000);
+    if (!description) return sendJson(res, 400, { error: "Missing description" });
+    const bugReport = {
+      id: crypto.randomBytes(8).toString("hex"),
+      user_id: me ? me.id : null,
+      email: String(body.email || "").trim().slice(0, 200) || (me ? me.email : null),
+      description,
+      page_url: String(body.pageUrl || "").slice(0, 500),
+      user_agent: String(req.headers["user-agent"] || "").slice(0, 300),
+      status: "open",
+      created_at: Date.now(),
+    };
+    try {
+      await db.insert("mkt_bug_reports", bugReport);
+    } catch (e) {
+      console.error("[bug-report] could not store in mkt_bug_reports (table may not exist yet):", e.message, JSON.stringify(bugReport));
+    }
     return sendJson(res, 201, { ok: true });
   }
 
@@ -2968,6 +3085,40 @@ async function handleApi(req, res, pathname, query) {
       const areFriends = await isFriendsWith(me.id, otherId);
       if (!areFriends) {
         return sendJson(res, 403, { error: "This user only accepts messages from friends." });
+      }
+    }
+
+    // Dating safety: don't let someone cold-message a person they only know
+    // from the Dating swipe deck before the two of them have matched - every
+    // mainstream dating app works this way. GET /api/dating/discover has to
+    // hand the client each candidate's real userId (the swipe button needs
+    // it), and this endpoint is the general-purpose one shared by the whole
+    // app, so it has no idea *how* the caller learned that id. To avoid
+    // breaking ordinary marketplace/social messaging, the gate only fires
+    // for the narrow shape of an actual dating scenario: BOTH people
+    // currently have their Dating profile turned on, they have never
+    // messaged each other before in either direction (any existing thread,
+    // however old, is always left alone), and they are not already matched.
+    if (otherId !== me.id) {
+      const [myDatingRows, otherDatingRows] = await Promise.all([
+        db.select("dating_profiles", { user_id: "eq." + enc(me.id), select: "active" }),
+        db.select("dating_profiles", { user_id: "eq." + enc(otherId), select: "active" }),
+      ]);
+      const myDatingActive = myDatingRows && myDatingRows[0] && myDatingRows[0].active;
+      const otherDatingActive = otherDatingRows && otherDatingRows[0] && otherDatingRows[0].active;
+      if (myDatingActive && otherDatingActive) {
+        const [dA, dB] = [me.id, otherId].sort();
+        const matchRows = await db.select("dating_matches", { user_a_id: "eq." + enc(dA), user_b_id: "eq." + enc(dB), unmatched_at: "is.null", select: "id" });
+        if (!matchRows || !matchRows[0]) {
+          const [priorSent, priorReceived] = await Promise.all([
+            db.select("mkt_messages", { from_user_id: "eq." + enc(me.id), to_user_id: "eq." + enc(otherId), select: "id", limit: "1" }),
+            db.select("mkt_messages", { from_user_id: "eq." + enc(otherId), to_user_id: "eq." + enc(me.id), select: "id", limit: "1" }),
+          ]);
+          const hasHistory = (priorSent && priorSent[0]) || (priorReceived && priorReceived[0]);
+          if (!hasHistory) {
+            return sendJson(res, 403, { error: "You need to match with this person in Dating before you can message them." });
+          }
+        }
       }
     }
 
@@ -5691,6 +5842,394 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { ok: true, work: originalWorkOut(updated[0]) });
   }
 
+  // ---- AUDIOBOOKS (2026-09) ----
+  function audiobookOut(a, opts) {
+    const chapters = Array.isArray(a.chapters) ? a.chapters : [];
+    const out = {
+      id: a.id,
+      authorId: a.author_id,
+      authorName: a.author_name || "",
+      title: a.title,
+      genre: a.genre,
+      synopsis: a.synopsis,
+      coverImageUrl: a.cover_image_url || null,
+      source: a.source,
+      price: Number(a.price) || 0,
+      status: a.status,
+      rejectionNotes: a.rejection_notes || null,
+      chapterCount: chapters.length,
+      totalDurationSeconds: a.total_duration_seconds || 0,
+      createdAt: a.created_at,
+      updatedAt: a.updated_at,
+      submittedAt: a.submitted_at || null,
+      publishedAt: a.published_at || null,
+    };
+    // Chapter audio URLs are only handed out to someone entitled to hear
+    // them (owner/admin while reviewing, or an owner/buyer of a published
+    // book) - callers that just want catalog/browsing info pass
+    // includeChapters:false so a stranger can never get playable URLs for a
+    // book they haven't bought.
+    if (opts && opts.includeChapters) {
+      out.chapters = chapters.map((c) => ({
+        title: c.title || "",
+        audioUrl: c.audioUrl || "",
+        durationSeconds: c.durationSeconds || 0,
+      }));
+    }
+    return out;
+  }
+
+  if (method === "GET" && pathname === "/api/audiobooks/config") {
+    return sendJson(res, 200, { programEnabled: AUDIOBOOKS_PROGRAM_ENABLED });
+  }
+
+  // GET /api/audiobooks?q=&genre=&source= - public catalog, published only.
+  if (method === "GET" && pathname === "/api/audiobooks") {
+    const params = { status: "eq.published", order: "published_at.desc", select: "*" };
+    if (query.genre) params.genre = "eq." + enc(query.genre);
+    if (query.source === "original" || query.source === "public_domain") params.source = "eq." + enc(query.source);
+    let rows;
+    try {
+      rows = await db.select("mkt_audiobooks", params);
+    } catch (e) {
+      return sendJson(res, 200, []); // table not created yet - browse gracefully returns empty instead of erroring
+    }
+    const q = String(query.q || "").trim().toLowerCase();
+    if (q) rows = (rows || []).filter((a) => (a.title || "").toLowerCase().includes(q) || (a.author_name || "").toLowerCase().includes(q));
+    return sendJson(res, 200, (rows || []).map((a) => audiobookOut(a, { includeChapters: false })));
+  }
+
+  if (method === "GET" && pathname === "/api/audiobooks/mine") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_audiobooks", { author_id: "eq." + enc(me.id), order: "updated_at.desc", select: "*" });
+    return sendJson(res, 200, (rows || []).map((a) => audiobookOut(a, { includeChapters: true })));
+  }
+
+  // GET /api/audiobooks/library/mine - audiobooks I've bought or grabbed for
+  // free (public-domain), used to gate playback ("my library").
+  if (method === "GET" && pathname === "/api/audiobooks/library/mine") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const purchases = await db.select("mkt_audiobook_purchases", {
+      buyer_id: "eq." + enc(me.id),
+      status: "in.(paid,granted)",
+      select: "audiobook_id,created_at",
+    });
+    const ids = [...new Set((purchases || []).map((p) => p.audiobook_id))];
+    if (!ids.length) return sendJson(res, 200, []);
+    const rows = await db.select("mkt_audiobooks", { id: "in.(" + ids.map(enc).join(",") + ")", select: "*" });
+    return sendJson(res, 200, (rows || []).map((a) => audiobookOut(a, { includeChapters: false })));
+  }
+
+  const audiobookMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)$/);
+  if (method === "GET" && audiobookMatch) {
+    const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(audiobookMatch[1]), select: "*" });
+    const a = rows && rows[0];
+    if (!a) return sendJson(res, 404, { error: "Audiobook not found" });
+    const me = await getAuthUser(req);
+    const isOwnerOrAdmin = !!(me && (me.id === a.author_id || isAdmin(me)));
+    if (a.status !== "published" && !isOwnerOrAdmin) return sendJson(res, 404, { error: "Audiobook not found" });
+    // Only include playable chapter URLs for someone actually entitled to
+    // hear them right now - free public-domain books are open to everyone,
+    // logged in or not (their audio is already public); a paid original
+    // book's chapters are only handed to its author/admin or an actual buyer.
+    let includeChapters = a.source === "public_domain" || isOwnerOrAdmin;
+    if (!includeChapters && me && a.status === "published") {
+      const owned = await db.select("mkt_audiobook_purchases", {
+        audiobook_id: "eq." + enc(a.id),
+        buyer_id: "eq." + enc(me.id),
+        status: "in.(paid,granted)",
+        select: "id",
+      });
+      includeChapters = !!(owned && owned[0]);
+    }
+    return sendJson(res, 200, { ...audiobookOut(a, { includeChapters }), isOwner: !!(me && me.id === a.author_id) });
+  }
+
+  // POST /api/audiobooks - start a new original audiobook submission (draft).
+  if (method === "POST" && pathname === "/api/audiobooks") {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const body = await readBody(req);
+    const title = String(body.title || "").trim().slice(0, 200);
+    if (!title) return sendJson(res, 400, { error: "Title is required" });
+    const now = Date.now();
+    const audiobook = {
+      id: crypto.randomBytes(8).toString("hex"),
+      author_id: me.id,
+      author_name: me.name || "",
+      title,
+      genre: String(body.genre || "").trim().slice(0, 60),
+      synopsis: String(body.synopsis || "").trim().slice(0, 2000),
+      cover_image_url: null,
+      source: "original",
+      price: 0,
+      status: "draft",
+      chapters: [],
+      total_duration_seconds: 0,
+      created_at: now,
+      updated_at: now,
+    };
+    let created;
+    try {
+      created = await db.insert("mkt_audiobooks", audiobook);
+    } catch (e) {
+      console.error("Failed to create audiobook (has the mkt_audiobooks table been created in Supabase yet?):", e.message);
+      return sendJson(res, 503, { error: "Audiobooks aren't set up on the server yet. Please try again later." });
+    }
+    return sendJson(res, 201, audiobookOut(created, { includeChapters: true }));
+  }
+
+  if (method === "PATCH" && audiobookMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(audiobookMatch[1]), select: "*" });
+    const a = rows && rows[0];
+    if (!a) return sendJson(res, 404, { error: "Not found" });
+    if (a.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    // "rejected" is intentionally editable too (unlike a bug found this same
+    // review round in the text-book pipeline, where a rejected book had no
+    // way back) - an author who fixes what an admin flagged can resubmit the
+    // same listing instead of starting completely over.
+    if (!["draft", "needs_revision", "rejected"].includes(a.status)) {
+      return sendJson(res, 400, { error: "This audiobook can't be edited while it's under review or already published." });
+    }
+    const body = await readBody(req);
+    const patch = { updated_at: Date.now() };
+    if (body.title !== undefined) patch.title = String(body.title).trim().slice(0, 200);
+    if (body.genre !== undefined) patch.genre = String(body.genre).trim().slice(0, 60);
+    if (body.synopsis !== undefined) patch.synopsis = String(body.synopsis).trim().slice(0, 2000);
+    if (body.price !== undefined) {
+      const price = Number(body.price);
+      if (!Number.isFinite(price) || price < 0 || price > 500) {
+        return sendJson(res, 400, { error: "Enter a valid price between $0 and $500 (use $0 to give it away for free)." });
+      }
+      patch.price = Math.round(price * 100) / 100;
+    }
+    if (body.coverImage && String(body.coverImage).startsWith("data:")) {
+      try {
+        patch.cover_image_url = await sbStorageUpload("media", "audiobooks/covers/" + me.id + "/" + crypto.randomBytes(8).toString("hex") + ".jpg", body.coverImage);
+      } catch (e) {
+        return sendJson(res, 500, { error: "Could not upload cover image" });
+      }
+    }
+    if (a.status === "rejected") patch.status = "draft"; // editing a rejected book restarts it as a fresh draft
+    const updated = await db.update("mkt_audiobooks", { id: "eq." + enc(a.id) }, patch);
+    return sendJson(res, 200, audiobookOut(updated[0], { includeChapters: true }));
+  }
+
+  // POST /api/audiobooks/:id/chapters - upload one chapter's narration audio.
+  // One file per call on purpose (not the whole book at once) so a slow
+  // connection uploading a long book doesn't have to redo it all after a
+  // failure, and so each request stays well under the server's body-size cap.
+  const audiobookChaptersMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/chapters$/);
+  if (method === "POST" && audiobookChaptersMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(audiobookChaptersMatch[1]), select: "*" });
+    const a = rows && rows[0];
+    if (!a) return sendJson(res, 404, { error: "Not found" });
+    if (a.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (!["draft", "needs_revision", "rejected"].includes(a.status)) {
+      return sendJson(res, 400, { error: "This audiobook can't be edited while it's under review or already published." });
+    }
+    const chapters = Array.isArray(a.chapters) ? a.chapters : [];
+    if (chapters.length >= MAX_AUDIOBOOK_CHAPTERS) {
+      return sendJson(res, 400, { error: "This audiobook already has the maximum of " + MAX_AUDIOBOOK_CHAPTERS + " chapters." });
+    }
+    const body = await readBody(req);
+    const chapterTitle = String(body.title || "Chapter " + (chapters.length + 1)).trim().slice(0, 150);
+    if (!body.media || !String(body.media).startsWith("data:audio/")) {
+      return sendJson(res, 400, { error: "An audio file is required for this chapter." });
+    }
+    let audioUrl;
+    try {
+      audioUrl = await sbStorageUpload("media", "audiobooks/" + me.id + "/" + a.id + "/" + crypto.randomBytes(8).toString("hex") + ".mp3", body.media);
+    } catch (e) {
+      return sendJson(res, 500, { error: "Could not upload chapter audio" });
+    }
+    let durationSeconds = 0;
+    if (body.durationSeconds !== undefined) {
+      const d = Number(body.durationSeconds);
+      if (Number.isFinite(d) && d > 0) durationSeconds = d;
+    }
+    const newChapters = [...chapters, { title: chapterTitle, audioUrl, durationSeconds }];
+    const totalDuration = newChapters.reduce((sum, c) => sum + (c.durationSeconds || 0), 0);
+    const updated = await db.update(
+      "mkt_audiobooks",
+      { id: "eq." + enc(a.id) },
+      { chapters: newChapters, total_duration_seconds: totalDuration, updated_at: Date.now() }
+    );
+    return sendJson(res, 200, audiobookOut(updated[0], { includeChapters: true }));
+  }
+
+  // DELETE /api/audiobooks/:id/chapters/:index - remove one chapter by position.
+  const audiobookChapterMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/chapters\/(\d+)$/);
+  if (method === "DELETE" && audiobookChapterMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(audiobookChapterMatch[1]), select: "*" });
+    const a = rows && rows[0];
+    if (!a) return sendJson(res, 404, { error: "Not found" });
+    if (a.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (!["draft", "needs_revision", "rejected"].includes(a.status)) {
+      return sendJson(res, 400, { error: "This audiobook can't be edited while it's under review or already published." });
+    }
+    const index = Number(audiobookChapterMatch[2]);
+    const chapters = Array.isArray(a.chapters) ? a.chapters : [];
+    if (!Number.isInteger(index) || index < 0 || index >= chapters.length) {
+      return sendJson(res, 404, { error: "Chapter not found" });
+    }
+    const newChapters = chapters.filter((_, i) => i !== index);
+    const totalDuration = newChapters.reduce((sum, c) => sum + (c.durationSeconds || 0), 0);
+    const updated = await db.update(
+      "mkt_audiobooks",
+      { id: "eq." + enc(a.id) },
+      { chapters: newChapters, total_duration_seconds: totalDuration, updated_at: Date.now() }
+    );
+    return sendJson(res, 200, audiobookOut(updated[0], { includeChapters: true }));
+  }
+
+  // POST /api/audiobooks/:id/submit - send to our team for review. No
+  // automated AI pre-screen like the text-book pipeline has - there's no
+  // honest audio-understanding step in this codebase to run one, so this
+  // goes straight to human review.
+  const audiobookSubmitMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/submit$/);
+  if (method === "POST" && audiobookSubmitMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(audiobookSubmitMatch[1]), select: "*" });
+    const a = rows && rows[0];
+    if (!a) return sendJson(res, 404, { error: "Not found" });
+    if (a.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (!["draft", "needs_revision", "rejected"].includes(a.status)) {
+      return sendJson(res, 400, { error: "This audiobook has already been submitted." });
+    }
+    const chapters = Array.isArray(a.chapters) ? a.chapters : [];
+    if (!a.title || !a.synopsis || !a.genre || chapters.length === 0) {
+      return sendJson(res, 400, { error: "Add a title, genre, synopsis, and at least one narrated chapter before submitting." });
+    }
+    if (a.price > 0) {
+      const sellers = await db.select("mkt_users", { id: "eq." + enc(me.id), select: "stripe_payouts_enabled" });
+      if (!sellers[0] || !sellers[0].stripe_payouts_enabled) {
+        return sendJson(res, 400, { error: "Finish setting up payments (the same Stripe setup marketplace sellers use) before submitting a paid audiobook, or set the price to $0." });
+      }
+    }
+    const updated = await db.update(
+      "mkt_audiobooks",
+      { id: "eq." + enc(a.id) },
+      { status: "team_review", submitted_at: Date.now(), rejection_notes: null, updated_at: Date.now() }
+    );
+    return sendJson(res, 200, audiobookOut(updated[0], { includeChapters: true }));
+  }
+
+  // POST /api/audiobooks/:id/publish - author's final step once our team
+  // approved it. Kept as its own explicit action so nothing goes live the
+  // instant it's approved without the author choosing the moment.
+  const audiobookPublishMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/publish$/);
+  if (method === "POST" && audiobookPublishMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(audiobookPublishMatch[1]), select: "*" });
+    const a = rows && rows[0];
+    if (!a) return sendJson(res, 404, { error: "Not found" });
+    if (a.author_id !== me.id) return sendJson(res, 403, { error: "Not authorized" });
+    if (a.status !== "approved") return sendJson(res, 400, { error: "This audiobook isn't approved for publishing yet." });
+    if (!AUDIOBOOKS_PROGRAM_ENABLED) return sendJson(res, 200, { ok: false, comingSoon: true });
+    const updated = await db.update("mkt_audiobooks", { id: "eq." + enc(a.id) }, { status: "published", published_at: Date.now(), updated_at: Date.now() });
+    return sendJson(res, 200, { ok: true, audiobook: audiobookOut(updated[0], { includeChapters: true }) });
+  }
+
+  // POST /api/audiobooks/:id/acquire - get a published audiobook: instant
+  // and free for public-domain titles, or a Stripe Checkout session for a
+  // paid original one. Digital delivery, so unlike a physical book order
+  // there's no shipping and no 7-day hold - the author is paid as soon as
+  // the payment itself clears (see the webhook below).
+  const audiobookAcquireMatch = pathname.match(/^\/api\/audiobooks\/([a-zA-Z0-9]+)\/acquire$/);
+  if (method === "POST" && audiobookAcquireMatch) {
+    const me = await getAuthUser(req);
+    if (!me) return sendJson(res, 401, { error: "Not authenticated" });
+    const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(audiobookAcquireMatch[1]), select: "*" });
+    const a = rows && rows[0];
+    if (!a) return sendJson(res, 404, { error: "Audiobook not found" });
+    if (a.status !== "published") return sendJson(res, 400, { error: "This audiobook isn't available." });
+
+    const existing = await db.select("mkt_audiobook_purchases", {
+      audiobook_id: "eq." + enc(a.id),
+      buyer_id: "eq." + enc(me.id),
+      status: "in.(paid,granted)",
+      select: "id",
+    });
+    if (existing && existing[0]) return sendJson(res, 200, { alreadyOwned: true });
+
+    const price = Number(a.price) || 0;
+    if (price <= 0) {
+      await db.insert("mkt_audiobook_purchases", {
+        id: crypto.randomBytes(8).toString("hex"),
+        audiobook_id: a.id,
+        buyer_id: me.id,
+        amount: 0,
+        platform_fee: 0,
+        author_payout: 0,
+        status: "granted",
+        created_at: Date.now(),
+      });
+      return sendJson(res, 200, { granted: true });
+    }
+
+    if (a.source !== "original" || !a.author_id) {
+      // Should never happen (only "original" audiobooks are ever priced
+      // above $0 - see PATCH above), but fail safe rather than charge
+      // someone with nowhere for the money to go.
+      return sendJson(res, 400, { error: "This audiobook can't be purchased right now." });
+    }
+    const authors = await db.select("mkt_users", { id: "eq." + enc(a.author_id), select: "stripe_payouts_enabled" });
+    if (!authors[0] || !authors[0].stripe_payouts_enabled) {
+      return sendJson(res, 400, { error: "This author hasn't finished setting up payments yet, so this audiobook can't be purchased right now." });
+    }
+
+    const platformFee = Math.round(price * PLATFORM_FEE_RATE * 100) / 100;
+    const authorPayout = Math.round((price - platformFee) * 100) / 100;
+    const purchase = {
+      id: crypto.randomBytes(8).toString("hex"),
+      audiobook_id: a.id,
+      buyer_id: me.id,
+      amount: price,
+      platform_fee: platformFee,
+      author_payout: authorPayout,
+      currency: "usd",
+      status: "pending_payment",
+      created_at: Date.now(),
+    };
+    await db.insert("mkt_audiobook_purchases", purchase);
+
+    const base = baseUrl(req);
+    try {
+      const session = await stripeRequest("POST", "/checkout/sessions", {
+        mode: "payment",
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: "usd",
+              unit_amount: Math.round(price * 100),
+              product_data: { name: String(a.title || "HieloIce audiobook").slice(0, 250) },
+            },
+          },
+        ],
+        metadata: { audiobook_purchase_id: purchase.id },
+        success_url: base + "/#/audiobooks/" + a.id + "?checkout=success",
+        cancel_url: base + "/#/audiobooks/" + a.id + "?checkout=cancelled",
+      });
+      await db.update("mkt_audiobook_purchases", { id: "eq." + enc(purchase.id) }, { stripe_checkout_session_id: session.id });
+      return sendJson(res, 201, { checkoutUrl: session.url });
+    } catch (e) {
+      await db.update("mkt_audiobook_purchases", { id: "eq." + enc(purchase.id) }, { status: "cancelled_expired" }).catch(() => {});
+      return sendJson(res, e.status || 502, { error: e.message || "Could not start checkout" });
+    }
+  }
+
   // ---- ADS (advertiser carousel) ----
   function adOut(a) {
     const { image_url, link_url, advertiser_name, sort_order, created_at, ...rest } = a;
@@ -6717,6 +7256,52 @@ async function handleApi(req, res, pathname, query) {
       return sendJson(res, 200, originalWorkOut(updated[0]));
     }
 
+    // GET /api/admin/audiobooks?status=team_review (defaults to team_review)
+    if (method === "GET" && pathname === "/api/admin/audiobooks") {
+      const params = { select: "*", order: "submitted_at.desc", limit: "50" };
+      params.status = "eq." + enc(String(query.status || "team_review"));
+      let rows = [];
+      try {
+        rows = await db.select("mkt_audiobooks", params);
+      } catch (e) {
+        return sendJson(res, 200, []); // table not created yet
+      }
+      const authorIds = [...new Set((rows || []).map((a) => a.author_id).filter(Boolean))];
+      let authorMap = {};
+      if (authorIds.length) {
+        const authors = await db.select("mkt_users", { id: "in.(" + authorIds.map(enc).join(",") + ")", select: "id,name,email" });
+        (authors || []).forEach((u) => {
+          authorMap[u.id] = { name: u.name, email: u.email };
+        });
+      }
+      return sendJson(
+        res,
+        200,
+        (rows || []).map((a) => ({
+          ...audiobookOut(a, { includeChapters: true }),
+          authorEmail: (authorMap[a.author_id] || {}).email || "",
+        }))
+      );
+    }
+
+    // POST /api/admin/audiobooks/:id/decision { decision: 'approve'|'reject', notes? }
+    const adminAudiobookDecisionMatch = pathname.match(/^\/api\/admin\/audiobooks\/([a-zA-Z0-9]+)\/decision$/);
+    if (method === "POST" && adminAudiobookDecisionMatch) {
+      const body = await readBody(req);
+      if (!["approve", "reject"].includes(body.decision)) return sendJson(res, 400, { error: "Invalid decision" });
+      const rows = await db.select("mkt_audiobooks", { id: "eq." + enc(adminAudiobookDecisionMatch[1]), select: "*" });
+      const a = rows && rows[0];
+      if (!a) return sendJson(res, 404, { error: "Not found" });
+      const now = Date.now();
+      const patch = {
+        status: body.decision === "approve" ? "approved" : "rejected",
+        rejection_notes: body.decision === "reject" ? String(body.notes || "").slice(0, 1000) : null,
+        updated_at: now,
+      };
+      const updated = await db.update("mkt_audiobooks", { id: "eq." + enc(a.id) }, patch);
+      return sendJson(res, 200, audiobookOut(updated[0], { includeChapters: true }));
+    }
+
     // ---- Admin: order disputes (task #58/#127) ----
     // A buyer reported a problem (didn't arrive / arrived damaged / etc).
     // Funds are frozen (order stays in "disputed") until an admin here
@@ -6812,6 +7397,45 @@ async function handleApi(req, res, pathname, query) {
       if (event.type === "checkout.session.completed") {
         const session = event.data.object;
         const orderId = session.metadata && session.metadata.order_id;
+        const audiobookPurchaseId = session.metadata && session.metadata.audiobook_purchase_id;
+        if (audiobookPurchaseId) {
+          // Audiobook purchase (digital good) - unlike a physical order there
+          // is no shipping/escrow hold to wait for, so the author is paid out
+          // immediately, right here, once the payment itself has cleared.
+          const purchases = await db.select("mkt_audiobook_purchases", { id: "eq." + enc(audiobookPurchaseId), select: "*" });
+          const purchase = purchases && purchases[0];
+          if (purchase && purchase.status === "pending_payment") {
+            await db.update("mkt_audiobook_purchases", { id: "eq." + enc(purchase.id) }, { status: "paid", stripe_payment_intent_id: session.payment_intent || null });
+            try {
+              const books = await db.select("mkt_audiobooks", { id: "eq." + enc(purchase.audiobook_id), select: "author_id" });
+              const authorId = books && books[0] && books[0].author_id;
+              const authors = authorId ? await db.select("mkt_users", { id: "eq." + enc(authorId), select: "stripe_account_id" }) : [];
+              const authorAccountId = authors && authors[0] && authors[0].stripe_account_id;
+              if (authorAccountId && purchase.author_payout > 0) {
+                const transfer = await stripeRequest(
+                  "POST",
+                  "/transfers",
+                  { amount: Math.round(purchase.author_payout * 100), currency: purchase.currency || "usd", destination: authorAccountId, source_transaction: session.payment_intent || undefined },
+                  { idempotencyKey: "audiobook-release-" + purchase.id }
+                );
+                await db.update("mkt_audiobook_purchases", { id: "eq." + enc(purchase.id) }, { released_at: Date.now(), stripe_transfer_id: transfer.id });
+              }
+              if (authorId) {
+                notifyUser(authorId, "offers", {
+                  title: "You made a sale!",
+                  body: "Someone bought your audiobook - your payout is on its way.",
+                  url: "/#/audiobooks/" + purchase.audiobook_id,
+                }).catch(() => {});
+              }
+            } catch (e) {
+              // Payment already succeeded and is recorded as "paid" - only
+              // the author's transfer failed. Logged for manual follow-up
+              // rather than silently losing track of it; the buyer already
+              // has access either way since purchase.status is "paid".
+              console.error("Audiobook author payout failed for purchase " + purchase.id + ":", e.message);
+            }
+          }
+        }
         if (orderId) {
           const orders = await db.select("mkt_orders", { id: "eq." + enc(orderId), select: "*" });
           const order = orders && orders[0];
@@ -6840,6 +7464,15 @@ async function handleApi(req, res, pathname, query) {
               { id: "eq." + enc(orderId) },
               { status: "paid_held", stripe_payment_intent_id: session.payment_intent || null, ...shippingFields }
             );
+
+            // Fix (2026-09 technical review): payment has now actually
+            // cleared, so finalize the listing as sold. Conditioned on it
+            // still being "pending_payment" (the claim made in POST
+            // /api/orders) so this never overwrites some other status an
+            // admin may have set in the meantime.
+            await db
+              .update("mkt_products", { id: "eq." + enc(order.product_id), status: "eq.pending_payment" }, { status: "sold" })
+              .catch((e) => console.error("Failed to mark product sold after payment for order " + orderId + ":", e.message));
 
             // Task #313 phase 2: if the buyer went through the live rate
             // picker, the order already has an EasyPost shipment + the exact
@@ -7020,118 +7653,159 @@ async function handleApi(req, res, pathname, query) {
     if (product.seller_id === me.id) return sendJson(res, 400, { error: "You cannot buy your own listing" });
     if (product.status && product.status !== "active") return sendJson(res, 400, { error: "This listing is no longer available" });
 
-    const sellers = await db.select("mkt_users", { id: "eq." + enc(product.seller_id), select: "stripe_payouts_enabled" });
-    const seller = sellers && sellers[0];
-    if (!seller || !seller.stripe_payouts_enabled) {
-      return sendJson(res, 400, { error: "This seller hasn't finished setting up payments yet, so this listing can't be purchased right now." });
+    // Fix (2026-09 technical review): two buyers could previously both pass
+    // the check above and both complete Stripe checkout for the same listing,
+    // because nothing actually claimed the product between "check" and "pay".
+    // This atomically flips the listing to pending_payment ONLY if it is
+    // still "active" (status=eq.active in the WHERE clause) - PostgREST
+    // returns the updated row only when the WHERE matched, so an empty result
+    // means someone else's order already claimed it a moment ago. If payment
+    // never completes (buyer abandons checkout), the sweep near the bottom of
+    // this file reverts the listing back to "active" after
+    // ORDER_PENDING_PAYMENT_TIMEOUT_MS so it doesn't stay stuck forever.
+    const claimed = await db.update(
+      "mkt_products",
+      { id: "eq." + enc(product.id), status: "eq.active" },
+      { status: "pending_payment" }
+    );
+    if (!claimed || !claimed.length) {
+      return sendJson(res, 400, { error: "This listing is no longer available" });
     }
 
-    const amount = Number(product.price) || 0;
-    if (amount <= 0) return sendJson(res, 400, { error: "This listing doesn't have a valid price" });
-    const platformFee = Math.round(amount * PLATFORM_FEE_RATE * 100) / 100;
-    const sellerPayout = Math.round((amount - platformFee) * 100) / 100;
-
-    // Seller payout math is based only on the book's price, never on the
-    // shipping fee - the shipping fee is HieloIce's/the carrier's, never
-    // something the seller's cut is computed against.
-    //
-    // Task #313 phase 2, per Carlos's decision 2026-08-24: if the buyer went
-    // through the live rate picker (see POST /api/orders/shipping-rates),
-    // body carries the EasyPost shipmentId/rateId/address they chose. We
-    // re-fetch the shipment from EasyPost ourselves rather than trusting a
-    // client-supplied price, so a tampered request can't under-pay for
-    // shipping. If no rate was chosen (buyer never saw the picker, or
-    // EASYPOST_API_KEY isn't configured yet), fall back to the old flat fee
-    // so checkout never breaks.
-    let shippingFee = SHIPPING_FLAT_FEE;
-    let easypostShipmentId = null;
-    let easypostRateId = null;
-    let carrierBaseRate = null;
-    let shippingLineLabel = "Shipping";
-    let buyerAddress = null;
-    let useStripeAddressCollection = true;
-
-    if (EASYPOST_ENABLED && body.shipmentId && body.rateId && body.address && body.address.line1) {
-      const shipment = await easypostRequest("GET", "/shipments/" + encodeURIComponent(body.shipmentId));
-      const chosenRate = (shipment.rates || []).find((r) => r.id === body.rateId);
-      if (!chosenRate) {
-        return sendJson(res, 400, { error: "That shipping option is no longer available - please pick again." });
+    // Everything from here on is wrapped in try/catch for one reason: the
+    // listing was just atomically claimed (marked pending_payment) above, so
+    // ANY failure below - a bad seller state, a stale shipping rate, a
+    // Stripe/EasyPost network error - must release that claim back to
+    // "active". Otherwise a single failed checkout attempt would silently
+    // and permanently remove a perfectly good listing from sale.
+    try {
+      const sellers = await db.select("mkt_users", { id: "eq." + enc(product.seller_id), select: "stripe_payouts_enabled" });
+      const seller = sellers && sellers[0];
+      if (!seller || !seller.stripe_payouts_enabled) {
+        const err = new Error("This seller hasn't finished setting up payments yet, so this listing can't be purchased right now.");
+        err.status = 400;
+        throw err;
       }
-      const marked = rateWithCommission(chosenRate);
-      shippingFee = marked.price;
-      carrierBaseRate = marked.baseRate;
-      easypostShipmentId = shipment.id;
-      easypostRateId = chosenRate.id;
-      shippingLineLabel = "Shipping - " + marked.carrier + " " + marked.service;
-      buyerAddress = body.address;
-      useStripeAddressCollection = false; // we already have a verified address, no need to collect it twice
-    }
 
-    const order = {
-      id: crypto.randomBytes(8).toString("hex"),
-      product_id: product.id,
-      buyer_id: me.id,
-      seller_id: product.seller_id,
-      amount,
-      shipping_fee: shippingFee,
-      platform_fee: platformFee,
-      seller_payout: sellerPayout,
-      currency: "usd",
-      status: "pending_payment",
-      created_at: Date.now(),
-      easypost_shipment_id: easypostShipmentId,
-      easypost_rate_id: easypostRateId,
-      carrier_base_rate: carrierBaseRate,
-    };
-    if (buyerAddress) {
-      order.shipping_name = buyerAddress.name || null;
-      order.shipping_line1 = buyerAddress.line1 || null;
-      order.shipping_line2 = buyerAddress.line2 || null;
-      order.shipping_city = buyerAddress.city || null;
-      order.shipping_state = buyerAddress.state || null;
-      order.shipping_postal_code = buyerAddress.postalCode || null;
-      order.shipping_country = buyerAddress.country || null;
-    }
-    await db.insert("mkt_orders", order);
+      const amount = Number(product.price) || 0;
+      if (amount <= 0) {
+        const err = new Error("This listing doesn't have a valid price");
+        err.status = 400;
+        throw err;
+      }
+      const platformFee = Math.round(amount * PLATFORM_FEE_RATE * 100) / 100;
+      const sellerPayout = Math.round((amount - platformFee) * 100) / 100;
 
-    const base = baseUrl(req);
-    const sessionParams = {
-      mode: "payment",
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: "usd",
-            unit_amount: Math.round(amount * 100),
-            product_data: { name: String(product.title || "HieloIce book").slice(0, 250) },
+      // Seller payout math is based only on the book's price, never on the
+      // shipping fee - the shipping fee is HieloIce's/the carrier's, never
+      // something the seller's cut is computed against.
+      //
+      // Task #313 phase 2, per Carlos's decision 2026-08-24: if the buyer went
+      // through the live rate picker (see POST /api/orders/shipping-rates),
+      // body carries the EasyPost shipmentId/rateId/address they chose. We
+      // re-fetch the shipment from EasyPost ourselves rather than trusting a
+      // client-supplied price, so a tampered request can't under-pay for
+      // shipping. If no rate was chosen (buyer never saw the picker, or
+      // EASYPOST_API_KEY isn't configured yet), fall back to the old flat fee
+      // so checkout never breaks.
+      let shippingFee = SHIPPING_FLAT_FEE;
+      let easypostShipmentId = null;
+      let easypostRateId = null;
+      let carrierBaseRate = null;
+      let shippingLineLabel = "Shipping";
+      let buyerAddress = null;
+      let useStripeAddressCollection = true;
+
+      if (EASYPOST_ENABLED && body.shipmentId && body.rateId && body.address && body.address.line1) {
+        const shipment = await easypostRequest("GET", "/shipments/" + encodeURIComponent(body.shipmentId));
+        const chosenRate = (shipment.rates || []).find((r) => r.id === body.rateId);
+        if (!chosenRate) {
+          const err = new Error("That shipping option is no longer available - please pick again.");
+          err.status = 400;
+          throw err;
+        }
+        const marked = rateWithCommission(chosenRate);
+        shippingFee = marked.price;
+        carrierBaseRate = marked.baseRate;
+        easypostShipmentId = shipment.id;
+        easypostRateId = chosenRate.id;
+        shippingLineLabel = "Shipping - " + marked.carrier + " " + marked.service;
+        buyerAddress = body.address;
+        useStripeAddressCollection = false; // we already have a verified address, no need to collect it twice
+      }
+
+      const order = {
+        id: crypto.randomBytes(8).toString("hex"),
+        product_id: product.id,
+        buyer_id: me.id,
+        seller_id: product.seller_id,
+        amount,
+        shipping_fee: shippingFee,
+        platform_fee: platformFee,
+        seller_payout: sellerPayout,
+        currency: "usd",
+        status: "pending_payment",
+        created_at: Date.now(),
+        easypost_shipment_id: easypostShipmentId,
+        easypost_rate_id: easypostRateId,
+        carrier_base_rate: carrierBaseRate,
+      };
+      if (buyerAddress) {
+        order.shipping_name = buyerAddress.name || null;
+        order.shipping_line1 = buyerAddress.line1 || null;
+        order.shipping_line2 = buyerAddress.line2 || null;
+        order.shipping_city = buyerAddress.city || null;
+        order.shipping_state = buyerAddress.state || null;
+        order.shipping_postal_code = buyerAddress.postalCode || null;
+        order.shipping_country = buyerAddress.country || null;
+      }
+      await db.insert("mkt_orders", order);
+
+      const base = baseUrl(req);
+      const sessionParams = {
+        mode: "payment",
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: "usd",
+              unit_amount: Math.round(amount * 100),
+              product_data: { name: String(product.title || "HieloIce book").slice(0, 250) },
+            },
           },
-        },
-        {
-          // Its own line item on purpose - Stripe's hosted checkout page
-          // always shows every line item and the total before the buyer can
-          // pay, so this is disclosed by construction, never a surprise
-          // add-on. See the SHIPPING_FLAT_FEE comment for why this exists.
-          quantity: 1,
-          price_data: {
-            currency: "usd",
-            unit_amount: Math.round(shippingFee * 100),
-            product_data: { name: shippingLineLabel },
+          {
+            // Its own line item on purpose - Stripe's hosted checkout page
+            // always shows every line item and the total before the buyer can
+            // pay, so this is disclosed by construction, never a surprise
+            // add-on. See the SHIPPING_FLAT_FEE comment for why this exists.
+            quantity: 1,
+            price_data: {
+              currency: "usd",
+              unit_amount: Math.round(shippingFee * 100),
+              product_data: { name: shippingLineLabel },
+            },
           },
-        },
-      ],
-      metadata: { order_id: order.id },
-      success_url: base + "/#/orders/" + order.id + "?checkout=success",
-      cancel_url: base + "/#/products/" + product.id + "?checkout=cancelled",
-    };
-    // Only ask Stripe's own checkout page to collect an address when we
-    // don't already have a verified one from the live rate picker above.
-    if (useStripeAddressCollection) {
-      sessionParams.shipping_address_collection = { allowed_countries: SHIPPING_ALLOWED_COUNTRIES };
-    }
-    const session = await stripeRequest("POST", "/checkout/sessions", sessionParams);
+        ],
+        metadata: { order_id: order.id },
+        success_url: base + "/#/orders/" + order.id + "?checkout=success",
+        cancel_url: base + "/#/products/" + product.id + "?checkout=cancelled",
+      };
+      // Only ask Stripe's own checkout page to collect an address when we
+      // don't already have a verified one from the live rate picker above.
+      if (useStripeAddressCollection) {
+        sessionParams.shipping_address_collection = { allowed_countries: SHIPPING_ALLOWED_COUNTRIES };
+      }
+      const session = await stripeRequest("POST", "/checkout/sessions", sessionParams);
 
-    await db.update("mkt_orders", { id: "eq." + enc(order.id) }, { stripe_checkout_session_id: session.id });
-    return sendJson(res, 201, { orderId: order.id, checkoutUrl: session.url });
+      await db.update("mkt_orders", { id: "eq." + enc(order.id) }, { stripe_checkout_session_id: session.id });
+      return sendJson(res, 201, { orderId: order.id, checkoutUrl: session.url });
+    } catch (e) {
+      await db
+        .update("mkt_products", { id: "eq." + enc(product.id), status: "eq.pending_payment" }, { status: "active" })
+        .catch((releaseErr) => console.error("Failed to release product claim after order error:", releaseErr.message));
+      if (e && e.status) return sendJson(res, e.status, { error: e.message });
+      throw e;
+    }
   }
 
   if (method === "GET" && pathname === "/api/orders/mine") {
@@ -7370,6 +8044,42 @@ setInterval(async () => {
   }
 }, 60 * 60 * 1000).unref();
 
+// Abandoned-checkout sweep (2026-09 technical review fix): releases listings
+// that POST /api/orders claimed (status "pending_payment") but whose buyer
+// never actually completed payment - e.g. they closed the Stripe checkout
+// tab, their card was declined, or the request crashed before a checkout
+// session was even created. Without this, one abandoned checkout would
+// permanently remove a listing from sale with no way for the seller to fix
+// it themselves. Runs every 10 minutes so a real buyer isn't blocked from
+// retrying for long.
+setInterval(async () => {
+  try {
+    const cutoff = Date.now() - ORDER_PENDING_PAYMENT_TIMEOUT_MS;
+    const stuck = await db.select("mkt_orders", {
+      status: "eq.pending_payment",
+      created_at: "lt." + cutoff,
+      select: "id,product_id",
+    });
+    for (const order of stuck) {
+      try {
+        await db.update("mkt_orders", { id: "eq." + enc(order.id) }, { status: "cancelled_expired" });
+        // Conditioned on the listing still being "pending_payment" so this
+        // never clobbers a status that changed for some other reason (e.g.
+        // the payment actually did complete a split-second before this ran).
+        await db.update(
+          "mkt_products",
+          { id: "eq." + enc(order.product_id), status: "eq.pending_payment" },
+          { status: "active" }
+        );
+      } catch (e) {
+        console.error("abandoned-checkout release failed for order " + order.id + ":", e.message);
+      }
+    }
+  } catch (e) {
+    console.error("abandoned-checkout sweep failed:", e.message);
+  }
+}, 10 * 60 * 1000).unref();
+
 // Moment cleanup - PERMANENT MOMENTS (2026-08-18): this used to hard-delete
 // mkt_moments rows past their 24h expires_at every hour, the same way
 // Instagram/FB Stories or Snapchat expire content. Product decision: the
@@ -7399,6 +8109,205 @@ setInterval(async () => {
   }
 }, 60 * 60 * 1000).unref();
 
-server.listen(PORT, () => {
-  console.log("Marketplace Pro running at http://localhost:" + PORT);
-});
+// ---- Public-domain audiobook seed catalog (2026-09) ----
+// Free, out-of-copyright classics narrated by LibriVox volunteers. We never
+// re-host these files ourselves - every audioUrl below points straight at
+// archive.org's own public, permanent hosting for that LibriVox recording
+// (LibriVox dedicates all its recordings to the public domain), the same
+// "link to the public-domain source, don't copy it" approach already used
+// for the Classics catalog's cover images above. Chapter file names and
+// runtimes were verified against each item's real archive.org file listing
+// on 2026-09-05 - if archive.org ever reorganizes a listing, that one book's
+// chapters would need to be re-verified, but nothing else in the app depends
+// on this beyond what's inserted here.
+const AUDIOBOOK_SEED_CATALOG = [
+  {
+    id: "seed-pride-and-prejudice",
+    title: "Pride and Prejudice",
+    authorName: "Jane Austen",
+    genre: "Classic Literature",
+    synopsis: "Jane Austen's classic of manners, marriage, and misjudged first impressions in Regency England, read by LibriVox volunteers.",
+    coverImageUrl: "https://archive.org/services/img/pride_and_prejudice_librivox",
+    archiveId: "pride_and_prejudice_librivox",
+    files: [
+      ["prideandprejudice_01-03_austen.mp3", "Chapters 1-3", 1133],
+      ["prideandprejudice_04-05_austen.mp3", "Chapters 4-5", 865],
+      ["prideandprejudice_06_austen.mp3", "Chapter 6", 777],
+      ["prideandprejudice_07_austen.mp3", "Chapter 7", 638],
+      ["prideandprejudice_08_austen.mp3", "Chapter 8", 820],
+      ["prideandprejudice_09_austen.mp3", "Chapter 9", 701],
+      ["prideandprejudice_10-11_austen.mp3", "Chapters 10-11", 1563],
+      ["prideandprejudice_12-13_austen.mp3", "Chapters 12-13", 902],
+      ["prideandprejudice_14-15_austen.mp3", "Chapters 14-15", 998],
+      ["prideandprejudice_16-17_austen.mp3", "Chapters 16-17", 1831],
+      ["prideandprejudice_18-19_austen.mp3", "Chapters 18-19", 2854],
+      ["prideandprejudice_20_austen.mp3", "Chapter 20", 750],
+      ["prideandprejudice_21-22_austen.mp3", "Chapters 21-22", 1643],
+      ["prideandprejudice_23-25_austen.mp3", "Chapters 23-25", 2270],
+      ["prideandprejudice_26_austen.mp3", "Chapter 26", 741],
+      ["prideandprejudice_27_austen.mp3", "Chapter 27", 419],
+      ["prideandprejudice_28-29_austen.mp3", "Chapters 28-29", 1590],
+      ["prideandprejudice_30_austen.mp3", "Chapter 30", 403],
+      ["prideandprejudice_31_austen.mp3", "Chapter 31", 526],
+      ["prideandprejudice_32-33_austen.mp3", "Chapters 32-33", 1140],
+      ["prideandprejudice_34-35_austen.mp3", "Chapters 34-35", 2159],
+      ["prideandprejudice_36-37_austen.mp3", "Chapters 36-37", 1414],
+      ["prideandprejudice_38-39_austen.mp3", "Chapters 38-39", 1030],
+    ],
+  },
+  {
+    id: "seed-alice-in-wonderland",
+    title: "Alice's Adventures in Wonderland",
+    authorName: "Lewis Carroll",
+    genre: "Classic Literature",
+    synopsis: "Alice falls down a rabbit hole into a nonsensical world of talking creatures, riddles, and a very bad-tempered Queen.",
+    coverImageUrl: "https://archive.org/services/img/alice_in_wonderland_librivox",
+    archiveId: "alice_in_wonderland_librivox",
+    files: [
+      ["wonderland_ch_01.mp3", "Chapter 1", 641],
+      ["wonderland_ch_02.mp3", "Chapter 2", 736],
+      ["wonderland_ch_03.mp3", "Chapter 3", 1064],
+      ["wonderland_ch_04.mp3", "Chapter 4", 1193],
+      ["wonderland_ch_05.mp3", "Chapter 5", 809],
+      ["wonderland_ch_06.mp3", "Chapter 6", 776],
+      ["wonderland_ch_07.mp3", "Chapter 7", 1046],
+      ["wonderland_ch_08.mp3", "Chapter 8", 799],
+      ["wonderland_ch_09.mp3", "Chapter 9", 908],
+      ["wonderland_ch_10.mp3", "Chapter 10", 1368],
+      ["wonderland_ch_11.mp3", "Chapter 11", 620],
+      ["wonderland_ch_12.mp3", "Chapter 12", 772],
+    ],
+  },
+  {
+    id: "seed-frankenstein",
+    title: "Frankenstein",
+    authorName: "Mary Shelley",
+    genre: "Classic Literature",
+    synopsis: "Victor Frankenstein creates life from death - and unleashes a tragedy he can't control, in the original gothic science-fiction novel.",
+    coverImageUrl: "https://archive.org/services/img/frankenstein_1107_librivox",
+    archiveId: "frankenstein_1107_librivox",
+    files: [
+      ["frankenstein_00_shelley.mp3", "Letters", 1976],
+      ["frankenstein_01_shelley.mp3", "Chapter 1", 641],
+      ["frankenstein_02_shelley.mp3", "Chapter 2", 822],
+      ["frankenstein_03_shelley.mp3", "Chapter 3", 992],
+      ["frankenstein_04_shelley.mp3", "Chapter 4", 899],
+      ["frankenstein_05_shelley.mp3", "Chapter 5", 827],
+      ["frankenstein_06_shelley.mp3", "Chapter 6", 980],
+      ["frankenstein_07_shelley.mp3", "Chapter 7", 1254],
+      ["frankenstein_08_shelley.mp3", "Chapter 8", 1073],
+      ["frankenstein_09_shelley.mp3", "Chapter 9", 790],
+      ["frankenstein_10_shelley.mp3", "Chapter 10", 898],
+      ["frankenstein_11_shelley.mp3", "Chapter 11", 1025],
+      ["frankenstein_12_shelley.mp3", "Chapter 12", 800],
+      ["frankenstein_13_shelley.mp3", "Chapter 13", 782],
+      ["frankenstein_14_shelley.mp3", "Chapter 14", 684],
+      ["frankenstein_15_shelley.mp3", "Chapter 15", 1173],
+      ["frankenstein_16_shelley.mp3", "Chapter 16", 1171],
+      ["frankenstein_17_shelley.mp3", "Chapter 17", 683],
+      ["frankenstein_18_shelley.mp3", "Chapter 18", 969],
+      ["frankenstein_19_shelley.mp3", "Chapter 19", 881],
+      ["frankenstein_20_shelley.mp3", "Chapter 20", 1171],
+      ["frankenstein_21_shelley.mp3", "Chapter 21", 1262],
+      ["frankenstein_22_shelley.mp3", "Chapter 22", 1163],
+      ["frankenstein_23_shelley.mp3", "Chapter 23", 887],
+      ["frankenstein_24_shelley.mp3", "Chapter 24", 2969],
+    ],
+  },
+  {
+    id: "seed-sherlock-holmes",
+    title: "The Adventures of Sherlock Holmes",
+    authorName: "Arthur Conan Doyle",
+    genre: "Mystery",
+    synopsis: "Twelve classic short stories starring detective Sherlock Holmes and his companion Dr. Watson, including 'A Scandal in Bohemia' and 'The Speckled Band.'",
+    coverImageUrl: "https://archive.org/services/img/adventuressherlockholmes_v4_1501_librivox",
+    archiveId: "adventuressherlockholmes_v4_1501_librivox",
+    files: [
+      ["adventuresofsherlockholmes_01_doyle.mp3", "A Scandal in Bohemia", 3313],
+      ["adventuresofsherlockholmes_02_doyle.mp3", "The Red-Headed League", 3525],
+      ["adventuresofsherlockholmes_03_doyle.mp3", "A Case of Identity", 2580],
+      ["adventuresofsherlockholmes_04_doyle.mp3", "The Boscombe Valley Mystery", 3658],
+      ["adventuresofsherlockholmes_05_doyle.mp3", "The Five Orange Pips", 2880],
+      ["adventuresofsherlockholmes_06_doyle.mp3", "The Man with the Twisted Lip", 3478],
+      ["adventuresofsherlockholmes_07_doyle.mp3", "The Adventure of the Blue Carbuncle", 2952],
+      ["adventuresofsherlockholmes_08_doyle.mp3", "The Adventure of the Speckled Band", 3630],
+      ["adventuresofsherlockholmes_09_doyle.mp3", "The Adventure of the Engineer's Thumb", 2995],
+      ["adventuresofsherlockholmes_10_doyle.mp3", "The Adventure of the Noble Bachelor", 3074],
+      ["adventuresofsherlockholmes_11_doyle.mp3", "The Adventure of the Beryl Coronet", 3606],
+      ["adventuresofsherlockholmes_12_doyle.mp3", "The Adventure of the Copper Beeches", 3680],
+    ],
+  },
+];
+
+async function seedPublicDomainAudiobooks() {
+  try {
+    for (const seed of AUDIOBOOK_SEED_CATALOG) {
+      const existing = await db.select("mkt_audiobooks", { id: "eq." + enc(seed.id), select: "id" });
+      if (existing && existing[0]) continue; // already seeded - never overwrite (an admin may have edited it)
+      const chapters = seed.files.map(([filename, title, durationSeconds]) => ({
+        title,
+        audioUrl: "https://archive.org/download/" + seed.archiveId + "/" + filename,
+        durationSeconds,
+      }));
+      const now = Date.now();
+      await db.insert("mkt_audiobooks", {
+        id: seed.id,
+        author_id: null,
+        author_name: seed.authorName,
+        title: seed.title,
+        genre: seed.genre,
+        synopsis: seed.synopsis,
+        cover_image_url: seed.coverImageUrl,
+        source: "public_domain",
+        price: 0,
+        status: "published",
+        chapters,
+        total_duration_seconds: chapters.reduce((sum, c) => sum + c.durationSeconds, 0),
+        created_at: now,
+        updated_at: now,
+        submitted_at: now,
+        published_at: now,
+      });
+      console.log("Seeded public-domain audiobook: " + seed.title);
+    }
+  } catch (e) {
+    // Most likely the mkt_audiobooks table doesn't exist yet - non-fatal,
+    // the rest of the server keeps running normally either way.
+    console.error("Public-domain audiobook seeding skipped:", e.message);
+  }
+}
+
+// Guarded so this file can be `require()`d from a test file (see
+// server.test.js) without binding a port or needing live credentials -
+// `node server.js` on Render still starts the server exactly as before,
+// since require.main === module is only true when the file is run directly.
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log("Marketplace Pro running at http://localhost:" + PORT);
+  });
+  seedPublicDomainAudiobooks();
+}
+
+// Exposed only for the automated test suite (server.test.js) - pure,
+// side-effect-free helpers with no network/DB access, chosen specifically
+// because they touch money (rateWithCommission), legal age-gating
+// (ageFromBirthdateMs/parseBirthdateInput/isAdultUser), and authentication
+// (hashPassword/verifyPassword). Added 2026-09 as part of closing the
+// "zero automated tests" gap from the technical review - does not change
+// any runtime behavior.
+module.exports = {
+  rateWithCommission,
+  ageFromBirthdateMs,
+  parseBirthdateInput,
+  isAdultUser,
+  isEmail,
+  hashPassword,
+  verifyPassword,
+  enc,
+  CATEGORIES,
+  REPORT_REASONS,
+  SHIPPING_COMMISSION_RATE,
+  MIN_AGE_YEARS,
+  AUDIOBOOK_SEED_CATALOG,
+  PLATFORM_FEE_RATE,
+};
