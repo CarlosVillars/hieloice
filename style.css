@@ -1,21 +1,30 @@
 :root {
-  --bg-page: #FFFFFF;
+  /* Elegant "Instagram/Europa" brand system, light key - unified
+     2026-08-18. Same black+gold brand as the dark key below (see
+     [data-theme="dark"]), just on a warm ivory background instead of
+     black. Kept as a real, distinct light option (not a copy of dark)
+     because UX research on theme choice shows offering a genuine light
+     alternative - not forcing dark everywhere - increases user trust
+     ("autonomy signal"), and some content (forms, legal pages, long
+     reading) is still easier on light backgrounds for most people. */
+  --bg-page: #F7F3EC;
   --bg-surface: #FFFFFF;
-  --bg-surface-alt: #F2F2F0;
-  --text-primary: #1a1a1a;
-  --text-secondary: #5a5a5a;
-  --text-muted: #8a8a8a;
-  --border-color: rgba(0,0,0,0.1);
-  --accent: #0F3D2E;
-  --accent-strong: #17573F;
-  --accent-text: #0F3D2E;
-  --accent-text-on: #FFFFFF;
-  --gold: #d99a12;
-  --gold-text-on: #2b1810;
+  --bg-surface-alt: #EFE9DD;
+  --text-primary: #1C1A16;
+  --text-secondary: #5C5548;
+  --text-muted: #8A8172;
+  --border-color: rgba(28,26,22,0.10);
+  --accent: #1C1A16;
+  --accent-strong: #2E2A22;
+  --accent-text: #8A6B2E;
+  --accent-text-on: #F7F3EC;
+  --gold: #C9A15A;
+  --gold-text-on: #1A1610;
   --danger: #C0392B;
   --danger-bg: rgba(192,57,43,0.08);
   --success: #1F8F5A;
-  --card-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  --info: #2E7BD6;
+  --card-shadow: 0 2px 10px rgba(28,26,22,0.10);
   --font-display: "Playfair Display", Georgia, "Times New Roman", serif;
 }
 
@@ -39,36 +48,37 @@
   --danger: #E5484D;
   --danger-bg: rgba(229,72,77,0.14);
   --success: #3FBF7F;
+  --info: #5AA9FF;
   --card-shadow: 0 1px 3px rgba(0,0,0,0.5);
 }
 
-/* Normal tier, optional dark mode: same burgundy + gold brand colors as
-   :root light, just a dark wine background. User-toggleable via
-   #theme-toggle-wrap (see applyNormalThemePref() in app.js). Deliberately
-   distinct from [data-theme="premium"] (pure black bg, no burgundy) so
-   premium still reads as exclusive. */
+/* Normal tier, dark key of the same elegant black+gold brand system as
+   :root light above. Unified 2026-08-18 (was previously a different
+   burgundy scheme) so both toggle positions read as one consistent brand,
+   not two different "dark" looks. User-toggleable via #theme-toggle-wrap. */
 [data-theme="dark"] {
-  --bg-page: #0A0A0A;
-  --bg-surface: #141414;
-  --bg-surface-alt: #000000;
-  --text-primary: #F3E9D8;
-  --text-secondary: #C9B79E;
-  --text-muted: #8f7d68;
-  --border-color: rgba(243,233,216,0.14);
-  --accent: #6E1423;
-  --accent-strong: #8A1C2D;
-  --accent-text: #F3E9D8;
-  --accent-text-on: #F3E9D8;
-  --gold: #D4AF37;
-  --gold-text-on: #2b1810;
+  --bg-page: #0B0A08;
+  --bg-surface: #17140F;
+  --bg-surface-alt: #211D16;
+  --text-primary: #F2ECE2;
+  --text-secondary: #B5AC9C;
+  --text-muted: #8A8172;
+  --border-color: rgba(242,236,226,0.09);
+  --accent: #1C1A16;
+  --accent-strong: #2A2620;
+  --accent-text: #C9A15A;
+  --accent-text-on: #F2ECE2;
+  --gold: #C9A15A;
+  --gold-text-on: #1A1610;
   --danger: #E5484D;
   --danger-bg: rgba(229,72,77,0.14);
   --success: #3FBF7F;
-  --card-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  --info: #5AA9FF;
+  --card-shadow: 0 4px 16px rgba(0,0,0,0.35);
 }
 
 * { box-sizing: border-box; }
-html { color-scheme: light; }
+html { color-scheme: dark; } /* was light - matches the black+gold default trial above */
 html, body { margin: 0; padding: 0; overflow-x: hidden; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
@@ -216,17 +226,45 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   border-left: 1px solid rgba(0,0,0,0.12); background: var(--bg-surface); padding: 0 12px; font-size: 15px;
 }
 
+/* Never wraps to a second row, on any screen size - Profile/Messages/
+   PUBLISH A BOOK/Book Club/notifications bell all stay on one tidy line.
+   On roomy screens that just means the row never needs to scroll; on
+   narrow phones it scrolls sideways instead of breaking into an
+   uneven second line. */
 .topbar-nav {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 14px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
+.topbar-nav::-webkit-scrollbar { display: none; }
 .nav-link {
+  flex: 0 0 auto;
+  white-space: nowrap;
   color: var(--accent-text-on);
   font-size: 14px;
   font-weight: 600;
 }
+/* The icon-only links (Book Club, Podcasts, Messages, notifications bell)
+   are all bigger glyphs, at the same size as each other, so they visually
+   fill the leftover space at the end of the row instead of leaving it
+   looking empty next to "PUBLISH A BOOK" - and so Messages/Podcasts don't
+   look small/out of place next to Book Club/the bell. flex-wrap: nowrap +
+   overflow-x: auto on .topbar-nav (above) is what keeps all of them on this
+   one row instead of breaking to a second line. */
+#nav-book-club, #nav-podcasts, #nav-messages, #nav-notifications {
+  font-size: 24px;
+  line-height: 1;
+}
+/* An earlier attempt reserved space after the bell with margin-right here,
+   but that just grew the row's own scrollable width instead of freeing up
+   visible space - the reserved room ended up past the edge of the screen
+   too. Removed now that the badge itself is position:fixed (see
+   .nav-messages-badge) and no longer depends on room inside this row. */
 .nav-link:hover { color: var(--accent-text-on); text-decoration: underline; }
 .nav-link-btn {
   background: none;
@@ -242,6 +280,31 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   border-radius: 6px;
 }
 .nav-post-btn:hover { color: var(--gold-text-on); background: color-mix(in srgb, var(--gold) 85%, black); }
+.nav-post-dropdown-wrap { position: relative; flex: 0 0 auto; }
+.nav-post-dropdown-wrap .nav-post-btn { border: none; font: inherit; cursor: pointer; }
+/* .topbar-nav scrolls horizontally (overflow-x: auto) so it never wraps to
+   a second row; per the CSS spec that also forces overflow-y to behave as
+   "auto", which would clip this dropdown's normal position:absolute/top:100%
+   placement since it renders below the row. Fixed positioning (with top/left
+   set in JS at click time - see wireIconNav in app.js) escapes that clipping
+   entirely by anchoring to the viewport instead of the scrolling row. */
+#nav-post-dropdown { position: fixed; top: auto; left: auto; transform: none; }
+/* Same clipping bug, same fix, for the Marketplace icon's dropdown (which
+   now also holds the Audiobooks entries) - see wireIconNav() in app.js,
+   which sets top/left here at click time from the button's real position.
+   z-index bumped above #chatbot-widget's 300 (see its rule further down) -
+   that floating help bubble sits at bottom:20px/right:20px, the same corner
+   this dropdown opens into on a phone, and at the default z-index:60 it was
+   rendering on top of and covering the last couple of menu items. */
+#icon-nav-marketplace-dropdown { position: fixed; top: auto; left: auto; transform: none; z-index: 310; }
+
+/* On narrow phones, shrink the text/padding/gaps a bit so the row reads as
+   one clean line instead of relying on horizontal scroll as much. */
+@media (max-width: 480px) {
+  .topbar-nav { gap: 8px; }
+  .topbar-nav .nav-link { font-size: 12.5px; }
+  .topbar-nav .nav-post-btn { padding: 6px 9px; }
+}
 
 .nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; margin-left: 5px; border-radius: 8px; background: var(--gold); color: var(--gold-text-on); font-size: 10px; font-weight: 800; vertical-align: middle; }
 
@@ -307,7 +370,8 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .icon-nav-btn-plain { cursor: pointer; }
 .icon-nav-btn-center { font-weight: 800; }
 .icon-nav-icecube { display: block; margin: 0 auto; height: 27px; width: 27px; }
-.icon-nav-cartbooks { display: flex; align-items: center; justify-content: center; gap: 2px; margin: 0 auto; transition: transform 0.15s ease; }
+.icon-nav-cartbooks { display: flex; align-items: center; justify-content: center; height: 27px; gap: 1px; margin: 0 auto; transition: transform 0.15s ease; }
+.icon-nav-cartbooks-emoji { font-size: 21px; line-height: 1; }
 .icon-nav-btn:active .icon-nav-cartbooks { transform: scale(0.85); }
 @keyframes iconBagPop {
   0% { transform: scale(1) rotate(0deg); }
@@ -320,6 +384,30 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .icon-nav-emoji { font-size: 21px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; }
 .icon-nav-label { white-space: nowrap; }
 .icon-nav-badge { position: absolute; top: 3px; right: 8px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; }
+/* Unread-messages badge next to the desktop top-bar "Messages" link (a
+   twin of .icon-nav-badge used on the mobile bottom-bar icon). This was
+   previously dead code - setUnreadBadge() looked for an element that
+   didn't exist in the markup, so the count silently never showed here. */
+.nav-messages-link { position: relative; }
+/* Was inline (margin-left + vertical-align), which added its own height to
+   the .topbar-nav row - and since that row scrolls horizontally, the
+   overflow-x:auto/overflow-y:auto clipping bug (documented above on
+   nav-post-dropdown and icon-nav-marketplace-dropdown) sliced the top of the
+   badge off. Taking it out of flow entirely (position:absolute, pinned to
+   the corner of the bell icon) means it no longer adds to the row's content
+   height, so there's nothing left for that row to clip. */
+/* Switched from position:absolute (inside the horizontally-scrolling
+   .topbar-nav row) to position:fixed, with top/left set in JS at show-time
+   from the bell/envelope icon's real getBoundingClientRect() - see
+   positionNavBadge() in app.js. Two rounds of absolute-positioning tweaks
+   (bigger offsets, centering) still wasn't enough because the badge's parent
+   row itself clips anything that renders past its own edge when the row is
+   the last scrollable content on the line (nothing after the icon reserves
+   real space for the overhang, and adding margin there just grows the row's
+   scrollable width instead of freeing visible space). Fixed positioning
+   escapes that entirely, the same fix already used for the Marketplace/
+   "PUBLISH A BOOK" dropdowns above. */
+.nav-messages-badge { position: fixed; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; line-height: 1; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; z-index: 50; }
 .icon-nav-dropdown-wrap { position: relative; }
 .icon-nav-dropdown {
   position: absolute;
@@ -336,6 +424,16 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .icon-nav-dropdown a { display: block; padding: 9px 12px; border-radius: 6px; font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .icon-nav-dropdown a:hover { background: var(--bg-surface-alt); color: var(--accent-text); }
+/* "Coming soon" items are visually separated below a divider and dimmed, so
+   they read as a preview of what's next rather than broken links mixed in
+   with the working menu items above them. */
+.icon-nav-dropdown-divider {
+  margin: 6px 4px 2px; padding-top: 6px; border-top: 1px solid var(--border-color);
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-secondary); padding-left: 8px;
+}
+.icon-nav-dropdown-soon-item { opacity: 0.6; cursor: default; }
+.icon-nav-dropdown-soon-item:hover { background: none; color: var(--text-primary); }
 .icon-nav-create-plus { font-size: 34px; line-height: 1; height: 27px; display: flex; align-items: center; justify-content: center; font-weight: 800; color: var(--gold); }
 .icon-nav-soon {
   font-style: normal; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
@@ -389,20 +487,134 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   background: rgba(0,0,0,0.75); color: #fff; font-size: 12px; padding: 8px 16px;
   border-radius: 999px; z-index: 4; white-space: nowrap;
 }
+.wizard-fs-grid {
+  position: absolute; inset: 0; pointer-events: none; z-index: 1;
+  opacity: 0; transition: opacity 0.15s ease;
+  background-image:
+    linear-gradient(to right, rgba(255,255,255,0.4) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.4) 1px, transparent 1px);
+  background-size: 33.333% 33.333%;
+}
+.wizard-fs-grid.show { opacity: 1; }
 
-/* Right-side labeled options rail, YouTube-Shorts-style layout with our own icon glyphs */
+/* Task #202 - brightness/exposure slider panel, toggled from the "lighting"
+   rail item. Sits low over the preview so it doesn't collide with the
+   top-bar/rail, matching the dark rgba pill styling used elsewhere in this
+   overlay (wizard-fs-sound-pill, wizard-fs-toast, ...). */
+.wizard-fs-brightness-panel {
+  position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; z-index: 3;
+  background: rgba(0,0,0,0.55); border-radius: 999px; padding: 8px 16px;
+  width: min(78%, 320px);
+}
+.wizard-fs-brightness-panel[hidden] { display: none; }
+.wizard-fs-brightness-icon { color: #fff; font-size: 14px; flex: 0 0 auto; }
+.wizard-fs-brightness-panel input[type="range"] { flex: 1; accent-color: var(--gold); }
+.wizard-fs-brightness-value { color: #fff; font-size: 12px; font-weight: 700; flex: 0 0 auto; min-width: 34px; text-align: right; }
+
+/* Task #203 - sound preset picker panel, opened from the "Add sound" pill. */
+.wizard-sound-picker {
+  position: absolute; left: 50%; top: 56px; transform: translateX(-50%);
+  z-index: 4; background: rgba(20,20,20,0.9); border-radius: 16px; padding: 14px;
+  width: min(86%, 340px); display: flex; flex-direction: column; gap: 10px;
+  max-height: 72vh; overflow-y: auto;
+}
+.wizard-sound-picker-title { color: #fff; font-size: 13px; font-weight: 700; margin: 0; text-align: center; }
+.wizard-sound-picker-list { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.wizard-sound-preset-btn {
+  border: 1px solid rgba(255,255,255,0.3); background: rgba(255,255,255,0.08); color: #fff;
+  border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.wizard-sound-preset-btn.active { background: var(--gold); border-color: var(--gold); color: #2b1810; }
+.wizard-sound-mic-toggle { display: flex; align-items: center; gap: 8px; color: #fff; font-size: 12px; justify-content: center; }
+.wizard-sound-picker-close {
+  align-self: center; border: none; background: none; color: rgba(255,255,255,0.75);
+  font-size: 12px; text-decoration: underline; cursor: pointer; padding: 2px;
+}
+
+/* Task #243 - Jamendo royalty-free music search, inside the same panel. */
+.wizard-jamendo-title { color: #fff; font-size: 13px; font-weight: 700; margin: 4px 0 0; text-align: center; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 10px; }
+.wizard-jamendo-search-row { display: flex; gap: 6px; }
+.wizard-jamendo-search-row input {
+  flex: 1; border: 1px solid rgba(255,255,255,0.3); background: rgba(255,255,255,0.08); color: #fff;
+  border-radius: 999px; padding: 7px 12px; font-size: 12px;
+}
+.wizard-jamendo-search-row input::placeholder { color: rgba(255,255,255,0.5); }
+.wizard-jamendo-search-row button {
+  border: none; background: var(--gold); color: #2b1810; border-radius: 999px; padding: 7px 14px;
+  font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.wizard-jamendo-results { display: flex; flex-direction: column; gap: 6px; max-height: 190px; overflow-y: auto; }
+.wizard-jamendo-empty { color: rgba(255,255,255,0.6); font-size: 12px; text-align: center; margin: 6px 0; }
+.wizard-jamendo-track-btn {
+  display: flex; align-items: center; gap: 8px; border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.06); border-radius: 10px; padding: 6px 8px; cursor: pointer; text-align: left;
+}
+.wizard-jamendo-track-btn.active { border-color: var(--gold); background: rgba(255,216,77,0.14); }
+.wizard-jamendo-track-art { width: 32px; height: 32px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+.wizard-jamendo-track-art-empty { display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.12); color: #fff; font-size: 15px; }
+.wizard-jamendo-track-info { min-width: 0; display: flex; flex-direction: column; }
+.wizard-jamendo-track-name { color: #fff; font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wizard-jamendo-track-artist { color: rgba(255,255,255,0.65); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wizard-jamendo-browse-link { display: block; text-align: center; font-size: 11px; color: var(--gold); margin: -4px 0 2px; text-decoration: underline; }
+
+/* Task: browsable/searchable "#/music" page so people can see the whole
+   royalty-free catalog (names, artists, genres) without opening the camera. */
+.music-library-page { max-width: 760px; margin: 0 auto; padding: 0 4px; }
+.music-library-eyebrow { color: var(--gold); font-size: 12px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 4px; text-align: center; }
+.music-library-title { font-size: 24px; font-weight: 800; margin: 0 0 8px; text-align: center; color: var(--text-primary); }
+.music-library-subtitle { font-size: 14px; color: var(--text-secondary); text-align: center; max-width: 520px; margin: 0 auto 18px; }
+.music-search-row { display: flex; gap: 8px; margin-bottom: 14px; }
+.music-search-row input { flex: 1; border: 1px solid var(--border-color); border-radius: 999px; padding: 10px 16px; font-size: 14px; background: var(--bg-surface); color: var(--text-primary); }
+.music-search-row button { border: none; background: var(--gold); color: var(--gold-text-on); border-radius: 999px; padding: 10px 20px; font-size: 14px; font-weight: 700; cursor: pointer; }
+.music-genre-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 20px; }
+.music-genre-chip { border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-secondary); border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.music-genre-chip.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+.music-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.music-card { display: flex; align-items: center; gap: 10px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 10px; }
+.music-card-art { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; flex-shrink: 0; }
+.music-card-art-empty { display: flex; align-items: center; justify-content: center; background: var(--bg-surface-alt); color: var(--text-muted); font-size: 18px; }
+.music-card-info { flex: 1; min-width: 0; }
+.music-card-name { font-size: 13px; font-weight: 700; color: var(--text-primary); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-card-artist { font-size: 12px; color: var(--text-secondary); margin: 1px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-card-genres { font-size: 10.5px; color: var(--text-muted); margin: 2px 0 0; text-transform: capitalize; }
+.music-card-play-btn { border: none; background: var(--bg-surface-alt); color: var(--gold); width: 34px; height: 34px; border-radius: 50%; font-size: 13px; flex-shrink: 0; cursor: pointer; }
+
+/* Right-side labeled options rail, full-screen vertical-video-app layout with our own icon glyphs */
 .wizard-fs-rail {
-  position: absolute; top: 64px; right: 0; bottom: 150px; width: 128px;
-  background: linear-gradient(180deg, rgba(0,0,0,0.5), rgba(0,0,0,0.15));
-  border-radius: 22px 0 0 22px; display: flex; flex-direction: column;
-  padding: 8px 0; overflow-y: auto; z-index: 2;
+  position: absolute; top: 70px; right: 6px; width: 62px; max-height: calc(100% - 230px);
+  background: rgba(20,20,20,0.55);
+  border-radius: 30px; display: flex; flex-direction: column;
+  padding: 10px 0; overflow-y: auto; overflow-x: visible; z-index: 2;
+  /* One flat, fully-rounded pill sized to the icons themselves and floating
+     a few px off the screen edge - matches full-screen vertical video camera rails
+     (reference screenshot) instead of a tall panel stretched down the
+     screen with a fading gradient and per-icon circular backgrounds.
+     overflow-x must stay "visible" (not the default/unset) - setting only
+     overflow-y implicitly clips the X axis too (same class of bug fixed on
+     .icon-nav), which would cut off the tap-to-reveal rail-label bubble
+     whenever it pops out wider than this rail's own width. */
 }
 .wizard-fs-rail-item {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px;
-  padding: 9px 14px; background: none; border: none; cursor: pointer; color: #fff;
+  padding: 7px 8px; background: none; border: none; cursor: pointer; color: #fff;
 }
-.wizard-fs-rail-item .rail-label { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
-.wizard-fs-rail-item .rail-icon { font-size: 17px; width: 24px; text-align: center; flex: 0 0 auto; }
+.wizard-fs-rail-item .rail-label {
+  font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; text-shadow: 0 1px 3px rgba(0,0,0,0.7);
+  background: rgba(0,0,0,0.45); padding: 3px 8px; border-radius: 8px;
+  opacity: 0; transform: translateX(4px); pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.wizard-fs-rail-item.show-label .rail-label { opacity: 1; transform: translateX(0); }
+.wizard-fs-rail-item .rail-icon {
+  font-size: 22px; width: 46px; height: 46px; line-height: 46px; text-align: center; flex: 0 0 auto;
+  background: none; border-radius: 50%;
+  transition: transform 0.1s ease, opacity 0.15s ease;
+  /* No circular backdrop per icon on purpose - the reference rail shows
+     plain glyphs sitting directly on the one shared pill background. */
+}
+.wizard-fs-rail-item:active .rail-icon { transform: scale(0.88); opacity: 0.65; }
+.wizard-fs-rail-item.show-label .rail-icon { opacity: 0.85; }
 .wizard-fs-rail-item.active .rail-icon, .wizard-fs-rail-item.active .rail-label { color: var(--gold); }
 .wizard-fs-rail-item[data-tier="2"] { display: none; }
 .wizard-fs-rail.expanded [data-tier="2"] { display: flex; }
@@ -422,11 +634,30 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   display: flex; align-items: center; justify-content: center;
 }
 .wizard-fs-capture-wrap { position: relative; width: 76px; height: 76px; display: flex; align-items: center; justify-content: center; }
-.wizard-fs-capture-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+/* pointer-events:none is the actual fix for the "camera preview works but
+   the red shutter never reacts" bug: this ring is position:absolute and
+   covers the exact same 76x76 box as the button, and since positioned
+   elements paint (and receive touches/clicks) above normal-flow siblings
+   regardless of DOM order, every tap was landing on this decorative SVG
+   instead of #wizard-fs-capture-btn underneath it - no JS handler on the
+   button was ever being reached. */
+.wizard-fs-capture-ring { position: absolute; inset: 0; transform: rotate(-90deg); pointer-events: none; }
 .wizard-fs-capture-btn {
-  width: 62px; height: 62px; border-radius: 50%; background: #E5484D;
+  width: 62px; height: 62px; border-radius: 50%; background: #FF3B30;
   border: 4px solid #fff; cursor: pointer; padding: 0;
+  box-shadow: 0 2px 8px rgba(255,59,48,0.5);
   transition: transform 0.1s, border-radius 0.15s;
+  /* Without this, a press-and-hold on mobile gets intercepted by the
+     browser's own touch handling (long-press context menu / "is this a
+     scroll?" gesture detection) before our pointerdown/pointerup JS ever
+     sees it reliably - the camera preview works fine but the shutter looks
+     completely dead. touch-action tells the browser this element handles
+     its own gestures; the -webkit lines stop iOS/Android from popping a
+     text-selection/context menu on the hold. */
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .wizard-fs-capture-btn.pressed { transform: scale(0.9); }
 .wizard-fs-capture-btn.recording { border-radius: 14px; width: 40px; height: 40px; }
@@ -437,6 +668,28 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .wizard-fs-done-btn[disabled] { visibility: hidden; }
 .wizard-fs-hint { text-align: center; font-size: 11px; color: rgba(255,255,255,0.75); padding: 0 20px; }
+
+/* Guided photo capture (product mode: front cover / back cover / spine / damage) */
+.guided-capture-overlay {
+  position: fixed; inset: 0; background: #000; z-index: 300;
+  display: flex; flex-direction: column; overflow: hidden;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.guided-capture-topbar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; }
+.guided-capture-step { color: #fff; font-size: 13px; font-weight: 700; }
+.guided-capture-video-wrap { flex: 1; position: relative; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; }
+.guided-capture-video-wrap video, .guided-capture-preview { width: 100%; height: 100%; object-fit: cover; display: block; }
+.guided-capture-thumbs { display: flex; gap: 8px; justify-content: center; padding: 10px; }
+.guided-thumb {
+  width: 34px; height: 34px; border-radius: 8px; border: 2px solid rgba(255,255,255,0.3);
+  overflow: hidden; background: rgba(255,255,255,0.08); display: block; flex: 0 0 auto;
+}
+.guided-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.guided-thumb.current { border-color: var(--gold); }
+.guided-thumb.done { border-color: #4CAF50; }
+.guided-capture-controls { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 6px 20px 4px; }
+.guided-capture-skip { text-align: center; padding-bottom: calc(14px + env(safe-area-inset-bottom)); margin: 0; }
+.guided-capture-skip a { color: var(--gold); font-size: 13px; font-weight: 600; }
 
 /* Barcode/ISBN scanner overlay (Marketplace search + listing form) */
 .barcode-scanner-overlay { position: fixed; inset: 0; background: #000; z-index: 300; display: flex; flex-direction: column; }
@@ -458,6 +711,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .post-isbn-row { display: flex; gap: 8px; align-items: center; }
 .post-isbn-row input { flex: 1; }
+.form-field-hint { font-size: 12px; margin: 4px 0 0; color: var(--text-secondary); }
 .post-isbn-lookup-hint { font-size: 12px; margin-top: 4px; }
 .post-isbn-lookup-hint.ok { color: var(--success); }
 .post-isbn-lookup-hint.error { color: var(--danger); }
@@ -468,6 +722,19 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 }
 .btn-ai-suggest:hover { background: var(--accent-gold, #c9a24b); color: var(--bg-surface); }
 .btn-ai-suggest:disabled { opacity: 0.5; cursor: default; }
+/* Smaller secondary variant used next to the create-wizard caption field -
+   same gold "AI assist" visual language as .btn-ai-suggest above (the Post
+   Ad book-photo button) but lower visual weight so it doesn't compete with
+   the primary Publish action. */
+.btn-ai-suggest-sm { padding: 5px 10px; font-size: 12px; margin-top: 6px; border-radius: 999px; }
+.ai-caption-preview {
+  margin-top: 8px; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--accent-gold, #c9a24b); background: var(--bg-surface-2, var(--bg-surface));
+}
+.ai-caption-preview-text { font-size: 13px; color: var(--text-primary); margin: 0 0 6px; }
+.ai-caption-preview-actions { display: flex; gap: 14px; }
+.ai-caption-preview-actions a { font-size: 12px; font-weight: 600; color: var(--accent-gold, #c9a24b); cursor: pointer; }
+.ai-caption-preview-actions a:hover { text-decoration: underline; }
 .ai-listing-banner {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
   background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong, var(--accent)) 100%);
@@ -509,20 +776,100 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   position: absolute; cursor: grab; user-select: none; touch-action: none;
   padding: 4px 8px; white-space: nowrap; transform: translate(-50%, -50%);
 }
-.wizard-overlay-item.text { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); border-radius: 6px; }
-.wizard-overlay-item.sticker { font-size: 36px; }
+.wizard-overlay-item.text .wizard-overlay-content { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+.wizard-overlay-item.sticker .wizard-overlay-content { font-size: 36px; }
+/* Task #204 - three-step size scale (higher specificity than the base
+   .text/.sticker rules above so sm/lg reliably override the md default). */
+.wizard-overlay-item.text.size-sm .wizard-overlay-content { font-size: 14px; }
+.wizard-overlay-item.text.size-lg .wizard-overlay-content { font-size: 30px; }
+.wizard-overlay-item.sticker.size-sm .wizard-overlay-content { font-size: 24px; }
+.wizard-overlay-item.sticker.size-lg .wizard-overlay-content { font-size: 52px; }
 .wizard-overlay-item.dragging { cursor: grabbing; outline: 1px dashed var(--gold); }
+.wizard-overlay-resize, .wizard-overlay-remove {
+  position: absolute; top: -10px; width: 20px; height: 20px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,0.75); color: #fff; font-weight: 700; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; line-height: 1; padding: 0;
+}
+.wizard-overlay-resize { right: 18px; font-size: 9px; }
+.wizard-overlay-remove { right: -8px; font-size: 13px; }
 .wizard-sticker-picker { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; padding: 8px 0; }
 .wizard-sticker-picker button { font-size: 24px; background: none; border: none; cursor: pointer; padding: 4px; }
+
+/* Task #204 - the "add text" composer panel (size toggle + color swatches),
+   replaces the old bare prompt() flow. */
+.wizard-text-composer {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); margin-bottom: 10px;
+}
+.wizard-text-composer textarea { width: 100%; resize: none; font-family: inherit; }
+.wizard-text-size-row, .wizard-text-color-row { display: flex; gap: 8px; justify-content: center; }
+.wizard-text-size-btn {
+  border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary);
+  border-radius: 8px; width: 34px; height: 30px; font-weight: 700; cursor: pointer;
+}
+.wizard-text-size-btn.active { border-color: var(--gold); color: var(--gold); }
+.wizard-text-color-swatch {
+  width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--border-color); cursor: pointer; padding: 0;
+}
+.wizard-text-color-swatch.active { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold); }
+
+/* Task #204 - static (non-interactive) rendering of text/sticker overlay
+   metadata on top of a <video> wherever a Moment/Video with saved overlays
+   is played back (feed cards, moment viewer, video watch page, Shorts/Clips
+   swipe player). Photos never use this - their overlays are already baked
+   into the JPEG pixels before upload. */
+.media-overlay-layer { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.media-overlay-item { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; }
+.media-overlay-item.text { font-weight: 800; font-size: 20px; text-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+.media-overlay-item.sticker { font-size: 36px; }
+.media-overlay-item.text.size-sm { font-size: 14px; }
+.media-overlay-item.text.size-lg { font-size: 30px; }
+.media-overlay-item.sticker.size-sm { font-size: 24px; }
+.media-overlay-item.sticker.size-lg { font-size: 52px; }
+.video-watch-player-wrap { position: relative; }
 @media (max-width: 640px) {
-  .icon-nav { justify-content: space-between; }
-  .icon-nav-btn { padding: 8px 6px 6px; flex: 1; }
+  /* Primary nav moves to the bottom of the screen on phones, same place
+     Instagram/TikTok/Facebook put it - reachable with a thumb without
+     stretching, instead of sitting at the top where it's furthest from
+     how people actually hold a phone. Desktop keeps it at the top since
+     that's the normal/expected place there and there's no thumb-reach
+     problem with a mouse. */
+  .icon-nav {
+    justify-content: space-between;
+    position: fixed; top: auto; bottom: 0; left: 0; right: 0;
+    border-bottom: none; border-top: 1px solid var(--border-color);
+    padding-bottom: calc(2px + env(safe-area-inset-bottom));
+  }
+  .icon-nav-btn { padding: 6px 6px 8px; flex: 1; border-bottom: none; border-top: 3px solid transparent; }
+  .icon-nav-btn:hover { border-top-color: var(--gold); border-bottom-color: transparent; }
   .icon-nav-label { font-size: 10px; }
+  /* Dropdowns open upward instead of downward - opening down from a
+     bottom-anchored bar would push the menu off the bottom of the screen. */
+  .icon-nav-dropdown { top: auto; bottom: 100%; margin-bottom: 6px; }
+  /* Clear space so page content and the footer aren't hidden underneath
+     the now-fixed bottom bar. */
+  .view { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+  .site-footer-inner { padding-bottom: calc(18px + 70px + env(safe-area-inset-bottom)); }
+  /* Belt-and-suspenders: even with the padding above, give the footer a
+     stacking context above the fixed bottom bar (z-index 45) so its links
+     (Terms/Privacy/Report a Bug/Contact) stay clickable if the reserved
+     space is ever slightly off on a given phone. Same background as the
+     bar, so this is invisible - it only matters for hit-testing. */
+  .site-footer { position: relative; z-index: 46; }
+  /* Keep the floating AI chat bubble clear of the fixed bottom bar so it
+     doesn't sit on top of the last nav icon (Notifications). */
+  #chatbot-widget { bottom: calc(78px + env(safe-area-inset-bottom)); }
 }
 
 /* ---- Layout ---- */
 .view { max-width: 1200px; margin: 0 auto; padding: 24px 20px 60px; }
 .section-heading { font-size: 22px; margin: 0 0 16px; color: var(--accent); font-family: var(--font-display); font-weight: 800; letter-spacing: 0.2px; }
+/* Post Ad form header: keeps the title next to a visible Cancel link so a
+   seller can always back out of the long form instead of being stuck. */
+.post-ad-header-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 16px; }
+.post-ad-header-row .section-heading { margin: 0; }
+.post-ad-cancel-link { font-size: 14px; font-weight: 700; color: var(--text-secondary); white-space: nowrap; }
+.post-ad-cancel-link:hover { color: var(--danger); text-decoration: underline; }
 .section-subheading { font-size: 16px; margin: 22px 0 10px; color: var(--accent); font-family: var(--font-display); font-weight: 700; }
 [data-theme="dark"] .section-heading,
 [data-theme="dark"] .section-subheading { color: var(--gold); }
@@ -646,13 +993,13 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .product-thumb-wrap { position: relative; }
 .product-thumb {
   width: 100%;
-  height: 160px;
+  height: 150px;
   object-fit: cover;
   background: var(--bg-surface-alt);
 }
 .product-thumb-empty {
   width: 100%;
-  height: 160px;
+  height: 150px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -660,13 +1007,53 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   background: var(--bg-surface-alt);
   font-size: 32px;
 }
-.product-card-body { padding: 12px; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+/* Body fields sit close together on purpose (title -> price -> city -> seller),
+   each one context for the next. Every field needs margin:0 - otherwise the
+   browser's default <p> margin stacks on top of this flex gap and the card
+   balloons with dead space (that's what made listings feel too long). */
+.product-card-body { padding: 12px; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .product-title { font-size: 14px; font-weight: 700; margin: 0; }
-.product-price { font-size: 16px; font-weight: 800; color: var(--accent-text); }
-.product-location { font-size: 12px; color: var(--text-muted); }
-.product-seller-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); margin-top: 4px; flex-wrap: wrap; }
+.product-price { font-size: 16px; font-weight: 800; color: var(--accent-text); margin: 0; }
+.product-location { font-size: 12px; color: var(--text-muted); margin: 0; }
+.product-seller-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
 .mini-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; background: var(--bg-surface-alt); }
 .empty-state { color: var(--text-muted); padding: 40px; text-align: center; grid-column: 1/-1; background: var(--bg-surface); border-radius: 10px; border: 1px dashed var(--border-color); }
+
+/* Marketplace home's "All Books" grid: a library shelf, not a couple of
+   oversized cards. Smaller than the default .product-grid (220px min) so
+   several books fit per row even on a phone, with an invisible sentinel at
+   the bottom that triggers loading the next page as the user scrolls - see
+   loadAllProductsPreview()/renderMoreHomeProducts() in app.js. */
+.product-grid-library { grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 10px; }
+.product-grid-library .product-thumb,
+.product-grid-library .product-thumb-empty { height: 64px; }
+.product-grid-library .product-card-body { padding: 8px; gap: 2px; }
+.product-grid-library .product-title { font-size: 12.5px; }
+.product-grid-library .product-price { font-size: 14px; }
+.home-products-sentinel { grid-column: 1/-1; height: 1px; }
+@media (max-width: 420px) {
+  .product-grid-library { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* My Listings: a compact horizontal row reusing the same "small, harmonious"
+   treatment as the Classics preview row, right under the sell-books banner
+   near the top of Marketplace - so a seller's own book doesn't accidentally
+   render as one giant lone card at the top of "All Books" (it used to, just
+   because it was the newest listing and the grid above was too wide). */
+#my-listings-section { margin-bottom: 6px; }
+#my-listings-section .classics-preview-row .product-card { flex: 0 0 140px; }
+.my-listings-toggle-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: none; padding: 0; margin: 0 0 10px; cursor: pointer; text-align: left; }
+.my-listings-toggle-heading { margin: 0; }
+.my-listings-caret { display: inline-block; font-size: 18px; color: var(--accent); flex-shrink: 0; }
+.my-listings-row-collapsed { display: none; }
+/* Dead-end screens (404, unexpected errors) always offer a way back to Home
+   instead of leaving the visitor stuck with only the phone back button. */
+.not-found-state { text-align: center; padding: 60px 20px; display: flex; flex-direction: column; align-items: center; gap: 14px; color: var(--text-secondary); }
+/* Home feed empty state: shown instead of hiding the whole section when a
+   brand-new account has no friends yet, so first login doesn't look blank. */
+.home-feed-empty { width: 100%; }
+.home-feed-empty-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+.messages-empty .btn { margin-top: 12px; }
 .rating-count { color: var(--text-muted); font-size: 11px; }
 
 /* ---- Status badge (reserved / sold) ---- */
@@ -696,6 +1083,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .detail-title { font-size: 22px; margin: 0 0 6px; }
 .detail-price { font-size: 26px; font-weight: 800; color: var(--accent-text); margin-bottom: 10px; }
 .detail-meta { font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; }
+.detail-shipping-note { font-size: 12.5px; color: var(--text-secondary); margin: -6px 0 10px; opacity: 0.85; }
 .badge { display: inline-block; font-size: 11px; padding: 3px 8px; border-radius: 12px; background: var(--bg-surface-alt); color: var(--accent-text); margin-right: 6px; }
 .badge.no { background: var(--danger-bg); color: var(--danger); }
 
@@ -719,6 +1107,33 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .sales-history-price { font-weight: 700; color: var(--accent-text); white-space: nowrap; }
 
 .action-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+/* Honest, always-visible reminder next to Buy/Offer buttons that HieloIce
+   doesn't hold or process payment yet - avoids a "Buy Now" button implying
+   a completed purchase when it only sends a request to the seller. */
+.buy-safety-note { font-size: 12px; color: var(--text-secondary); margin: 8px 0 0; max-width: 480px; }
+
+/* ---- Orders (task #58/#127 - real payments, buyer protection) ---- */
+.order-list { display: flex; flex-direction: column; gap: 10px; }
+.order-row { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-color); border-radius: 10px; text-decoration: none; color: inherit; background: var(--bg-surface); }
+.order-row-thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+.order-row-thumb-empty { width: 52px; height: 52px; border-radius: 8px; background: var(--bg-surface-alt); display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
+.order-row-info { flex: 1; min-width: 0; }
+.order-row-title { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-row-meta { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.order-timeline { display: flex; align-items: center; gap: 6px; margin: 16px 0; }
+.order-step { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; position: relative; }
+.order-step:not(:last-child)::after { content: ""; position: absolute; top: 6px; left: 55%; width: 90%; height: 2px; background: var(--border-color); z-index: 0; }
+.order-step.done:not(:last-child)::after { background: var(--gold); }
+.order-step-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--border-color); z-index: 1; }
+.order-step.done .order-step-dot { background: var(--gold); }
+.order-step-label { font-size: 11px; color: var(--text-secondary); text-align: center; }
+.order-step.done .order-step-label { color: var(--accent-text); font-weight: 700; }
+/* Task #312 - basic shipping: address (from Stripe's hosted checkout) and
+   tracking (seller-entered) shown on the order detail page. */
+.order-shipping-block { background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 14px; margin-top: 14px; }
+.order-shipping-heading { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); margin: 0 0 6px; }
+.order-shipping-address { font-size: 14px; line-height: 1.5; margin: 0; color: var(--text-primary); }
+.order-ship-form { width: 100%; }
 .btn { border: none; border-radius: 6px; padding: 10px 16px; font-weight: 700; font-size: 14px; }
 .btn-primary { background: var(--accent); color: var(--accent-text-on); }
 .btn-primary:hover { background: var(--accent-strong); }
@@ -744,6 +1159,22 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .form-group textarea { resize: vertical; }
 .form-row { display: flex; gap: 10px; }
 .form-row .form-group { flex: 1; }
+.form-row-split { display: flex; gap: 10px; }
+.form-row-split .form-group { flex: 1; }
+/* Task #313 phase 2 - seller ship-from address form on Profile uses bare
+   .form-row inputs (no .form-group wrapper) for a slightly more compact
+   layout, so it needs its own basic input styling here. */
+.ship-address-form .form-row { margin-bottom: 10px; }
+.ship-address-form input[type="text"] {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.ship-address-form .form-row-split { gap: 10px; }
+.ship-address-form .form-row-split input { flex: 1; min-width: 0; }
 .checkbox-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .checkbox-row input { width: auto; }
 .form-msg { font-size: 13px; min-height: 18px; margin: 8px 0; }
@@ -792,6 +1223,161 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .group-post-type-review { background: #fdf2e0; color: #8a5d00; }
 .group-post-type-warning { background: var(--danger-bg); color: var(--danger); }
 
+/* ---- Book Club (task #240/#242) ---- */
+.bookclub-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.bookclub-card { position: relative; overflow: hidden; }
+.bookclub-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--gold); }
+.bookclub-card-book { font-size: 13px; font-weight: 700; color: var(--gold); margin: 0 0 6px; letter-spacing: 0.2px; }
+.bookclub-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+.bookclub-detail-book { font-size: 14px; font-weight: 700; color: var(--gold); margin: 0 0 2px; }
+.bookclub-video-btn { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.bookclub-authorpick {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  background: linear-gradient(135deg, var(--bg-surface-alt), var(--bg-surface));
+  border: 1px solid var(--gold); border-radius: 12px; padding: 16px 18px; margin: 14px 0 18px;
+}
+.bookclub-authorpick-headrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bookclub-authorpick-title { font-weight: 800; font-size: 15px; margin: 0; color: var(--gold); }
+.bookclub-authorpick-desc { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+/* Small "Preview" pill - the button itself is always real and clickable
+   (task #242 rework: "visual y navegable pero sin poder accionar"), this
+   badge just signals that submissions aren't live yet. */
+.bookclub-authorpick-badge { font-size: 11.5px; font-weight: 700; color: var(--gold); background: var(--bg-page); border: 1px solid var(--gold); border-radius: 20px; padding: 3px 10px; letter-spacing: 0.3px; text-transform: uppercase; }
+
+/* Pick of the Month submission preview modal */
+.bookclub-authorpick-modal-overlay { position: fixed; inset: 0; z-index: 900; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.bookclub-authorpick-modal { position: relative; width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--gold); border-radius: 14px; padding: 24px 22px 20px; }
+.bookclub-authorpick-modal-close { position: absolute; top: 10px; right: 12px; background: none; border: none; color: var(--text-secondary); font-size: 24px; line-height: 1; cursor: pointer; padding: 4px; }
+.bookclub-authorpick-modal-title { font-size: 17px; font-weight: 800; color: var(--gold); margin: 0 0 8px; padding-right: 24px; }
+.bookclub-authorpick-modal-intro { font-size: 13px; color: var(--text-secondary); background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin: 0 0 16px; }
+.bookclub-authorpick-thanks { text-align: center; padding: 12px 4px 4px; }
+.bookclub-authorpick-thanks-title { font-size: 16px; font-weight: 800; color: var(--gold); margin: 0 0 8px; }
+.bookclub-authorpick-thanks-desc { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
+/* ---- Publish a Book (task #244 - independent-author pipeline, distinct
+   from selling a used book) ---- */
+.publishbook-intro { background: linear-gradient(135deg, var(--bg-surface-alt), var(--bg-surface)); border: 1px solid var(--gold); border-radius: 12px; padding: 16px 18px; margin: 14px 0 18px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.publishbook-intro-title { font-weight: 800; font-size: 15px; margin: 0; color: var(--gold); }
+.publishbook-intro p { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+.publishbook-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.publishbook-card { position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+.publishbook-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--gold); }
+.publishbook-card-genre { font-size: 12px; font-weight: 700; color: var(--gold); margin: 0; text-transform: uppercase; letter-spacing: 0.3px; }
+/* "Your Audiobooks" cards used to be a single <a> covering the whole card
+   (no way to delete a draft without opening it first). Now the clickable
+   title/genre/status area is its own inner link, with a small outlined
+   Delete button below it that's a real sibling <button> - not nested inside
+   the <a> - so tapping Delete never also navigates into the editor. */
+.publishbook-card-mine { padding: 14px; }
+.publishbook-card-link { display: flex; flex-direction: column; gap: 6px; color: inherit; }
+.publishbook-card-delete { align-self: flex-start; margin-top: 8px; padding: 5px 12px; font-size: 12.5px; }
+.btn-danger-outline { background: none; border: 1px solid var(--danger); color: var(--danger); border-radius: 6px; cursor: pointer; font-weight: 700; }
+.btn-danger-outline:hover { background: var(--danger); color: #fff; }
+
+/* Record-narration panel on the Add Chapter form - lets an author narrate a
+   chapter with their microphone instead of only uploading a pre-made file. */
+.audiobook-source-tabs { display: flex; gap: 8px; margin: 4px 0; }
+.audiobook-source-tab { flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-surface-alt); color: var(--text-secondary); font-weight: 700; font-size: 13px; cursor: pointer; }
+.audiobook-source-tab.active { border-color: var(--gold); color: var(--gold); background: rgba(201,162,75,0.12); }
+.audiobook-source-panel { margin-bottom: 6px; }
+.audiobook-recorder { border: 1px solid var(--border-color); border-radius: 10px; padding: 14px; text-align: center; background: var(--bg-surface-alt); }
+.audiobook-recorder-meter { height: 8px; border-radius: 999px; background: var(--bg-page); overflow: hidden; margin-bottom: 8px; }
+.audiobook-recorder-meter-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--gold), var(--danger)); transition: width 0.08s linear; }
+.audiobook-recorder-time { font-variant-numeric: tabular-nums; font-weight: 800; font-size: 20px; margin: 4px 0 10px; color: var(--text-primary); }
+.audiobook-recorder-controls { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+#audiobook-record-preview { width: 100%; margin-top: 10px; }
+
+/* Persistent floating mini-player (see AudiobookPlayer in app.js) - created
+   once and appended straight to <body>, so it's outside #view and survives
+   every route change. z-index above #chatbot-widget's 300 so the help
+   bubble in the same bottom corner never covers it. On mobile it sits just
+   above the fixed bottom icon-nav tab bar instead of on top of it - same
+   "clear space above the fixed bar" pattern .view's own padding-bottom
+   uses below. */
+.audiobook-miniplayer {
+  position: fixed; left: 10px; right: 10px; bottom: 16px; z-index: 320;
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28); cursor: pointer;
+}
+.audiobook-miniplayer-cover { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; flex: 0 0 auto; background: var(--bg-surface-alt); }
+.audiobook-miniplayer-info { flex: 1; min-width: 0; }
+.audiobook-miniplayer-title { font-weight: 700; font-size: 13px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.audiobook-miniplayer-chapter { font-size: 11.5px; color: var(--text-secondary); margin: 1px 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.audiobook-miniplayer-track { height: 3px; border-radius: 999px; background: var(--bg-page); overflow: hidden; }
+.audiobook-miniplayer-fill { height: 100%; width: 0%; background: var(--gold); }
+.audiobook-miniplayer-btn { flex: 0 0 auto; background: none; border: none; font-size: 16px; color: var(--text-primary); padding: 4px 6px; cursor: pointer; }
+.audiobook-miniplayer-close { color: var(--text-secondary); font-size: 18px; }
+.audiobook-listen-btn.active { border-color: var(--gold); color: var(--gold); }
+@media (max-width: 640px) {
+  .audiobook-miniplayer { bottom: calc(68px + env(safe-area-inset-bottom)); }
+}
+.publishbook-status { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.3px; background: var(--bg-page); border: 1px solid var(--border-color); color: var(--text-secondary); }
+.publishbook-status-warn { border-color: #c98a00; color: #c98a00; }
+.publishbook-status-pending { border-color: var(--accent-text); color: var(--accent-text); }
+.publishbook-status-approved { border-color: var(--gold); color: var(--gold); }
+.publishbook-status-rejected { border-color: var(--danger); color: var(--danger); }
+.publishbook-status-note { font-size: 13.5px; color: var(--text-secondary); background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.publishbook-detail-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.publishbook-chapters-heading { margin: 20px 0 8px; font-size: 16px; }
+.publishbook-chapter { border: 1px solid var(--border-color); border-radius: 10px; padding: 12px; margin-bottom: 12px; background: var(--bg-surface); }
+.publishbook-chapter-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.publishbook-chapter-title { flex: 1; font-weight: 700; }
+.publishbook-chapter-remove { background: none; border: none; color: var(--text-secondary); font-size: 20px; line-height: 1; cursor: pointer; padding: 2px 6px; }
+.publishbook-chapter-content { width: 100%; min-height: 140px; resize: vertical; }
+.publishbook-ai-btn { margin-top: 8px; }
+.publishbook-ai-panel { margin-top: 10px; padding: 10px; background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
+.publishbook-ai-instruction { width: 100%; }
+.publishbook-ai-suggestion { margin-top: 8px; padding: 10px; background: var(--bg-surface-alt); border: 1px solid var(--gold); border-radius: 8px; }
+.publishbook-ai-suggestion-text { font-size: 13.5px; white-space: pre-wrap; margin: 0 0 8px; }
+.publishbook-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0 6px; }
+
+/* Landing/hero (renderPublishBookHome) */
+.publishbook-hero { text-align: center; padding: 30px 20px; margin-bottom: 24px; border-radius: 16px; background: linear-gradient(160deg, var(--bg-surface-alt), var(--bg-surface)); border: 1px solid var(--gold); display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.publishbook-hero-eyebrow { font-size: 12px; font-weight: 800; letter-spacing: 0.6px; text-transform: uppercase; color: var(--gold); margin: 0; }
+.publishbook-hero-title { font-size: 26px; margin: 0; }
+.publishbook-hero-subtitle { font-size: 14.5px; color: var(--text-secondary); max-width: 520px; margin: 0; }
+.publishbook-hero-cta { margin-top: 10px; padding: 12px 28px; font-size: 15px; }
+.publishbook-how-heading { text-align: center; margin: 0 0 12px; font-size: 17px; }
+.publishbook-how-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.publishbook-how-card { position: relative; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 18px 14px 14px; text-align: center; }
+.publishbook-how-num { position: absolute; top: -10px; left: -10px; width: 26px; height: 26px; border-radius: 50%; background: var(--gold); color: var(--gold-text-on); font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+.publishbook-how-emoji { font-size: 26px; margin: 4px 0; }
+.publishbook-how-title { font-weight: 800; font-size: 14px; margin: 0 0 4px; }
+.publishbook-how-body { font-size: 12.5px; color: var(--text-secondary); margin: 0; }
+.publishbook-new-form { background: var(--bg-surface); border: 1px solid var(--gold); border-radius: 12px; padding: 18px; margin-bottom: 24px; }
+
+/* Step wizard (renderPublishBookEditor, editable state) */
+.publishbook-steps { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 18px 0 22px; flex-wrap: wrap; }
+.publishbook-step-dot { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--text-muted); }
+.publishbook-step-dot.active { color: var(--gold); }
+.publishbook-step-num { width: 22px; height: 22px; border-radius: 50%; background: var(--bg-page); border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center; font-size: 12px; }
+.publishbook-step-dot.active .publishbook-step-num { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+.publishbook-step-line { width: 24px; height: 1px; background: var(--border-color); }
+.publishbook-step-intro { font-size: 13.5px; color: var(--text-secondary); margin: 0 0 14px; }
+.publishbook-review-card { background: var(--bg-surface); border: 1px solid var(--gold); border-radius: 12px; padding: 16px 18px; margin-bottom: 12px; }
+.publishbook-review-genre { font-size: 12px; font-weight: 700; color: var(--gold); text-transform: uppercase; margin: 0 0 4px; }
+.publishbook-review-synopsis { font-size: 13.5px; color: var(--text-secondary); margin: 8px 0; }
+.publishbook-review-stats { font-size: 12.5px; color: var(--text-muted); margin: 8px 0 0; }
+.publishbook-legal-note { font-size: 12.5px; color: var(--text-secondary); background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin: 0 0 14px; }
+.publishbook-autosave-note { text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 16px; }
+
+/* Final "Publish my book" action - real and clickable (task: "necesito
+   todo el recorrido... pero al momento final... que no se pueda accionar"),
+   only reachable after team approval; see POST /api/original-works/:id/publish. */
+.publishbook-publish-wrap { margin: 14px 0 18px; }
+.publishbook-publish-btn { padding: 12px 26px; font-size: 15px; }
+.publishbook-publish-thanks { text-align: center; background: linear-gradient(135deg, var(--bg-surface-alt), var(--bg-surface)); border: 1px solid var(--gold); border-radius: 12px; padding: 18px 20px; }
+.publishbook-publish-thanks-title { font-size: 16px; font-weight: 800; color: var(--gold); margin: 0 0 8px; }
+.publishbook-publish-thanks-desc { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
+/* Live group video call - Jitsi Meet embedded full-screen, no API key
+   needed (see POST /api/groups/:slug/video-room in server.js). */
+.bookclub-video-overlay { position: fixed; inset: 0; z-index: 900; background: #000; display: flex; flex-direction: column; }
+.bookclub-video-topbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: #111; color: #fff; font-size: 14px; font-weight: 700; }
+.bookclub-video-close { background: none; border: none; color: #fff; font-size: 26px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.bookclub-video-frame { flex: 1; width: 100%; border: none; }
+
 /* ---- Saved items ("Guardar", Pinterest-style) ---- */
 .detail-price-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .save-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 20px; padding: 7px 14px; font-size: 13px; font-weight: 700; color: var(--text-secondary); }
@@ -803,7 +1389,34 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .photo-upload-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 6px; }
 .photo-slot { position: relative; aspect-ratio: 1; border: 1px dashed var(--border-color); border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--bg-surface-alt); font-size: 11px; color: var(--text-muted); }
 .photo-slot img { width: 100%; height: 100%; object-fit: cover; }
-.photo-slot .remove-photo { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 1; }
+/* Tap target enlarged from the original 18px to ~32px (closer to the
+   44px comfortable-tap-target guideline) - the visual "x" glyph still
+   looks the same size via font-size, just easier to hit on a phone. */
+.photo-slot .remove-photo { position: absolute; top: 0; right: 0; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 32px; height: 32px; font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.photo-slot .edit-photo { position: absolute; bottom: 0; left: 0; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 6px 0 6px 0; width: 32px; height: 28px; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.photo-slot-img { cursor: pointer; }
+/* Empty "+" tiles are real buttons now (openable to the device file picker
+   via p-photos.click()), not decorative divs - reset button chrome so they
+   keep looking exactly like the filled .photo-slot cells. */
+.photo-slot-add { font: inherit; cursor: pointer; font-size: 22px; }
+.photo-slot-add:hover { border-color: var(--gold); color: var(--gold); }
+
+/* ---- Photo editor (crop/rotate) modal, opened from the Post Ad photo grid ---- */
+.photo-editor-box { max-width: 380px; text-align: center; }
+.photo-editor-canvas-wrap { display: flex; justify-content: center; margin: 10px 0; }
+.photo-editor-canvas {
+  width: 100%;
+  max-width: 280px;
+  aspect-ratio: 4 / 5;
+  display: block;
+  border-radius: 10px;
+  background: #000;
+  touch-action: none;
+  cursor: grab;
+}
+.photo-editor-controls { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
+.photo-editor-controls input[type="range"] { flex: 1; }
+.photo-editor-zoom-icon { font-size: 15px; opacity: 0.7; }
 
 /* ---- Profile (Facebook-style: cover photo + overlapping avatar) ---- */
 .profile-cover-wrap { position: relative; margin-bottom: 56px; }
@@ -876,11 +1489,26 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .blocked-user-name { flex: 1; font-weight: 600; font-size: 14px; }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 
+/* ---- Creator Analytics tab (profile) ---- */
+.analytics-disclaimer { font-size: 12px; color: var(--text-muted); margin: 0 0 16px; line-height: 1.5; }
+.analytics-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.analytics-stat-card { background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 10px; padding: 14px 10px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; }
+.analytics-stat-value { font-size: 22px; font-weight: 700; color: var(--accent-text); font-family: var(--font-display); }
+[data-theme="dark"] .analytics-stat-value { color: var(--gold); }
+.analytics-stat-label { font-size: 12px; color: var(--text-muted); }
+.analytics-trend-line { font-size: 14px; color: var(--text-secondary); margin: 6px 0; }
+.analytics-moment-list { display: flex; flex-direction: column; gap: 8px; }
+.analytics-moment-row { border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.analytics-moment-meta { display: flex; flex-direction: column; gap: 2px; }
+.analytics-moment-caption { font-size: 13px; font-weight: 600; color: var(--text-primary); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.analytics-moment-expires { font-size: 11px; color: var(--text-muted); }
+.analytics-moment-stats { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary); }
+
 /* ---- Photo gallery (profile Photos tab) ---- */
 .photo-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .photo-gallery-item { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: var(--bg-surface-alt); }
 .photo-gallery-item img { width: 100%; height: 100%; object-fit: cover; }
-.photo-gallery-item .photo-remove-btn { position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 22px; height: 22px; font-size: 13px; line-height: 1; }
+.photo-gallery-item .photo-remove-btn { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.6); color: #fff; border: none; border-radius: 50%; width: 32px; height: 32px; font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
 .photo-gallery-add { aspect-ratio: 1; border: 2px dashed var(--border-color); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: var(--text-muted); cursor: pointer; background: var(--bg-surface-alt); text-align: center; padding: 8px; }
 .photo-gallery-add:hover { border-color: var(--accent-text); color: var(--accent-text); }
 .photo-gallery-add input { display: none; }
@@ -909,6 +1537,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .page-badge-inline { display: inline-block; background: var(--accent); color: var(--accent-text-on); font-size: 10px; font-weight: 800; padding: 2px 7px; border-radius: 8px; vertical-align: middle; margin-left: 4px; }
 .btn-follow-inline { margin-left: auto; background: var(--gold); color: var(--gold-text-on); border: none; border-radius: 16px; padding: 6px 14px; font-size: 12px; font-weight: 800; }
 .field-hint { font-size: 12px; color: var(--text-muted); margin: 4px 0 0; }
+.field-hint.error { color: var(--danger); }
 .checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .checkbox-label input { width: auto; }
 
@@ -973,6 +1602,84 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   z-index: 2;
 }
 
+/* ---- Loops "stories" strip cards ----
+   Structurally identical to the .moment-rect-* rectangle cards above (small
+   thumbnail card + circular avatar badge + name label) but kept as its own
+   class family rather than reused, same reasoning as renderLoopGroupsBar()
+   in app.js: Loops needs a seen/unseen ring state Moments never had, and
+   decoupling the CSS means a future change to one doesn't silently affect
+   the other. */
+.loop-rect-wrap {
+  position: relative;
+  flex-shrink: 0;
+  width: 96px;
+  height: 156px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--accent);
+  background-size: cover;
+  background-position: center;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+}
+.loop-rect-shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0) 35%, rgba(0,0,0,0.65) 100%); }
+.loop-rect-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--accent-text-on); font-size: 30px; font-weight: 700; }
+.loop-rect-avatar { position: absolute; top: 8px; left: 8px; width: 30px; height: 30px; border-radius: 50%; overflow: hidden; background: var(--accent); z-index: 2; }
+.loop-rect-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.loop-rect-avatar-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--accent-text-on); font-size: 12px; font-weight: 700; }
+/* Unviewed = colored ring (same "something new here" gold treatment the
+   Moments rect card's avatar border always used) - viewed = plain/gray ring
+   once every one of this author's Loops has been seen by the current
+   viewer. This is the "seen vs unseen" indicator Carlos asked for. */
+.loop-rect-avatar-unviewed { border: 2.5px solid var(--gold); }
+.loop-rect-avatar-viewed { border: 2.5px solid var(--border-color); }
+.loop-rect-name { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 2; color: #fff; font-size: 12px; font-weight: 700; line-height: 1.25; text-shadow: 0 1px 3px rgba(0,0,0,0.6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loop-rect-add .loop-rect-name { left: 10px; right: 10px; bottom: 10px; }
+.loop-rect-add-badge {
+  position: absolute;
+  bottom: 34px;
+  left: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--gold);
+  color: var(--gold-text-on);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 800;
+  border: 2px solid var(--bg-surface);
+  z-index: 2;
+}
+
+/* ---- Loops full-screen viewer (openLoopsViewer()/drawLoopViewer() in
+   app.js) - tap-through with auto-advance, IG-Stories-style progress
+   segments at top. Layout mirrors .moment-viewer-* below it (same overlay/
+   media/progress-bar/tap-zone structure) but its own class family since
+   it's a separate function with a different interaction model - no action
+   rail (like/message/share/save), a view-count pill instead for the
+   Loop's own author. ---- */
+.loop-viewer-overlay { position: fixed; inset: 0; background: #000; z-index: 500; display: flex; align-items: center; justify-content: center; }
+.loop-viewer-media-wrap { position: relative; width: 100%; max-width: 480px; height: 100%; max-height: 100vh; display: flex; align-items: center; justify-content: center; background: #111; }
+.loop-viewer-media { max-width: 100%; max-height: 100%; object-fit: contain; }
+.loop-viewer-progress { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; gap: 4px; z-index: 2; }
+.loop-viewer-progress-bar { flex: 1; height: 3px; background: rgba(255,255,255,0.3); border-radius: 2px; overflow: hidden; }
+.loop-viewer-progress-fill { height: 100%; background: #fff; width: 0%; }
+.loop-viewer-progress-bar.done .loop-viewer-progress-fill { width: 100%; }
+.loop-viewer-head { position: absolute; top: 18px; left: 12px; right: 12px; display: flex; align-items: center; gap: 8px; z-index: 2; color: #fff; }
+.loop-viewer-head-link { display: flex; align-items: center; gap: 8px; background: none; border: none; padding: 0; color: inherit; cursor: pointer; text-align: left; }
+.loop-viewer-head-link:disabled { cursor: default; }
+.loop-viewer-head img { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; border: 1px solid #fff; }
+.loop-viewer-head-name { font-size: 13px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.loop-viewer-view-count { font-size: 12px; font-weight: 700; background: rgba(0,0,0,0.4); padding: 3px 8px; border-radius: 10px; }
+.loop-viewer-close { margin-left: auto; background: none; border: none; color: #fff; font-size: 22px; }
+.loop-viewer-caption { position: absolute; bottom: 20px; left: 16px; right: 60px; color: #fff; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); z-index: 2; white-space: pre-line; }
+.loop-viewer-delete { position: absolute; bottom: 20px; right: 16px; background: rgba(168,50,50,0.85); color: #fff; border: none; border-radius: 6px; padding: 6px 12px; font-size: 12px; z-index: 2; }
+.loop-viewer-nav { position: absolute; top: 0; bottom: 0; width: 40%; z-index: 1; background: transparent; border: none; }
+.loop-viewer-nav.prev { left: 0; }
+.loop-viewer-nav.next { right: 0; }
+
 .moment-viewer-overlay { position: fixed; inset: 0; background: #000; z-index: 500; display: flex; align-items: center; justify-content: center; }
 .moment-viewer-media-wrap { position: relative; width: 100%; max-width: 480px; height: 100%; max-height: 100vh; display: flex; align-items: center; justify-content: center; background: #111; }
 .moment-viewer-media { max-width: 100%; max-height: 100%; object-fit: contain; }
@@ -992,7 +1699,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .moment-viewer-nav.prev { left: 0; }
 .moment-viewer-nav.next { right: 0; }
 
-/* ---- Moments story-viewer action rail (Reels/Shorts-style: like, message,
+/* ---- Moments story-viewer action rail (vertical-video-style: like, message,
    share, repost, save) - white outline by default, fills on activation ---- */
 .moment-viewer-actions { position: absolute; right: 10px; bottom: 90px; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 16px; }
 .moment-viewer-action-btn { background: none; border: none; padding: 0; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; transition: transform 0.15s ease; }
@@ -1032,34 +1739,91 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .moment-comments-input-row button { background: var(--accent); color: var(--accent-text-on); border: none; border-radius: 18px; padding: 8px 16px; font-size: 13px; font-weight: 700; }
 .moment-comments-input-row button:disabled, .moment-comments-input-row input:disabled { opacity: 0.5; }
 
+/* Profile-gallery photo lightbox (view/like/comment) - reuses the
+   .moment-comment-* row styles above for the comment list, since the
+   markup and layout are identical, just pointed at a different photo. */
+.photo-lightbox-overlay { position: fixed; inset: 0; z-index: 500; display: flex; align-items: center; justify-content: center; }
+.photo-lightbox-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.82); }
+.photo-lightbox-panel { position: relative; z-index: 1; width: 100%; max-width: 480px; max-height: 92vh; background: var(--bg-surface); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; margin: 16px; }
+.photo-lightbox-close { position: absolute; top: 10px; right: 10px; z-index: 2; width: 32px; height: 32px; border-radius: 50%; background: rgba(0,0,0,0.55); color: #fff; border: none; font-size: 20px; line-height: 1; }
+.photo-lightbox-image-wrap { background: #000; display: flex; align-items: center; justify-content: center; max-height: 55vh; }
+.photo-lightbox-image { width: 100%; max-height: 55vh; object-fit: contain; display: block; }
+.photo-lightbox-actions { display: flex; align-items: center; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
+.photo-lightbox-like-btn { background: none; border: none; font-size: 15px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 6px; padding: 0; }
+.photo-lightbox-like-btn.active { color: #e0335a; }
+.photo-lightbox-comment-count { font-size: 14px; color: var(--text-secondary); }
+.photo-lightbox-comments-list { overflow-y: auto; padding: 10px 16px; flex: 1; min-height: 60px; }
+.photo-comment-row { display: flex; gap: 8px; margin-bottom: 14px; }
+.photo-comment-row.is-reply { margin-left: 30px; }
+.photo-comment-avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; flex-shrink: 0; background: var(--bg-surface-alt); }
+.photo-comment-avatar-placeholder { display: flex; align-items: center; justify-content: center; background: var(--accent); color: var(--accent-text-on); font-size: 12px; font-weight: 700; }
+.photo-comment-body { flex: 1; min-width: 0; }
+.photo-comment-meta { display: flex; align-items: baseline; gap: 8px; }
+.photo-comment-name { font-weight: 700; font-size: 13px; color: var(--text-primary); }
+.photo-comment-age { font-size: 11px; color: var(--text-muted); }
+.photo-comment-text { font-size: 13px; color: var(--text-primary); margin-top: 2px; word-wrap: break-word; }
+.photo-comment-reply-btn { background: none; border: none; padding: 0; margin-top: 4px; font-size: 11px; font-weight: 700; color: var(--text-muted); }
+.photo-comment-reply-btn:hover { color: var(--accent-text); }
+.photo-gallery-item { cursor: pointer; }
+
 .moment-upload-preview { width: 100%; max-height: 260px; object-fit: contain; border-radius: 8px; background: var(--bg-surface-alt); margin: 10px 0; }
 .moment-upload-choices { display: flex; gap: 10px; margin-top: 6px; }
 .moment-upload-choices label { flex: 1; text-align: center; background: var(--bg-surface-alt); color: var(--accent-text); border: 1px dashed var(--accent-text); border-radius: 8px; padding: 14px 8px; font-size: 13px; font-weight: 700; cursor: pointer; }
 .moment-upload-choices input { display: none; }
 
-/* ---- Moments video feed ("#/shorts" - vertical Reels/Shorts-style player) ---- */
-.shorts-overlay { position: fixed; inset: 0; background: #000; z-index: 500; display: flex; align-items: center; justify-content: center; }
-.shorts-item { position: relative; width: 100%; max-width: 480px; height: 100%; max-height: 100vh; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: pan-x; }
-.shorts-video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-.shorts-close { position: absolute; top: 16px; right: 16px; background: rgba(0,0,0,0.4); border: none; color: #fff; font-size: 22px; width: 34px; height: 34px; border-radius: 50%; z-index: 2; }
-.shorts-info { position: absolute; left: 14px; right: 70px; bottom: 24px; z-index: 2; color: #fff; }
-.shorts-author-link { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.shorts-avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid #fff; }
-.shorts-avatar-placeholder { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--accent-text-on); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; border: 1px solid #fff; }
-.shorts-author { font-weight: 700; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
-.shorts-caption { font-size: 13px; margin: 0 0 10px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); white-space: pre-line; }
+/* ---- Home: thin "stories" strip above the swipe feed ----
+   Shows Loops (genuinely ephemeral, 24h) via renderLoopGroupsBar()/
+   .loop-rect-wrap - NOT Moments, which became permanent on 2026-08-18 and
+   moved to the full swipe feed below instead (see the renderHome() comment
+   in app.js). Scaled-down card sizing here so it reads as a slim shelf
+   sitting right under the topbar instead of a full section with its own
+   heading - same scaling approach the old Moments version of this strip
+   used for its .moment-rect-wrap cards. */
+.home-stories-strip { padding: 8px 2px 2px; background: var(--bg-surface); border-bottom: 1px solid var(--border-color); }
+.home-stories-strip .moments-bar { padding: 0 6px 8px; margin-bottom: 0; gap: 8px; }
+.home-stories-strip .loop-rect-wrap { width: 56px; height: 76px; border-radius: 8px; }
+.home-stories-strip .loop-rect-avatar { width: 20px; height: 20px; top: 5px; left: 5px; border-width: 1.5px; }
+.home-stories-strip .loop-rect-add-badge { width: 18px; height: 18px; bottom: 20px; left: 5px; font-size: 12px; border-width: 1.5px; }
+.home-stories-strip .loop-rect-name { left: 5px; right: 5px; bottom: 4px; font-size: 9px; }
+.home-stories-strip .loop-rect-add .loop-rect-name { left: 6px; right: 6px; bottom: 6px; }
+.home-stories-strip .loop-rect-placeholder { font-size: 15px; }
+
+/* ---- Home: inline swipe feed ----
+   Mixed photo+video moments, ranked by /api/moments/videos/feed, rendered
+   via the same shared drawSwipeItem()/wireSwipeGestures() engine (and the
+   same .clips-* classes below) as the full-screen Clips player - just
+   mounted in normal document flow instead of a fixed full-viewport overlay,
+   so the topbar and bottom icon-nav stay visible around it instead of being
+   covered. Height is set in JS (sizeHomeSwipeFeed() in app.js) since it
+   depends on how much room the topbar/stories-strip/bottom-nav chrome
+   around it takes up, which isn't a fixed number - see that function's
+   comment for why. */
+.home-swipe-feed { position: relative; z-index: 1; width: 100%; overflow: hidden; background: #000; }
+.home-swipe-feed .clips-item { max-height: 100%; }
+
+/* ---- Moments video feed ("#/clips" - full-screen vertical video player) ---- */
+.clips-overlay { position: fixed; inset: 0; background: #000; z-index: 500; display: flex; align-items: center; justify-content: center; }
+.clips-item { position: relative; width: 100%; max-width: 480px; height: 100%; max-height: 100vh; background: #111; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: pan-x; }
+.clips-video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.clips-close { position: absolute; top: 16px; right: 16px; background: rgba(0,0,0,0.4); border: none; color: #fff; font-size: 22px; width: 34px; height: 34px; border-radius: 50%; z-index: 2; }
+.clips-info { position: absolute; left: 14px; right: 70px; bottom: 24px; z-index: 2; color: #fff; }
+.clips-author-link { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.clips-avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid #fff; }
+.clips-avatar-placeholder { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--accent-text-on); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; border: 1px solid #fff; }
+.clips-author { font-weight: 700; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.clips-caption { font-size: 13px; margin: 0 0 10px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); white-space: pre-line; }
 .hashtag-token { color: var(--accent-strong); font-weight: 700; }
-.shorts-follow { display: block; }
+.clips-follow { display: block; }
 
-/* ---- Shorts side actions (like) - Instagram-style vertical action rail ---- */
-.shorts-actions-col { position: absolute; right: 14px; bottom: 90px; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 16px; }
-.shorts-action { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.shorts-action-btn { width: 46px; height: 46px; border-radius: 50%; background: rgba(255,255,255,0.12); backdrop-filter: blur(2px); border: none; color: #fff; font-size: 22px; display: flex; align-items: center; justify-content: center; transition: transform 0.15s ease; }
-.shorts-action-btn:active { transform: scale(0.88); }
-.shorts-action-btn.active { background: rgba(255,255,255,0.2); }
-.shorts-action-count { color: #fff; font-size: 12px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+/* ---- Clips side actions (like) - vertical action rail ---- */
+.clips-actions-col { position: absolute; right: 14px; bottom: 90px; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.clips-action { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.clips-action-btn { width: 46px; height: 46px; border-radius: 50%; background: rgba(255,255,255,0.12); backdrop-filter: blur(2px); border: none; color: #fff; font-size: 22px; display: flex; align-items: center; justify-content: center; transition: transform 0.15s ease; }
+.clips-action-btn:active { transform: scale(0.88); }
+.clips-action-btn.active { background: rgba(255,255,255,0.2); }
+.clips-action-count { color: #fff; font-size: 12px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
 
-.shorts-heart-burst {
+.clips-heart-burst {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -1068,44 +1832,184 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   opacity: 0;
   z-index: 3;
   pointer-events: none;
-  animation: shortsHeartBurst 0.75s ease-out forwards;
+  animation: clipsHeartBurst 0.75s ease-out forwards;
   filter: drop-shadow(0 2px 8px rgba(0,0,0,0.35));
 }
-@keyframes shortsHeartBurst {
+@keyframes clipsHeartBurst {
   0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
   25% { transform: translate(-50%, -50%) scale(1.15); opacity: 1; }
   45% { transform: translate(-50%, -50%) scale(0.95); opacity: 1; }
   100% { transform: translate(-50%, -50%) scale(1); opacity: 0; }
 }
 
-/* ---- Messages ---- */
-.messages-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; height: 560px; }
-@media (max-width: 700px) { .messages-layout { grid-template-columns: 1fr; height: auto; } }
-.convo-list { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; overflow-y: auto; }
-.convo-item { display: flex; gap: 10px; padding: 12px; border-bottom: 1px solid var(--border-color); align-items: center; }
-.convo-item:hover, .convo-item.active { background: var(--bg-surface-alt); }
-.convo-name { font-weight: 700; font-size: 13px; }
-.convo-preview { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
-.convo-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); margin-left: auto; }
+/* ---- Messages (task #234 - Instagram/WhatsApp/Messenger hybrid chat UI) ---- */
+.messages-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; height: 620px; }
+@media (max-width: 700px) { .messages-layout { grid-template-columns: 1fr; height: calc(100vh - 220px); min-height: 520px; } }
 
-.chat-panel { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; display: flex; flex-direction: column; }
-.chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
-.chat-bubble { max-width: 70%; padding: 8px 12px; border-radius: 12px; font-size: 13px; }
-.chat-bubble.mine { align-self: flex-end; background: var(--accent); color: var(--accent-text-on); }
-.chat-bubble.theirs { align-self: flex-start; background: var(--bg-surface-alt); color: var(--text-primary); }
-.chat-input-row { display: flex; border-top: 1px solid var(--border-color); padding: 10px; gap: 8px; }
-.chat-input-row input { flex: 1; padding: 9px 10px; border: 1px solid var(--border-color); border-radius: 6px; }
+/* -- Conversation list -- */
+.convo-list { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; overflow-y: auto; }
+.convo-item { display: flex; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--border-color); align-items: center; text-decoration: none; color: inherit; transition: background 0.15s; }
+.convo-item:hover, .convo-item.active { background: var(--bg-surface-alt); }
+.convo-item.unread .convo-name { font-weight: 800; color: var(--text-primary); }
+.convo-item.unread .convo-preview { color: var(--text-primary); font-weight: 600; }
+.convo-avatar-wrap { position: relative; flex: 0 0 auto; width: 56px; height: 56px; }
+.convo-avatar-wrap img.convo-avatar { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; display: block; }
+.convo-avatar-wrap div.convo-avatar { width: 56px; height: 56px; font-size: 20px; }
+.presence-dot { position: absolute; right: 1px; bottom: 1px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-muted); border: 3px solid var(--bg-surface); }
+.presence-dot.online { background: var(--success); }
+.presence-dot.inline { position: static; display: inline-block; width: 9px; height: 9px; border: none; margin-right: 5px; vertical-align: middle; }
+.convo-text { min-width: 0; flex: 1; }
+.convo-name { font-weight: 700; font-size: 16px; margin-bottom: 2px; }
+.convo-preview { font-size: 14px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.convo-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex: 0 0 auto; }
+.convo-time { font-size: 12.5px; color: var(--text-muted); }
+.convo-unread-badge { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--bg-surface); font-size: 0; }
+[data-theme="premium"] .convo-unread-badge, [data-theme="dark"] .convo-unread-badge { background: var(--gold); }
+
+/* -- Thread panel -- */
+.chat-panel { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; }
+.chat-thread-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border-color); flex: 0 0 auto; }
+.chat-thread-avatar-link img, .chat-thread-avatar-link .seller-avatar-placeholder { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; font-size: 18px; }
+.chat-thread-name { font-size: 16.5px; }
+.chat-thread-presence { font-size: 13px; }
+.chat-thread-headtext { min-width: 0; }
+.chat-thread-name { font-weight: 800; font-size: 14px; color: var(--text-primary); text-decoration: none; display: block; }
+.chat-thread-presence { font-size: 11.5px; color: var(--text-muted); }
+
+.chat-messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 3px; scroll-behavior: smooth; }
+.chat-msg-row { display: flex; max-width: 100%; touch-action: pan-y; transition: transform 0.12s ease; }
+.chat-msg-row.mine { justify-content: flex-end; }
+.chat-msg-row.theirs { justify-content: flex-start; }
+.chat-msg-row.swiping { transition: none; }
+.chat-msg-row.highlight-flash .chat-bubble { animation: chatHighlightFlash 1.2s ease; }
+@keyframes chatHighlightFlash {
+  0% { box-shadow: 0 0 0 2px var(--gold); }
+  70% { box-shadow: 0 0 0 2px var(--gold); }
+  100% { box-shadow: none; }
+}
+.chat-msg-row.msg-enter { animation: chatMsgEnter 0.28s ease-out; }
+@keyframes chatMsgEnter {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.chat-bubble-wrap, .chat-msg-row > .chat-bubble { max-width: 74%; display: flex; flex-direction: column; }
+.chat-msg-row.mine { flex-direction: column; align-items: flex-end; }
+.chat-msg-row.theirs { flex-direction: column; align-items: flex-start; }
+
+.chat-bubble { max-width: 74%; padding: 10px 15px 9px; border-radius: 19px; font-size: 15.5px; line-height: 1.42; word-break: break-word; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+.chat-bubble.mine { background: var(--accent); color: var(--accent-text-on); border-bottom-right-radius: 4px; }
+.chat-bubble.theirs { background: var(--bg-surface-alt); color: var(--text-primary); border-bottom-left-radius: 4px; }
+.chat-bubble.deleted { font-style: italic; color: var(--text-muted); background: var(--bg-surface-alt); opacity: 0.85; }
+.chat-bubble.media-only { padding: 4px; background: transparent; box-shadow: none; }
+.chat-bubble.media-only.mine, .chat-bubble.media-only.theirs { background: transparent; }
+
+.chat-bubble-text { white-space: pre-wrap; }
+.chat-bubble-meta { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 3px; font-size: 11.5px; opacity: 0.8; }
+.chat-bubble-time { font-size: 11.5px; }
+.chat-receipt { font-size: 11px; letter-spacing: -1px; color: var(--text-muted); }
+.chat-bubble.mine .chat-receipt.sent, .chat-bubble.mine .chat-receipt.delivered { color: color-mix(in srgb, var(--accent-text-on) 65%, transparent); }
+.chat-receipt.read { color: var(--info); opacity: 1; }
+
+.chat-reply-quote { display: block; margin: 0 0 5px; padding: 5px 8px; border-left: 3px solid var(--gold); background: rgba(0,0,0,0.08); border-radius: 6px; font-size: 12px; opacity: 0.9; cursor: pointer; }
+.chat-bubble.theirs .chat-reply-quote { background: color-mix(in srgb, var(--text-primary) 6%, transparent); }
+
+.chat-reaction-pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.chat-reaction-pill { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary); border-radius: 999px; padding: 1px 7px; font-size: 12px; cursor: pointer; }
+.chat-reaction-pill.mine { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg-surface)); }
+.chat-reaction-pill span { font-size: 10.5px; color: var(--text-muted); }
+
+/* -- Attachments in-bubble -- */
+.chat-attach-img { display: block; max-width: 220px; max-height: 260px; border-radius: 12px; object-fit: cover; cursor: pointer; }
+.chat-attach-video { position: relative; width: 220px; height: 160px; border-radius: 12px; overflow: hidden; background: #000; cursor: pointer; }
+.chat-attach-video video { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.chat-attach-play-badge { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 26px; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,0.6); }
+
+/* -- Voice note player (custom, not <audio controls>) -- */
+.voice-player { display: flex; align-items: center; gap: 8px; min-width: 190px; padding: 3px 2px; }
+.voice-player-btn { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; border: none; background: color-mix(in srgb, currentColor 15%, transparent); color: inherit; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.voice-player-track { flex: 1; height: 4px; border-radius: 2px; background: color-mix(in srgb, currentColor 22%, transparent); overflow: hidden; }
+.voice-player-fill { height: 100%; width: 0%; background: currentColor; opacity: 0.85; }
+.voice-player-time { font-size: 10.5px; opacity: 0.85; flex: 0 0 auto; }
+
+/* -- Typing indicator -- */
+.chat-typing-row { padding: 0 14px 6px; flex: 0 0 auto; }
+.typing-bubble { display: inline-flex; gap: 3px; padding: 9px 12px; align-items: center; }
+.typing-bubble span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.5; animation: chatTypingBounce 1.1s infinite ease-in-out; }
+.typing-bubble span:nth-child(2) { animation-delay: 0.15s; }
+.typing-bubble span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chatTypingBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* -- Reply preview bar above compose -- */
+.chat-reply-preview { flex: 0 0 auto; padding: 0 10px; }
+.chat-reply-preview-bar { display: flex; align-items: center; gap: 8px; background: var(--bg-surface-alt); border-left: 3px solid var(--gold); border-radius: 8px; padding: 6px 8px; margin: 6px 0; }
+.chat-reply-preview-text { flex: 1; font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-reply-cancel { background: none; border: none; font-size: 16px; color: var(--text-muted); cursor: pointer; line-height: 1; padding: 2px 4px; }
+
+/* -- Attachment staging preview above compose -- */
+.chat-attach-preview { flex: 0 0 auto; padding: 0 10px; }
+.chat-attach-preview-bar { display: flex; align-items: center; gap: 8px; background: var(--bg-surface-alt); border-radius: 8px; padding: 6px 8px; margin: 6px 0; }
+.chat-attach-preview-thumb { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; }
+.chat-attach-preview-label { flex: 1; font-size: 12px; color: var(--text-secondary); }
+
+/* -- Compose bar -- */
+.chat-input-row { display: flex; align-items: center; border-top: 1px solid var(--border-color); padding: 10px 12px; gap: 8px; flex: 0 0 auto; }
+.chat-input-row input { flex: 1; padding: 11px 16px; border: 1px solid var(--border-color); border-radius: 22px; background: var(--bg-page); color: var(--text-primary); font-size: 15.5px; }
+.chat-icon-btn { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent; color: var(--text-secondary); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.chat-icon-btn:hover { background: var(--bg-surface-alt); }
+.chat-mic-btn.recording { background: var(--danger-bg); color: var(--danger); }
+.chat-send-btn { flex: 0 0 auto; padding: 9px 16px; border-radius: 20px; font-size: 13px; }
+
+/* -- Voice-note recording overlay -- */
+.chat-record-overlay { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--danger-bg); flex: 0 0 auto; }
+.chat-record-pulse { width: 12px; height: 12px; border-radius: 50%; background: var(--danger); animation: chatRecordPulse 1s infinite; }
+@keyframes chatRecordPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.chat-record-time { font-weight: 700; font-size: 13px; color: var(--danger); font-variant-numeric: tabular-nums; }
+.chat-record-hint { margin-left: auto; font-size: 12px; color: var(--text-secondary); }
+.chat-record-overlay.cancel-armed .chat-record-hint { color: var(--danger); font-weight: 700; }
+
+/* -- Long-press action sheet (reactions + reply/delete menu) -- */
+.chat-action-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 850; display: flex; align-items: flex-end; justify-content: center; }
+@media (min-width: 640px) { .chat-action-overlay { align-items: center; } }
+.chat-action-sheet { background: var(--bg-surface); width: 100%; max-width: 360px; border-radius: 16px 16px 0 0; padding: 14px; box-shadow: 0 -4px 24px rgba(0,0,0,0.25); }
+@media (min-width: 640px) { .chat-action-sheet { border-radius: 16px; } }
+.chat-reaction-row { display: flex; justify-content: space-between; background: var(--bg-surface-alt); border-radius: 999px; padding: 8px 10px; margin-bottom: 10px; }
+.chat-reaction-choice { background: none; border: none; font-size: 22px; cursor: pointer; padding: 2px; transition: transform 0.1s ease; }
+.chat-reaction-choice:hover { transform: scale(1.25); }
+.chat-action-item { display: block; width: 100%; text-align: left; padding: 12px 8px; background: none; border: none; border-top: 1px solid var(--border-color); font-size: 14px; color: var(--text-primary); cursor: pointer; }
+.chat-action-item:first-of-type { border-top: none; }
+.chat-action-item.danger { color: var(--danger); }
+
+/* -- Full-screen media lightbox for chat attachments -- */
+.chat-lightbox-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 900; display: flex; align-items: center; justify-content: center; }
+.chat-lightbox-media-wrap { max-width: 92vw; max-height: 88vh; }
+.chat-lightbox-media { max-width: 92vw; max-height: 88vh; object-fit: contain; display: block; border-radius: 4px; }
+.chat-lightbox-close { position: absolute; top: 16px; right: 18px; background: rgba(255,255,255,0.12); color: #fff; border: none; width: 38px; height: 38px; border-radius: 50%; font-size: 20px; cursor: pointer; }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
 .modal-box { background: var(--bg-surface); border-radius: 10px; padding: 24px; max-width: 420px; width: 100%; max-height: 90vh; overflow-y: auto; }
+/* Task #313 phase 2 - live shipping-rate picker shown before checkout. */
+.shipping-checkout-box { max-width: 480px; }
+.shipping-rate-option {
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+  border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 8px; cursor: pointer;
+}
+.shipping-rate-option input[type="radio"] { margin: 0; flex-shrink: 0; }
+.shipping-rate-carrier { flex: 1; font-weight: 600; font-size: 14px; }
+.shipping-rate-days { font-size: 12px; color: var(--text-secondary); }
+.shipping-rate-price { font-weight: 800; color: var(--accent-text); white-space: nowrap; }
 
 /* ---- OAuth buttons ---- */
 .oauth-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0; font-size: 12px; color: var(--text-muted); }
 .oauth-divider::before, .oauth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border-color); }
-.btn-google { display: flex; align-items: center; justify-content: center; background: var(--bg-surface); border: 1px solid var(--border-color); color: var(--text-primary); }
-.btn-google:hover { background: var(--bg-surface-alt); }
-.btn-facebook { display: flex; align-items: center; justify-content: center; background: #1877f2; color: #fff; }
-.btn-facebook:hover { background: #1461c9; }
+.btn-google, .btn-facebook { display: flex; align-items: center; justify-content: center; gap: 10px; font-family: "Roboto", Arial, sans-serif; font-weight: 500; }
+.btn-google { background: #fff; border: 1px solid #dadce0; color: #3c4043; }
+.btn-google:hover { background: #f8f9fa; }
+.btn-facebook { background: #1877f2; border: none; color: #fff; }
+.btn-facebook:hover { background: #166fe5; }
 
 /* ---- Featured/sponsored listings carousel ---- */
 .featured-carousel { position: relative; margin-bottom: 20px; border-radius: 12px; overflow: hidden; min-height: 160px; background: var(--bg-surface-alt); }
@@ -1195,6 +2099,128 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .footer-dot { margin: 0 8px; color: var(--text-muted); }
 .footer-rights { margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
 .footer-social-label { margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
+.footer-stripe-badge { display: flex; align-items: center; justify-content: center; gap: 7px; margin: 16px 0 0; padding: 8px 14px; background: rgba(99, 91, 255, 0.08); border: 1px solid rgba(99, 91, 255, 0.35); border-radius: 999px; width: fit-content; margin-left: auto; margin-right: auto; }
+.footer-stripe-badge #footer-stripe-label { font-size: 11px; color: var(--text-muted); }
+.footer-stripe-link { display: inline-flex; align-items: center; line-height: 0; }
+.footer-stripe-wordmark { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; color: #635BFF; }
+.footer-stripe-link:hover .footer-stripe-wordmark { color: #8b85ff; }
+
+/* Inline Stripe badge reused on buy button, order tracking, seller payment
+   setup - anywhere money moves - so Stripe's presence is visible at every
+   purchase touchpoint, not just the site footer. */
+.stripe-inline-badge { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; padding: 5px 12px; background: rgba(99, 91, 255, 0.08); border: 1px solid rgba(99, 91, 255, 0.35); border-radius: 999px; text-decoration: none; }
+.stripe-inline-badge span:first-child { font-size: 11px; color: var(--text-muted); }
+.stripe-inline-wordmark { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-weight: 700; font-size: 14px; letter-spacing: -0.01em; color: #635BFF; }
+.stripe-inline-badge:hover .stripe-inline-wordmark { color: #8b85ff; }
+
+/* ---- Classics library (public-domain, Phase 1: browsing only) ---- */
+.classics-new-badge { position: absolute; top: 8px; right: 8px; margin-right: 0; background: var(--gold); color: var(--gold-text-on); font-weight: 800; text-transform: uppercase; letter-spacing: .03em; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+.classics-preview-row { display: flex; gap: 14px; overflow-x: auto; padding: 4px 2px 12px; scrollbar-width: thin; }
+.classics-preview-row .product-card { flex: 0 0 150px; }
+.classics-detail { display: flex; gap: 20px; flex-wrap: wrap; }
+.classics-detail-cover { width: 180px; flex-shrink: 0; position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,.25); aspect-ratio: 2 / 3; }
+.classics-detail-cover svg { width: 100%; height: auto; display: block; }
+.classics-detail-info { flex: 1; min-width: 220px; }
+.classics-cover-wrap { aspect-ratio: 2 / 3; overflow: hidden; position: relative; }
+.classics-cover-wrap svg { width: 100%; height: 100%; display: block; }
+
+/* Real museum-sourced public-domain cover art (Met Museum Open Access,
+   isPublicDomain:true only) - a photo cover with a soft bottom gradient
+   so the title/author stay legible over any painting. */
+.classics-cover-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.classics-cover-gradient { position: absolute; inset: 0; background: linear-gradient(to top, rgba(10,8,6,.92) 0%, rgba(10,8,6,.55) 32%, rgba(10,8,6,0) 60%); pointer-events: none; }
+.classics-cover-text { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 12px 12px; }
+.classics-cover-title { margin: 0; font-family: "Playfair Display", Georgia, serif; font-weight: 700; font-size: 15px; line-height: 1.2; color: #faf3e0; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.classics-cover-author { margin: 4px 0 0; font-family: Georgia, serif; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: #d4af6a; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.classics-cover-credit { margin-top: 10px; font-size: 11px; opacity: .65; font-style: normal; }
+.classics-cover-credit em { font-style: italic; }
+
+/* "Rehearsal" buy box - shows the full purchase layout (price line + Buy
+   button + Stripe badge) exactly as it will look once Lulu is connected,
+   but the button is disabled: no real price is ever shown or guessed here,
+   only "To be set", so this can never mislead anyone or misstate a cost. */
+.classics-buy-box { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface-alt); max-width: 320px; }
+.classics-buy-price { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.classics-buy-price-label { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+.classics-buy-price-value { font-size: 15px; font-weight: 700; color: var(--text-muted); font-style: italic; }
+.classics-buy-btn { width: 100%; }
+.classics-buy-box .stripe-inline-badge { margin-top: 12px; }
+
+/* Marketplace home: categories are now a click-to-open drawer instead of the
+   first thing you see, so real listings (loadAllProductsPreview) are visible
+   right away without picking a category first. */
+.categories-toggle-btn { display: inline-flex; align-items: center; gap: 6px; margin: 10px 0 16px; }
+.categories-toggle-caret { display: inline-block; }
+
+/* Full-screen "Browse Categories" sheet, opened from .categories-toggle-btn
+   via openBrowseCategoriesOverlay() in app.js. One stacked card per genre
+   (big icon + label) instead of the small multi-column .category-grid, so
+   the whole list reads like flipping through a shelf of sections. */
+.browse-categories-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--bg-page);
+  display: flex;
+  flex-direction: column;
+}
+.browse-categories-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-color);
+  margin: 12px auto 0;
+  flex-shrink: 0;
+}
+.browse-categories-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px 16px;
+  flex-shrink: 0;
+}
+.browse-categories-title {
+  font-family: var(--font-display);
+  color: var(--gold);
+  font-size: 26px;
+  font-weight: 700;
+  margin: 0;
+}
+.browse-categories-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 26px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.browse-categories-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 20px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.browse-category-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 28px 16px;
+  text-decoration: none;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+.browse-category-row:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,0.12); border-color: var(--gold); }
+.browse-category-icon { font-size: 40px; display: block; }
+.browse-category-icon-img { width: 44px; height: 44px; object-fit: contain; }
+.browse-category-label { font-family: var(--font-display); font-weight: 700; font-size: 17px; color: var(--text-primary); }
 .footer-social { display: flex; justify-content: center; gap: 14px; margin-bottom: 16px; }
 .footer-social-link { display: inline-flex; width: 38px; height: 38px; border-radius: 10px; overflow: hidden; transition: transform .15s ease, box-shadow .15s ease; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
 .footer-social-link:hover { transform: translateY(-2px) scale(1.06); box-shadow: 0 4px 10px rgba(0,0,0,.2); }
@@ -1222,7 +2248,7 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .intl-step p { margin: 0; font-size: 13px; color: var(--text-secondary); }
 
 .intl-disclaimer { font-size: 12px; color: var(--text-muted); margin-top: 28px; text-align: center; max-width: 820px; margin-left: auto; margin-right: auto; }
-.intl-disclaimer a { color: #12324a; font-weight: 600; text-decoration: underline; }
+.intl-disclaimer a { color: var(--accent-text); font-weight: 600; text-decoration: underline; }
 
 .intl-grid {
   display: grid;
@@ -1244,6 +2270,27 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .intl-card-meta { font-size: 12px; color: var(--text-muted); margin: 0 0 6px; }
 .intl-card-desc { font-size: 12px; color: var(--text-secondary); margin: 0; }
 
+/* Book-service tags shown on directory/detail cards, the matching filter
+   dropdown option list, and the landing-page service overview grid. */
+.intl-book-service-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 8px; }
+.intl-book-service-tag {
+  font-size: 10px; font-weight: 700; color: #12324a; background: #eaf1f6;
+  border-radius: 999px; padding: 3px 8px;
+}
+.intl-services-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px; margin: 0 0 28px;
+}
+.intl-service-card {
+  background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: 10px; padding: 14px 16px;
+}
+.intl-service-card strong { display: block; font-size: 13px; margin-bottom: 4px; color: var(--accent-text); }
+.intl-service-card p { margin: 0; font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
+.intl-book-services-check { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.intl-book-service-option { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.intl-book-service-option input { width: auto; }
+
 .intl-badge { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 12px; }
 .intl-badge-verified { background: color-mix(in srgb, var(--success) 15%, var(--bg-surface)); color: var(--success); }
 .intl-badge-pending { background: #fdf3e0; color: #8a6100; }
@@ -1253,8 +2300,9 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .intl-admin-row { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px; }
 
 /* ---- Admin panel ---- */
-.admin-tabs { display: flex; gap: 6px; margin: 10px 0 18px; border-bottom: 1px solid var(--border-color); }
-.admin-tab { padding: 8px 14px; font-size: 14px; font-weight: 600; color: var(--text-secondary); text-decoration: none; border-bottom: 2px solid transparent; }
+.admin-tabs { display: flex; gap: 6px; margin: 10px 0 18px; border-bottom: 1px solid var(--border-color); overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.admin-tabs::-webkit-scrollbar { display: none; }
+.admin-tab { padding: 8px 14px; font-size: 14px; font-weight: 600; color: var(--text-secondary); text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; flex-shrink: 0; }
 .admin-tab.active { color: var(--accent-text); border-bottom-color: var(--accent-text); }
 .admin-search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
 .admin-search-bar input { flex: 1; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; }
@@ -1269,3 +2317,447 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .notif-category-grid { display: flex; flex-wrap: wrap; gap: 8px; }
 .notif-category-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 20px; padding: 5px 12px; cursor: pointer; }
 .notif-category-chip input { width: 13px; height: 13px; }
+
+/* ---- Videos hub (task #231) - general-purpose long-form video section,
+   NOT the full-screen swipe player Moments/Clips use - a normal scrollable
+   grid + watch page, on purpose (see server.js's is_long_video split). ---- */
+.videos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; margin-top: 14px; }
+.video-card { display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; text-decoration: none; color: inherit; }
+.video-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
+.video-card-thumb-wrap { aspect-ratio: 16/9; background: #000; }
+.video-card-thumb { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.video-card-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.video-card-title { font-size: 14px; font-weight: 700; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.video-card-channel { font-size: 12px; color: var(--text-secondary); text-decoration: none; }
+.video-card-channel:hover { text-decoration: underline; }
+.video-card-meta { font-size: 12px; color: var(--text-muted); }
+
+.related-videos-section { margin: 20px 16px; }
+.related-videos-row { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
+.related-video-card { flex: 0 0 140px; text-decoration: none; color: inherit; }
+.related-video-thumb { width: 140px; height: 80px; object-fit: cover; border-radius: 8px; background: #000; display: block; pointer-events: none; }
+.related-video-title { display: block; font-size: 12px; font-weight: 600; margin-top: 6px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.video-watch-wrap { margin: 0 16px 24px; position: relative; }
+.video-watch-player { width: 100%; max-height: 65vh; background: #000; border-radius: 10px; display: block; }
+.video-watch-body { padding-top: 14px; }
+.video-watch-title { font-size: 19px; font-weight: 800; margin: 0 0 10px; }
+.video-watch-channel { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: inherit; margin-bottom: 12px; }
+.video-watch-channel:hover { text-decoration: underline; }
+.video-watch-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
+.video-watch-avatar-placeholder { width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: var(--accent-text-on); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.video-watch-actions { display: flex; gap: 10px; margin: 4px 0 14px; flex-wrap: wrap; }
+.video-watch-action-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 20px; padding: 8px 14px; font-weight: 600; font-size: 13px; color: var(--text-primary); }
+.video-watch-action-btn svg { width: 18px; height: 18px; fill: currentColor; stroke: currentColor; stroke-width: 1.4; }
+.video-watch-action-btn.active { color: var(--danger); border-color: var(--danger); }
+.video-watch-caption { white-space: pre-wrap; font-size: 14px; margin: 10px 0; color: var(--text-secondary); }
+.video-watch-product-card { display: flex; gap: 12px; align-items: center; border: 1px solid var(--border-color); border-radius: 10px; padding: 10px; margin: 14px 0; text-decoration: none; color: inherit; background: var(--bg-surface); }
+.video-watch-product-card img, .video-watch-product-card .product-thumb-empty { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; }
+.video-watch-product-title { font-weight: 700; font-size: 14px; margin: 2px 0; }
+
+/* ---- Create-wizard step 4: optional "link to a listing" screen (Videos hub, task #231) ---- */
+.wizard-link-product-row { display: flex; align-items: center; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--border-color); cursor: pointer; }
+.wizard-link-product-row:last-child { border-bottom: none; }
+.wizard-link-product-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; }
+.wizard-link-product-thumb-empty { display: flex; align-items: center; justify-content: center; background: var(--bg-surface-alt); font-size: 18px; }
+.wizard-link-product-info { display: flex; flex-direction: column; gap: 2px; }
+.wizard-link-product-title { font-size: 13px; font-weight: 600; }
+.wizard-link-product-price { font-size: 12px; color: var(--text-muted); }
+
+/* ---- Moment editor overhaul: Audio/Text/Voice/Captions/Stickers toolbar,
+   mood palette + song segment, cover editor, product tagging ---- */
+.wizard-edit-toolbar { flex-wrap: wrap; }
+.wizard-edit-tool-btn.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+
+/* Audio library panel (step 2 -> "Audio" tool) */
+.wizard-audio-library-panel {
+  position: absolute; inset: 0; z-index: 5; background: rgba(15,15,15,0.97);
+  display: flex; flex-direction: column; gap: 10px; padding: 14px; overflow-y: auto;
+}
+.wizard-audio-library-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wizard-audio-library-title { color: #fff; font-size: 14px; font-weight: 800; margin: 0; text-align: center; flex: 1; }
+.wizard-audio-library-head-spacer { width: 30px; flex-shrink: 0; }
+.wizard-audio-library-back {
+  display: flex; align-items: center; gap: 4px; border-radius: 999px; border: none; background: rgba(255,255,255,0.14);
+  color: #fff; font-size: 12.5px; font-weight: 700; cursor: pointer; padding: 7px 12px 7px 10px; flex-shrink: 0;
+}
+.wizard-mood-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.wizard-mood-chip {
+  border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.08); color: #fff;
+  border-radius: 999px; padding: 5px 12px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.wizard-mood-chip.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+.wizard-audio-library-body { flex: 1; overflow-y: auto; }
+.wizard-audio-library-grid { display: flex; flex-direction: column; gap: 6px; }
+.wizard-audio-selected-bar {
+  position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px;
+  background: rgba(255,216,77,0.12); border: 1px solid var(--gold); border-radius: 12px; padding: 8px 10px;
+}
+.wizard-audio-selected-play, .wizard-audio-selected-next {
+  width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--gold); color: var(--gold-text-on);
+  font-size: 14px; cursor: pointer; flex-shrink: 0;
+}
+.wizard-audio-selected-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wizard-audio-selected-name { color: #fff; font-size: 12.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wizard-audio-selected-artist { color: rgba(255,255,255,0.65); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Voice-over recorder panel */
+.wizard-voice-panel, .wizard-captions-panel {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 6;
+  background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 16px;
+  padding: 16px; width: min(90%, 340px); box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+}
+.wizard-voice-title { font-size: 14px; font-weight: 800; margin: 0 0 4px; color: var(--text-primary); }
+.wizard-voice-audio { width: 100%; margin: 8px 0; }
+.wizard-voice-controls { display: flex; gap: 8px; margin: 10px 0; }
+.wizard-voice-record-btn {
+  flex: 1; border: none; background: var(--gold); color: var(--gold-text-on); border-radius: 10px;
+  padding: 10px; font-weight: 700; font-size: 13px; cursor: pointer;
+}
+.wizard-voice-record-btn.recording { background: var(--danger, #E5484D); color: #fff; }
+.wizard-voice-remove-btn { border: 1px solid var(--border-color); background: none; color: var(--text-secondary); border-radius: 10px; padding: 10px 14px; font-size: 13px; cursor: pointer; }
+
+/* Captions composer + preset styles (shared by the wizard's draggable
+   overlay editor AND the read-only feed/moment-viewer playback layer) */
+.wizard-caption-style-row { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+.wizard-caption-style-btn {
+  border: 1px solid var(--border-color); background: var(--bg-surface-alt); color: var(--text-secondary);
+  border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.wizard-caption-style-btn.active { border-color: var(--gold); color: var(--gold); }
+.wizard-overlay-item.wizard-overlay-caption .wizard-overlay-content,
+.media-overlay-item.media-overlay-caption {
+  background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 6px; display: inline-block;
+}
+.wizard-overlay-item.wizard-overlay-caption-bold .wizard-overlay-content,
+.media-overlay-item.media-overlay-caption-bold { background: rgba(0,0,0,0.75); text-transform: uppercase; letter-spacing: 0.02em; }
+.wizard-overlay-item.wizard-overlay-caption-neon .wizard-overlay-content,
+.media-overlay-item.media-overlay-caption-neon { background: rgba(0,0,0,0.55); text-shadow: 0 0 8px currentColor; }
+.wizard-overlay-item.wizard-overlay-caption-minimal .wizard-overlay-content,
+.media-overlay-item.media-overlay-caption-minimal { background: none; text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
+
+/* Customize step ("2b"): mood palette recap + song segment picker */
+.wizard-customize-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin: 10px 0; }
+.wizard-customize-chip {
+  background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 999px;
+  padding: 5px 12px; font-size: 12px; font-weight: 600; color: var(--text-primary);
+}
+.wizard-song-trim { margin: 14px 0; }
+.wizard-song-trim input[type="range"] { width: 100%; accent-color: var(--gold); }
+.wizard-song-trim-row { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+.wizard-song-trim-row span { font-size: 12px; color: var(--text-secondary); }
+.wizard-song-trim-play { border: none; background: var(--bg-surface-alt); color: var(--gold); width: 30px; height: 30px; border-radius: 50%; cursor: pointer; }
+
+/* Cover row inside step 3 + full cover editor ("3b") */
+.wizard-cover-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; cursor: pointer; }
+.wizard-cover-thumb { width: 52px; height: 68px; border-radius: 8px; object-fit: cover; border: 1px solid var(--border-color); }
+.wizard-cover-edit-label { font-size: 13px; font-weight: 700; color: var(--gold); text-decoration: underline; }
+.wizard-cover-editor-head { display: flex; align-items: center; justify-content: space-between; }
+.wizard-cover-preview-wrap { display: flex; justify-content: center; margin: 12px 0; }
+.wizard-cover-preview { max-width: 100%; max-height: 320px; border-radius: 12px; object-fit: contain; background: #000; }
+.wizard-cover-scrub-row { margin: 6px 0 14px; }
+.wizard-cover-scrub-row input[type="range"] { width: 100%; accent-color: var(--gold); }
+.wizard-cover-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.wizard-cover-upload-btn { position: relative; cursor: pointer; text-align: center; }
+
+/* Step 3 additions: location, AI label, cross-post to Loops, tag products */
+.wizard-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); margin: 8px 0; cursor: pointer; }
+.wizard-tag-products-btn {
+  display: block; width: 100%; text-align: left; border: 1px solid var(--border-color); background: var(--bg-surface-alt);
+  color: var(--text-primary); border-radius: 10px; padding: 12px 14px; font-size: 13px; font-weight: 600; margin: 8px 0; cursor: pointer;
+}
+
+/* Tag products screen ("3c") */
+.wizard-tag-products-tabs { margin-bottom: 10px; }
+.wizard-tag-product-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.wizard-tag-product-row:last-child { border-bottom: none; }
+.wizard-tag-product-photo { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; flex-shrink: 0; }
+.wizard-tag-product-photo-empty { display: flex; align-items: center; justify-content: center; background: var(--bg-surface-alt); color: var(--text-muted); font-size: 16px; }
+.wizard-tag-product-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wizard-tag-product-title { font-size: 13px; font-weight: 700; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wizard-tag-product-price { font-size: 12px; color: var(--text-muted); }
+.wizard-tag-product-add-btn {
+  width: 30px; height: 30px; border-radius: 50%; border: none; background: var(--gold); color: var(--gold-text-on);
+  font-size: 16px; font-weight: 800; cursor: pointer; flex-shrink: 0;
+}
+.wizard-tag-product-add-btn:disabled { background: var(--bg-surface-alt); color: var(--text-muted); }
+.wizard-tag-products-chosen { margin: 10px 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.wizard-tag-product-chip {
+  display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface-alt); border: 1px solid var(--border-color);
+  border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 12px; color: var(--text-primary);
+}
+.wizard-tag-product-chip button { border: none; background: none; color: var(--text-muted); font-size: 15px; cursor: pointer; padding: 0 4px; }
+.wizard-connect-shops { margin: 14px 0; border-top: 1px solid var(--border-color); padding-top: 12px; }
+.wizard-connect-shops-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.wizard-connect-shop-btn {
+  flex: 1; border: 1px dashed var(--border-color); background: var(--bg-surface-alt); color: var(--text-muted);
+  border-radius: 10px; padding: 10px; font-size: 13px; font-weight: 700; cursor: default; display: flex; flex-direction: column; gap: 2px; align-items: center;
+}
+.wizard-connect-shop-btn em { font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--gold); }
+
+/* Playback: tagged products as tappable pills under the video, and the
+   hidden voice-over <audio> element (see renderMediaOverlayLayer() /
+   wireMomentVoiceoverSync() in app.js) */
+.media-overlay-products {
+  position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px;
+  pointer-events: auto; z-index: 3;
+}
+.media-overlay-product-pill {
+  background: rgba(0,0,0,0.65); color: #fff; border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 700;
+  text-decoration: none; backdrop-filter: blur(2px);
+}
+.media-overlay-voiceover { display: none; }
+
+/* Profile: cover photo enlarge button + profile picture click cursor */
+.profile-cover-expand-btn { position: absolute; inset: 0; border: none; background: none; cursor: pointer; }
+.simple-image-lightbox-panel .photo-lightbox-image-wrap { max-height: 80vh; }
+
+/* ---------------- Podcasts ("#/podcasts", "#/podcast/:id", "#/podcast-episode/:id") ---------------- */
+.podcast-library-page, .podcast-channel-page, .podcast-episode-page { max-width: 760px; margin: 0 auto; padding: 0 4px 40px; }
+.podcast-eyebrow { color: var(--accent-text); font-weight: 700; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; margin: 0 0 4px; }
+.podcast-title { font-family: var(--font-display); font-size: 26px; margin: 0 0 6px; color: var(--text-primary); }
+.podcast-subtitle { color: var(--text-secondary); font-size: 14px; margin: 0 0 18px; }
+
+.podcast-my-channel-card {
+  display: flex; align-items: center; gap: 12px; background: var(--bg-surface); border: 1px solid var(--gold);
+  border-radius: 14px; padding: 14px 16px; margin-bottom: 18px; text-decoration: none; color: var(--text-primary);
+  box-shadow: var(--card-shadow);
+}
+.podcast-my-channel-card-empty { border-style: dashed; }
+.podcast-my-channel-icon { font-size: 28px; flex-shrink: 0; }
+.podcast-my-channel-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.podcast-my-channel-text strong { font-size: 15px; }
+.podcast-my-channel-text span { font-size: 12.5px; color: var(--text-muted); }
+.podcast-my-channel-cta { color: var(--gold); font-weight: 700; font-size: 13px; white-space: nowrap; }
+
+.podcast-tabs { display: flex; gap: 8px; margin-bottom: 14px; border-bottom: 1px solid var(--border-color); }
+.podcast-tab-btn {
+  border: none; background: none; padding: 8px 4px; font-size: 14px; font-weight: 700; color: var(--text-muted);
+  cursor: pointer; border-bottom: 2px solid transparent;
+}
+.podcast-tab-btn.active { color: var(--text-primary); border-bottom-color: var(--gold); }
+
+.podcast-sort-row, .podcast-cat-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.podcast-sort-btn, .podcast-cat-chip {
+  border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-secondary);
+  border-radius: 999px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.podcast-sort-btn.active, .podcast-cat-chip.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+
+.podcast-search-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.podcast-search-row input { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary); }
+.podcast-search-row button { padding: 10px 16px; border-radius: 10px; border: none; background: var(--gold); color: var(--gold-text-on); font-weight: 700; cursor: pointer; }
+
+.podcast-episode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.podcast-episode-card {
+  display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: 14px; overflow: hidden; text-decoration: none; color: var(--text-primary); box-shadow: var(--card-shadow);
+}
+.podcast-episode-card-cover {
+  height: 120px; background: var(--bg-surface-alt); background-size: cover; background-position: center;
+  display: flex; align-items: center; justify-content: center; font-size: 34px;
+}
+.podcast-episode-card-info { padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; }
+.podcast-episode-card-info strong { font-size: 13.5px; line-height: 1.3; }
+.podcast-episode-card-channel { font-size: 12px; color: var(--text-muted); }
+.podcast-episode-card-stats { font-size: 11.5px; color: var(--text-muted); }
+
+.podcast-channel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.podcast-channel-card {
+  display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; background: var(--bg-surface);
+  border: 1px solid var(--border-color); border-radius: 14px; padding: 16px 10px; text-decoration: none; color: var(--text-primary);
+  box-shadow: var(--card-shadow);
+}
+.podcast-channel-card-cover {
+  width: 64px; height: 64px; border-radius: 50%; background: var(--bg-surface-alt); background-size: cover; background-position: center;
+  display: flex; align-items: center; justify-content: center; font-size: 26px; margin-bottom: 6px;
+}
+.podcast-channel-card strong { font-size: 13.5px; }
+.podcast-channel-card-owner, .podcast-channel-card-stats { font-size: 11.5px; color: var(--text-muted); }
+
+.podcast-channel-header {
+  position: relative; border-radius: 16px; overflow: hidden; background: var(--accent); background-size: cover; background-position: center;
+  min-height: 200px; display: flex; align-items: flex-end; margin-bottom: 14px;
+}
+.podcast-channel-header-overlay {
+  width: 100%; padding: 18px; background: linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0.15));
+  color: #fff; display: flex; flex-direction: column; gap: 4px;
+}
+.podcast-channel-header-icon { font-size: 34px; }
+.podcast-channel-header-overlay h2 { font-family: var(--font-display); font-size: 22px; margin: 0; color: #fff; }
+.podcast-channel-owner, .podcast-channel-stats { font-size: 12.5px; color: rgba(255,255,255,0.85); margin: 0; }
+.podcast-channel-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.podcast-channel-description { color: var(--text-secondary); font-size: 14px; margin: 0 0 16px; }
+
+.podcast-episode-list { display: flex; flex-direction: column; gap: 8px; }
+.podcast-episode-row {
+  display: flex; align-items: center; gap: 12px; background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: 12px; padding: 10px 14px; text-decoration: none; color: var(--text-primary);
+}
+.podcast-episode-row-icon { font-size: 22px; flex-shrink: 0; }
+.podcast-episode-row-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.podcast-episode-row-info strong { font-size: 13.5px; }
+.podcast-episode-row-info span { font-size: 12px; color: var(--text-muted); }
+
+.podcast-player-cover {
+  width: 100%; aspect-ratio: 1.6/1; border-radius: 14px; background: var(--bg-surface-alt); background-size: cover; background-position: center;
+  display: flex; align-items: center; justify-content: center; font-size: 46px; margin-bottom: 14px;
+}
+.podcast-player-title { font-family: var(--font-display); font-size: 22px; margin: 0 0 4px; color: var(--text-primary); }
+.podcast-player-channel { font-size: 13px; color: var(--text-muted); margin: 0 0 14px; }
+.podcast-player-media { width: 100%; border-radius: 12px; margin-bottom: 14px; }
+.podcast-player-media.podcast-player-audio { height: 54px; }
+.podcast-player-actions { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+.podcast-like-btn {
+  border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-secondary);
+  border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.podcast-like-btn.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+.podcast-view-count { font-size: 13px; color: var(--text-muted); }
+.podcast-player-description { color: var(--text-secondary); font-size: 14px; line-height: 1.5; }
+
+.podcast-modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 500; display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.podcast-modal {
+  background: var(--bg-surface); border-radius: 16px; padding: 18px; width: 100%; max-width: 440px; max-height: 88vh; overflow-y: auto;
+  box-shadow: var(--card-shadow);
+}
+.podcast-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.podcast-modal-head p { font-weight: 800; font-size: 15px; margin: 0; color: var(--text-primary); }
+.podcast-modal-close { width: 30px; height: 30px; border-radius: 50%; border: none; background: var(--bg-surface-alt); color: var(--text-primary); font-size: 18px; cursor: pointer; }
+.podcast-modal form { display: flex; flex-direction: column; gap: 4px; }
+.podcast-modal form label { font-size: 12.5px; font-weight: 700; color: var(--text-secondary); margin-top: 8px; }
+.podcast-modal form input[type="text"], .podcast-modal form textarea, .podcast-modal form select, .podcast-modal form input[type="file"] {
+  padding: 9px 10px; border-radius: 9px; border: 1px solid var(--border-color); background: var(--bg-page); color: var(--text-primary); font-size: 13.5px;
+}
+.podcast-modal form button[type="submit"] { margin-top: 14px; padding: 11px; border-radius: 10px; border: none; font-weight: 800; font-size: 14px; cursor: pointer; }
+
+.podcast-ep-source-tabs { display: flex; gap: 6px; margin-top: 10px; }
+.podcast-ep-source-tab {
+  flex: 1; border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-secondary);
+  border-radius: 9px; padding: 8px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.podcast-ep-source-tab.active { background: var(--gold); border-color: var(--gold); color: var(--gold-text-on); }
+#podcast-ep-existing-list { display: flex; flex-direction: column; gap: 6px; max-height: 160px; overflow-y: auto; margin-top: 4px; }
+.podcast-ep-existing-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left;
+  border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary);
+  border-radius: 9px; padding: 8px 10px; font-size: 12.5px; cursor: pointer;
+}
+
+/* ---- Dating (Tinder/Bumble-style, opt-in, black+gold styling) ---- */
+
+.friends-search-tab-dating {
+  display: flex; align-items: center; justify-content: center; text-decoration: none;
+  background: linear-gradient(135deg, var(--bg-surface), var(--bg-surface-alt)); border: 1px solid var(--gold);
+  color: var(--gold); font-weight: 800;
+}
+
+.dating-intro { max-width: 480px; margin: 0 auto; text-align: center; padding: 8px 12px 24px; }
+.dating-intro-icon { font-size: 48px; line-height: 1; margin-bottom: 6px; }
+.dating-intro-body { color: var(--text-secondary); font-size: 14.5px; margin: 8px 0 18px; }
+.dating-safety-box {
+  text-align: left; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 14px;
+  padding: 14px 16px; margin-bottom: 18px; box-shadow: var(--card-shadow);
+}
+.dating-safety-box h3 { margin: 0 0 8px; font-size: 14.5px; color: var(--gold); font-family: var(--font-display); }
+.dating-safety-list { margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; }
+.dating-safety-list li { margin-bottom: 6px; }
+
+.dating-setup-panel .dating-photo-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.dating-photo-thumb { position: relative; width: 76px; height: 76px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color); }
+.dating-photo-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dating-photo-remove {
+  position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,0.6); color: #fff; font-size: 13px; line-height: 1; cursor: pointer;
+}
+.dating-seeking-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.dating-seeking-chip {
+  display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px;
+  border: 1px solid var(--border-color); background: var(--bg-surface); font-size: 12.5px; color: var(--text-secondary); cursor: pointer;
+}
+.dating-seeking-chip input { accent-color: var(--gold); }
+
+.dating-deck-page { max-width: 420px; margin: 0 auto; padding-bottom: 24px; }
+.dating-deck-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.dating-deck-header-links { display: flex; gap: 14px; }
+.dating-deck-header-links a { font-size: 12.5px; font-weight: 700; color: var(--gold); text-decoration: none; }
+
+.dating-card-stack { position: relative; height: 520px; }
+.dating-card {
+  position: absolute; inset: 0; border-radius: 20px; overflow: hidden; background: var(--bg-surface);
+  border: 1px solid var(--border-color); box-shadow: var(--card-shadow); cursor: grab; user-select: none;
+}
+.dating-card:active { cursor: grabbing; }
+.dating-card-photo { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.dating-card-photo-placeholder {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  font-size: 64px; font-weight: 800; color: var(--gold-text-on); background: var(--gold);
+}
+.dating-card-overlay {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 16px 18px;
+  background: linear-gradient(to top, rgba(0,0,0,0.82), rgba(0,0,0,0.15) 70%, transparent);
+  color: #fff; pointer-events: none;
+}
+.dating-card-name { font-size: 19px; font-weight: 800; margin: 0 0 4px; font-family: var(--font-display); }
+.dating-card-bio { font-size: 13.5px; margin: 0 0 8px; opacity: 0.9; }
+.dating-card-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dating-chip { background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.3); border-radius: 999px; padding: 4px 10px; font-size: 11.5px; }
+.dating-card-swipe-hint {
+  position: absolute; top: 24px; padding: 6px 14px; border-radius: 8px; border: 3px solid; font-weight: 900;
+  font-size: 20px; text-transform: uppercase; letter-spacing: 1px; opacity: 0; transform: rotate(-12deg);
+  transition: opacity 0.15s ease;
+}
+.dating-card-hint-like { left: 20px; color: #2ecc71; border-color: #2ecc71; transform: rotate(-12deg); }
+.dating-card-hint-pass { right: 20px; color: #e74c3c; border-color: #e74c3c; transform: rotate(12deg); }
+.dating-card-lean-like .dating-card-hint-like { opacity: 1; }
+.dating-card-lean-pass .dating-card-hint-pass { opacity: 1; }
+
+.dating-deck-actions { display: flex; justify-content: center; gap: 28px; margin-top: 18px; }
+.dating-action-btn {
+  width: 62px; height: 62px; border-radius: 50%; border: 1px solid var(--border-color); background: var(--bg-surface);
+  box-shadow: var(--card-shadow); font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.dating-action-pass { color: #e74c3c; }
+.dating-action-like { color: var(--gold); border-color: var(--gold); }
+
+.dating-empty-state { text-align: center; padding: 60px 20px; color: var(--text-secondary); }
+.dating-empty-state p { margin-bottom: 14px; }
+
+.dating-match-overlay .modal-box.dating-match-box { text-align: center; max-width: 360px; }
+.dating-match-icon { font-size: 52px; margin-bottom: 6px; }
+
+.dating-matches-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+.dating-match-card {
+  background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 14px; overflow: hidden;
+  box-shadow: var(--card-shadow); display: flex; flex-direction: column;
+}
+.dating-match-photo { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block; }
+.dating-match-photo-placeholder {
+  width: 100%; aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
+  font-size: 32px; font-weight: 800; color: var(--gold-text-on); background: var(--gold);
+}
+.dating-match-name { font-weight: 700; font-size: 13.5px; padding: 8px 10px 4px; }
+.dating-match-actions { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 10px; }
+.dating-match-actions .btn { font-size: 12px; padding: 7px; text-align: center; }
+.btn-icon-text {
+  border: none; background: transparent; color: var(--text-secondary); font-size: 11.5px; text-decoration: underline;
+  cursor: pointer; padding: 2px 0; text-align: left;
+}
+.dating-block-btn, .dating-unmatch-btn { color: #e74c3c; }
+
+.dating-terms-page { max-width: 640px; }
+.dating-terms-draft-banner {
+  background: #7a1f1f; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 12.5px;
+  font-weight: 700; margin-bottom: 16px; line-height: 1.5;
+}
+.dating-terms-heading { font-size: 15px; color: var(--gold); margin: 18px 0 4px; font-family: var(--font-display); }
+.dating-terms-body { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+
+/* ---- Legal pages (Terms & Conditions / Privacy Policy) ---- */
+.legal-page { max-width: 640px; }
+.legal-updated { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }
+.legal-heading { font-size: 15px; color: var(--gold); margin: 18px 0 4px; font-family: var(--font-display); }
+.legal-body { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+.podcast-ep-existing-item.active { border-color: var(--gold); background: rgba(201,161,90,0.12); }

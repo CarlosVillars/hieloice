@@ -204,6 +204,16 @@ function fmtPrice(price) {
   return "$" + Number(price).toLocaleString("en-US");
 }
 
+// Task: show Stripe's presence in every purchase-related section (buy
+// button, order tracking, seller payment setup) - text wordmark in Stripe's
+// own brand purple, per Stripe's partner badge guidelines. Reused as a
+// small inline HTML snippet rather than duplicated markup everywhere.
+function stripeInlineBadgeHtml() {
+  return `<a href="https://stripe.com" target="_blank" rel="noopener noreferrer" class="stripe-inline-badge" title="Stripe">
+    <span>${I18N.t("orders.securedBy")}</span> <span class="stripe-inline-wordmark">Stripe</span>
+  </a>`;
+}
+
 function fmtDate(ts) {
   const d = new Date(ts);
   return d.toLocaleDateString();
@@ -249,6 +259,12 @@ function setAuth(token, user) {
   applyUserTheme(state.user);
   updateNavUI();
   pollUnread();
+  // Task #234 - the chat WebSocket is app-wide (live typing/presence/message
+  // delivery need to work even when #/messages isn't the open route), so it
+  // opens/closes on login/logout rather than only when a thread is open.
+  // See connectChatSocket()/disconnectChatSocket() further down.
+  if (token) connectChatSocket();
+  else disconnectChatSocket();
 }
 
 async function refreshMe() {
@@ -282,13 +298,24 @@ function updateNavUI() {
   setDisplay("nav-logout", loggedIn ? "inline" : "none");
   setDisplay("nav-profile", loggedIn ? "inline" : "none");
   setDisplay("nav-messages", loggedIn ? "inline" : "none");
+  setDisplay("nav-notifications", loggedIn ? "inline" : "none");
   const navAdmin = document.getElementById("nav-admin");
   if (navAdmin) {
     const canAdmin = loggedIn && state.user && (state.user.role === "admin" || state.user.isOwner);
     navAdmin.style.display = canAdmin ? "inline" : "none";
   }
+  // The bottom/top icon bar stays visible for guests too (not just logged-in
+  // users) so a first-time visitor can still find Marketplace, International
+  // and Communities - those live inside the Marketplace dropdown. Only the
+  // items that require an account (Friends, Moments/Clips, Create) are
+  // hidden until the person logs in. Notifications moved into the top
+  // Profile/Messages row (task #237) and is hidden/shown there instead.
   const iconNav = document.getElementById("icon-nav");
-  if (iconNav) iconNav.style.display = loggedIn ? "flex" : "none";
+  if (iconNav) iconNav.style.display = "flex";
+  setDisplay("icon-nav-friends", loggedIn ? "flex" : "none");
+  setDisplay("icon-nav-clips", loggedIn ? "flex" : "none");
+  const createWrap = document.getElementById("icon-nav-create");
+  if (createWrap) createWrap.style.display = loggedIn ? "flex" : "none";
   if (!loggedIn) {
     setUnreadBadge(0);
     setIconNavBadge(0);
@@ -310,11 +337,41 @@ if (navLogoutBtn) {
 
 let unreadPollTimer = null;
 
+// The bell/envelope badges live inside .topbar-nav, a row that scrolls
+// sideways on narrow phones (so Profile/Messages/Publish/Book Club/Podcasts/
+// notifications never wrap to a second line). Two earlier fixes tried to
+// keep the badge fully visible while it stayed position:absolute inside
+// that row (bigger offsets, then reserving margin after the icon) - neither
+// worked because anything that pokes out past the row's own content edge
+// gets clipped by the row itself, and reserving room there just makes the
+// row's scrollable width bigger instead of freeing up visible screen space.
+// This computes the icon's real on-screen position and pins the badge there
+// with position:fixed, exactly like the Marketplace/PUBLISH A BOOK dropdowns
+// already do - fixed positioning is anchored to the viewport, not the
+// scrolling row, so it can never be clipped by it.
+function positionNavBadge(anchorId, badgeEl) {
+  const anchor = document.getElementById(anchorId);
+  if (!anchor || !badgeEl) return;
+  const r = anchor.getBoundingClientRect();
+  badgeEl.style.top = Math.max(2, r.top - 6) + "px";
+  badgeEl.style.left = (r.right - 10) + "px";
+}
+
+function repositionVisibleNavBadges() {
+  const mBadge = document.getElementById("nav-messages-badge");
+  if (mBadge && getComputedStyle(mBadge).display !== "none") positionNavBadge("nav-messages", mBadge);
+  const nBadge = document.getElementById("nav-notifications-badge");
+  if (nBadge && getComputedStyle(nBadge).display !== "none") positionNavBadge("nav-notifications", nBadge);
+}
+window.addEventListener("resize", repositionVisibleNavBadges);
+document.querySelector(".topbar-nav") && document.querySelector(".topbar-nav").addEventListener("scroll", repositionVisibleNavBadges);
+
 function setUnreadBadge(count) {
   const badge = document.getElementById("nav-messages-badge");
   if (!badge) return;
   if (count > 0) {
     badge.textContent = count > 9 ? "9+" : String(count);
+    positionNavBadge("nav-messages", badge);
     badge.style.display = "inline-flex";
   } else {
     badge.style.display = "none";
@@ -359,9 +416,44 @@ function applyStaticI18n() {
   setText("brand-name", I18N.t("site.name"));
   setText("brand-tagline", I18N.t("site.tagline"));
   updateGlobalSearchPlaceholder();
-  setText("nav-messages", I18N.t("nav.messages"));
+  // nav-messages shows an envelope emoji, not the word "Messages" - only
+  // title/aria-label are translated (not textContent, which would wipe out
+  // the unread-count badge <span> living inside this same <a>).
   setText("nav-profile", I18N.t("nav.profile"));
+  const navMessagesEl = document.getElementById("nav-messages");
+  if (navMessagesEl) {
+    const messagesLabel = I18N.t("nav.messages");
+    navMessagesEl.title = messagesLabel;
+    navMessagesEl.setAttribute("aria-label", messagesLabel);
+  }
+  const navNotifEl = document.getElementById("nav-notifications");
+  if (navNotifEl) {
+    const notifLabel = I18N.t("iconnav.notifications");
+    navNotifEl.title = notifLabel;
+    navNotifEl.setAttribute("aria-label", notifLabel);
+  }
   setText("nav-post", I18N.t("nav.postAd"));
+  setText("nav-post-original-label", I18N.t("nav.publishOriginal"));
+  setText("nav-post-used-label", I18N.t("nav.sellUsed"));
+  setText("nav-post-audiobook-label", I18N.t("nav.uploadAudiobook"));
+  const navBookClubEl = document.getElementById("nav-book-club");
+  if (navBookClubEl) {
+    const bookClubLabel = I18N.t("iconnav.bookClub");
+    navBookClubEl.title = bookClubLabel;
+    navBookClubEl.setAttribute("aria-label", bookClubLabel);
+  }
+  const navPodcastsEl = document.getElementById("nav-podcasts");
+  if (navPodcastsEl) {
+    const podcastsLabel = I18N.t("iconnav.dropdownPodcasts");
+    navPodcastsEl.title = podcastsLabel;
+    navPodcastsEl.setAttribute("aria-label", podcastsLabel);
+  }
+  const navAudiobooksEl = document.getElementById("nav-audiobooks");
+  if (navAudiobooksEl) {
+    const audiobooksLabel = I18N.t("nav.audiobooks");
+    navAudiobooksEl.title = audiobooksLabel;
+    navAudiobooksEl.setAttribute("aria-label", audiobooksLabel);
+  }
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
   setText("nav-logout", I18N.t("nav.logout"));
@@ -371,23 +463,39 @@ function applyStaticI18n() {
   if (langEsBtnEl) langEsBtnEl.classList.toggle("active", I18N.lang === "es");
   setText("icon-nav-home-label", I18N.t("iconnav.home"));
   setText("icon-nav-friends-label", I18N.t("iconnav.friends"));
-  setText("icon-nav-shorts-label", I18N.t("iconnav.shorts"));
+  setText("icon-nav-clips-label", I18N.t("iconnav.clips"));
   setText("icon-nav-marketplace-label", I18N.t("iconnav.marketplace"));
-  setText("icon-nav-notifications-label", I18N.t("iconnav.notifications"));
   setText("icon-nav-dropdown-marketplace", "🛒 " + I18N.t("iconnav.dropdownMarketplace"));
   setText("icon-nav-dropdown-intl", "🌎 " + I18N.t("iconnav.dropdownIntl"));
+  setText("icon-nav-dropdown-classics-label", I18N.t("classics.heading"));
   setText("icon-nav-dropdown-groups", "💬 " + I18N.t("iconnav.dropdownGroups"));
   setText("icon-nav-create-label", I18N.t("iconnav.create"));
-  setText("icon-nav-create-moment-label", I18N.t("iconnav.createMoment"));
+  setText("icon-nav-create-camera-label", I18N.t("iconnav.createCamera"));
+  setText("icon-nav-create-record-label", I18N.t("iconnav.createRecord"));
+  setText("icon-nav-create-upload-moment-label", I18N.t("iconnav.createUploadMoment"));
+  setText("icon-nav-create-upload-picture-label", I18N.t("iconnav.createUploadPicture"));
+  setText("icon-nav-create-loop-label", I18N.t("iconnav.createLoop"));
+  setText("icon-nav-create-video-label", I18N.t("iconnav.createVideo"));
   setText("icon-nav-create-product-label", I18N.t("iconnav.createProduct"));
   setText("icon-nav-books-sell-label", I18N.t("iconnav.booksSell"));
-  setText("icon-nav-books-publish-label", I18N.t("iconnav.booksPublish"));
+  setText("icon-nav-videos-label", I18N.t("iconnav.dropdownVideos"));
+  setText("icon-nav-dropdown-soon-label", I18N.t("iconnav.comingSoon"));
   setText("icon-nav-books-exchange-label", I18N.t("iconnav.booksExchange"));
   setText("icon-nav-books-recommend-label", I18N.t("iconnav.booksRecommend"));
   setText("icon-nav-books-auction-label", I18N.t("iconnav.booksAuction"));
   setText("icon-nav-books-exchange-soon", I18N.t("iconnav.booksSoonTag"));
   setText("icon-nav-books-recommend-soon", I18N.t("iconnav.booksSoonTag"));
   setText("icon-nav-books-auction-soon", I18N.t("iconnav.booksSoonTag"));
+  // Footer — was never translated before (stayed in English regardless of
+  // the selected language). See PROJECT.md known-issues log, 2026-09 entry.
+  setText("footer-social-label", I18N.t("footer.followUs"));
+  setText("footer-terms", I18N.t("footer.terms"));
+  setText("footer-privacy", I18N.t("footer.privacy"));
+  setText("footer-bug", I18N.t("footer.reportBug"));
+  setText("footer-music", I18N.t("footer.music"));
+  setText("footer-contact", I18N.t("footer.contact"));
+  setText("footer-stripe-label", I18N.t("footer.stripeLabel"));
+  setText("footer-rights", I18N.t("footer.rights"));
 }
 
 const langEnBtn = document.getElementById("lang-en");
@@ -482,7 +590,9 @@ function updateGlobalSearchPlaceholder() {
   const dropdown = document.getElementById("icon-nav-marketplace-dropdown");
   const createBtn = document.getElementById("icon-nav-create");
   const createDropdown = document.getElementById("icon-nav-create-dropdown");
-  const allDropdowns = [dropdown, createDropdown];
+  const postBtn = document.getElementById("nav-post");
+  const postDropdown = document.getElementById("nav-post-dropdown");
+  const allDropdowns = [dropdown, createDropdown, postDropdown];
   function closeAllDropdowns(except) {
     allDropdowns.forEach((d) => {
       if (d && d !== except) d.style.display = "none";
@@ -493,7 +603,40 @@ function updateGlobalSearchPlaceholder() {
       e.stopPropagation();
       const willOpen = dropdown.style.display !== "block";
       closeAllDropdowns();
+      // Set display:block first (before measuring/positioning) so
+      // dropdown.offsetWidth below reflects its real rendered size instead
+      // of 0 (a display:none element always measures 0-width).
       dropdown.style.display = willOpen ? "block" : "none";
+      if (willOpen) {
+        // This button lives in the bottom icon-nav tab bar (mobile), not the
+        // top header - unlike "PUBLISH A BOOK" below, which opens downward
+        // from the top bar. Anchoring this one downward too (rect.bottom + 6)
+        // pushed the whole menu below the bottom edge of the screen - it was
+        // technically open (display:block) but rendered entirely off-viewport,
+        // which looked exactly like "nothing happens" when tapped. Opening it
+        // upward instead - anchored to the button's TOP edge, growing toward
+        // the top of the screen - keeps it on-screen and clickable. Still
+        // position:fixed (not the CSS default position:absolute/top:100%)
+        // because .topbar-nav's horizontal scroll still clips absolutely-
+        // positioned children the same way documented for nav-post-dropdown.
+        const rect = marketplaceBtn.getBoundingClientRect();
+        dropdown.style.top = "auto";
+        dropdown.style.bottom = (window.innerHeight - rect.top + 6) + "px";
+        // The Marketplace icon sits 5th of 6 in the bottom tab bar, so its
+        // left edge is far to the right on a phone screen. Left-aligning the
+        // menu to that same x kept pushing its right edge past the edge of
+        // the screen (labels like "Sell a Book" / "Narrate a Book" got cut
+        // off). Clamp so the menu's right edge never goes past the viewport
+        // (with an 8px margin), and never goes negative on the left either.
+        const margin = 8;
+        let left = rect.left;
+        const ddWidth = dropdown.offsetWidth || 190;
+        if (left + ddWidth + margin > window.innerWidth) {
+          left = window.innerWidth - ddWidth - margin;
+        }
+        if (left < margin) left = margin;
+        dropdown.style.left = left + "px";
+      }
       const icon = marketplaceBtn.querySelector(".icon-nav-cartbooks");
       if (icon) {
         icon.classList.remove("pop");
@@ -532,12 +675,83 @@ function updateGlobalSearchPlaceholder() {
       createDropdown.style.display = willOpen ? "block" : "none";
     });
     createDropdown.addEventListener("click", (e) => e.stopPropagation());
-    const momentLink = document.getElementById("icon-nav-create-moment");
-    if (momentLink) {
-      momentLink.addEventListener("click", (e) => {
+    // "Camera" and "Record a Moment" both open the same live-camera screen:
+    // it already supports tap-for-photo / hold-for-video in one shutter
+    // button (see the "tap and hold" hint shown there), so there's no
+    // separate photo-only vs video-only capture mode to route to.
+    const cameraLink = document.getElementById("icon-nav-create-camera");
+    if (cameraLink) {
+      cameraLink.addEventListener("click", (e) => {
         e.preventDefault();
         createDropdown.style.display = "none";
         openCreateWizard();
+      });
+    }
+    const recordLink = document.getElementById("icon-nav-create-record");
+    if (recordLink) {
+      recordLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+      });
+    }
+    // "Upload a Moment" / "Upload a Picture" open the same wizard but skip
+    // straight to the device's file picker instead of the live camera,
+    // pre-filtered to video or image files respectively.
+    const uploadMomentLink = document.getElementById("icon-nav-create-upload-moment");
+    if (uploadMomentLink) {
+      uploadMomentLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+        const fileInput = document.getElementById("wizard-file-media");
+        if (fileInput) {
+          fileInput.accept = "video/*";
+          fileInput.click();
+        }
+      });
+    }
+    const uploadPictureLink = document.getElementById("icon-nav-create-upload-picture");
+    if (uploadPictureLink) {
+      uploadPictureLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard();
+        const fileInput = document.getElementById("wizard-file-media");
+        if (fileInput) {
+          fileInput.accept = "image/*";
+          fileInput.click();
+        }
+      });
+    }
+    // "Loop" opens the same camera-wizard flow as "Camera"/"Record a Moment"
+    // (see openCreateWizard() below) - it takes an optional target argument
+    // that tells the wizard's final publish step which endpoint to post to
+    // (POST /api/loops instead of POST /api/moments) rather than this
+    // needing its own separate capture UI.
+    const loopLink = document.getElementById("icon-nav-create-loop");
+    if (loopLink) {
+      loopLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard("loop");
+      });
+    }
+    // "Upload video" (task #231) opens the same wizard with target:"video" -
+    // the long-form Videos hub - and jumps straight to the gallery file
+    // picker pre-filtered to video files, same idiom as "Upload a Moment"
+    // above, since a 20-minute hold-to-record capture isn't a realistic UX.
+    const videoLink = document.getElementById("icon-nav-create-video");
+    if (videoLink) {
+      videoLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        createDropdown.style.display = "none";
+        openCreateWizard("video");
+        const fileInput = document.getElementById("wizard-file-media");
+        if (fileInput) {
+          fileInput.accept = "video/*";
+          fileInput.click();
+        }
       });
     }
     const productLink = document.getElementById("icon-nav-create-product");
@@ -547,14 +761,61 @@ function updateGlobalSearchPlaceholder() {
       });
     }
   }
+  // "PUBLISH A BOOK" (task #244) - no longer navigates straight to the
+  // used-book listing form. It opens a small menu so people can pick
+  // between publishing their own original/unpublished work (new AI-assisted
+  // flow) or selling a used physical book (the original #/post form).
+  if (postBtn && postDropdown) {
+    postBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = postDropdown.style.display !== "block";
+      closeAllDropdowns();
+      if (willOpen) {
+        // The dropdown lives inside .topbar-nav, which now scrolls
+        // horizontally (task: "never wraps to a second row"). Setting
+        // overflow-x on an element also forces its overflow-y to behave as
+        // "auto" per the CSS spec, which silently clips any absolutely-
+        // positioned child that pokes out below the row - so the menu was
+        // opening (display:block) but invisible. Anchoring it with
+        // position:fixed at click time, computed from the button's real
+        // screen position, escapes that clipping entirely.
+        const rect = postBtn.getBoundingClientRect();
+        postDropdown.style.top = rect.bottom + 6 + "px";
+        postDropdown.style.left = rect.left + "px";
+      }
+      postDropdown.style.display = willOpen ? "block" : "none";
+    });
+    postDropdown.addEventListener("click", (e) => e.stopPropagation());
+    ["original", "used"].forEach((key) => {
+      const link = document.getElementById("nav-post-" + key);
+      if (link) link.addEventListener("click", () => { postDropdown.style.display = "none"; });
+    });
+  }
   document.addEventListener("click", () => closeAllDropdowns());
+  // A dropdown (Marketplace, Create, or Post an Ad) opened from the nav only
+  // ever closed on a generic document click. Tapping straight from an open
+  // dropdown into a nav icon like Moments navigates (hash changes) but is
+  // itself a click, so closeAllDropdowns() above did fire - except Moments/
+  // Clips replaces the whole page with a fixed full-screen overlay appended
+  // fresh to <body> right as that same click is still being handled, and on
+  // some phones the new overlay's first paint landed a frame before the
+  // dropdown's display:none took visual effect, so the (still technically
+  // "closing") dropdown briefly rendered on top of the new page and ate the
+  // next tap. Explicitly closing on every hash change removes the race
+  // entirely - by the time the new page's content exists, any dropdown is
+  // already guaranteed closed, independent of click timing.
+  window.addEventListener("hashchange", () => closeAllDropdowns());
 })();
 
 function setIconNavBadge(count) {
-  const badge = document.getElementById("icon-nav-badge");
+  // Task #237 - the bell moved out of the bottom icon bar into the top
+  // Profile/Messages/Notifications row, so this now writes to
+  // nav-notifications-badge instead of the old icon-nav-badge element.
+  const badge = document.getElementById("nav-notifications-badge");
   if (!badge) return;
   if (count > 0) {
     badge.textContent = count > 9 ? "9+" : String(count);
+    positionNavBadge("nav-notifications", badge);
     badge.style.display = "inline-flex";
   } else {
     badge.style.display = "none";
@@ -577,18 +838,54 @@ function parseHash() {
   return { parts, query };
 }
 
+// Routes reachable even if a logged-in user hasn't confirmed a birthdate yet
+// (the confirm-age page itself, plus anything needed to log out / view
+// legal pages / delete the account rather than being trapped).
+const AGE_GATE_EXEMPT_ROUTES = new Set(["confirm-age", "login", "register", "delete-account", "terms", "privacy", "dating-terms"]);
+
 async function router() {
   const { parts, query } = parseHash();
   window.scrollTo(0, 0);
   updateGlobalSearchPlaceholder();
 
+  // Platform-wide 18+ requirement (Carlos: adults only, whole platform).
+  // Any logged-in account missing a birthdate - pre-existing accounts from
+  // before this feature, or Google/Facebook signups which skip the
+  // register form - must confirm it once before doing anything else.
+  if (state.user && !state.user.birthdate && !AGE_GATE_EXEMPT_ROUTES.has(parts[0])) {
+    location.hash = "#/confirm-age";
+    return renderConfirmAge();
+  }
+
   try {
     if (parts.length === 0) return renderHome();
+    if (parts[0] === "confirm-age") return renderConfirmAge();
+    if (parts[0] === "terms") return renderTerms();
+    if (parts[0] === "privacy") return renderPrivacy();
+    if (parts[0] === "report-bug") return renderReportBug();
+    if (parts[0] === "dating-terms") return renderDatingTerms();
+    if (parts[0] === "dating" && parts[1] === "matches") return renderDatingMatches();
+    if (parts[0] === "dating" && parts[1] === "setup") return renderDatingSetup();
+    if (parts[0] === "dating") return renderDatingSwipe();
     if (parts[0] === "marketplace") return renderMarketplaceHome();
     if (parts[0] === "friends") return renderFriendsPage();
-    if (parts[0] === "shorts") return renderShorts();
+    if (parts[0] === "clips") return renderClips();
+    if (parts[0] === "videos" && parts[1]) return renderVideoWatch(parts[1]);
+    if (parts[0] === "videos") return renderVideosFeed();
     if (parts[0] === "groups" && parts[1]) return renderGroupDetail(parts[1]);
     if (parts[0] === "groups") return renderGroupsHome();
+    if (parts[0] === "book-club" && parts[1]) return renderBookClubDetail(parts[1]);
+    if (parts[0] === "book-club") return renderBookClubHome();
+    if (parts[0] === "publish-book" && parts[1]) return renderPublishBookEditor(parts[1]);
+    if (parts[0] === "publish-book") return renderPublishBookHome();
+    if (parts[0] === "music") return renderMusicLibrary(query);
+    if (parts[0] === "audiobooks" && parts[1] === "mine") return renderAudiobooksMine();
+    if (parts[0] === "audiobooks" && parts[1] === "edit" && parts[2]) return renderAudiobookEditor(parts[2]);
+    if (parts[0] === "audiobooks" && parts[1]) return renderAudiobookDetail(parts[1]);
+    if (parts[0] === "audiobooks") return renderAudiobooksCatalog(query);
+    if (parts[0] === "podcast" && parts[1]) return renderPodcastChannel(parts[1]);
+    if (parts[0] === "podcast-episode" && parts[1]) return renderPodcastEpisode(parts[1]);
+    if (parts[0] === "podcasts") return renderPodcastLibrary(query);
     if (parts[0] === "notifications") return renderNotificationsPage();
     if (parts[0] === "category" && parts[1]) return renderCategory(parts[1], query);
     if (parts[0] === "product" && parts[1]) return renderProductDetail(parts[1]);
@@ -611,9 +908,13 @@ async function router() {
     if (parts[0] === "intl") return renderIntlHome();
     if (parts[0] === "admin" && parts[1]) return renderAdminPanel(parts[1]);
     if (parts[0] === "admin") return renderAdminPanel("reports");
-    viewEl.innerHTML = "<p>Not found.</p>";
+    if (parts[0] === "orders" && parts[1]) return renderOrderDetail(parts[1]);
+    if (parts[0] === "orders") return renderOrdersList();
+    if (parts[0] === "classics" && parts[1]) return renderClassicDetail(parts[1]);
+    if (parts[0] === "classics") return renderClassicsHub(query);
+    viewEl.innerHTML = `<div class="not-found-state"><p>${I18N.t("common.notFound")}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
   } catch (e) {
-    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    viewEl.innerHTML = `<div class="not-found-state"><p class="form-msg error">${escapeHtml(e.message)}</p><a href="#/" class="btn btn-primary">${I18N.t("common.goHome")}</a></div>`;
   }
 }
 window.addEventListener("hashchange", router);
@@ -642,39 +943,215 @@ function categoryCardsHtml() {
   ).join("");
 }
 
-// Home ("#/"): the moments feed for logged-in users (Facebook-style focus on
-// sharing), falling back to the marketplace grid for guests who have nothing
-// to see in a feed yet.
+// Full-screen "Browse Categories" sheet: a stacked, one-per-row list of every
+// genre (big icon + label), opened from the "Browse Categories" button on the
+// Marketplace home page. Kept separate from the inline categoryTabsHtml() pill
+// row on purpose - the pills are for a quick single-tap jump to a genre that's
+// already visible, this full sheet is for scanning the whole list at once.
+// Tapping any row navigates via its href and this closes itself in response.
+function openBrowseCategoriesOverlay() {
+  if (document.getElementById("browse-categories-overlay")) return;
+  const overlay = document.createElement("div");
+  overlay.className = "browse-categories-overlay";
+  overlay.id = "browse-categories-overlay";
+  overlay.innerHTML = `
+    <div class="browse-categories-handle"></div>
+    <div class="browse-categories-header">
+      <h2 class="browse-categories-title">${I18N.t("home.categoriesHeading")}</h2>
+      <button type="button" class="browse-categories-close" aria-label="${escapeHtml(I18N.t("common.close"))}">&times;</button>
+    </div>
+    <div class="browse-categories-list">
+      ${CATEGORY_LIST.map(
+        (c) => `
+        <a class="browse-category-row" href="#/category/${c.slug}">
+          ${c.img ? `<img class="browse-category-icon browse-category-icon-img" src="${c.img}" alt="" />` : `<span class="browse-category-icon">${c.icon}</span>`}
+          <span class="browse-category-label">${I18N.lang === "es" ? c.es : c.en}</span>
+        </a>`
+      ).join("")}
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.body.style.overflow = "hidden";
+  const close = () => {
+    overlay.remove();
+    document.body.style.overflow = "";
+  };
+  overlay.querySelector(".browse-categories-close").addEventListener("click", close);
+  overlay.querySelectorAll(".browse-category-row").forEach((row) => row.addEventListener("click", close));
+}
+
+// Home ("#/"): a single ranked vertical feed mixing every author's video AND
+// photo moments (Facebook-style focus on sharing, TikTok-style continuous
+// swipe), falling back to the marketplace grid for guests who have nothing
+// to see in a feed yet. Two pieces, both fed by real endpoints:
+//   (a) a thin "stories" strip - genuinely ephemeral "Loops" (24h,
+//       tap-through viewer, seen/unseen ring), NOT the (now-permanent)
+//       Moments below - loadHomeStoriesStrip() below. Moments were made
+//       permanent on 2026-08-18 (see server.js), which is exactly why this
+//       strip no longer shows them: a "stories" rail stops making sense once
+//       its content never expires. Loops exists as a separate feature/table
+//       (see server.js's "LOOPS" section) specifically to keep that Stories
+//       mechanic alive under its own name.
+//   (b) the full swipe feed itself, sharing its render/gesture engine with
+//       the full-screen Clips player - see drawSwipeItem()/
+//       wireSwipeGestures() above and loadHomeSwipeFeed() below.
+// This replaces the old design (stories bar -> chronological list of
+// friends' posts -> a "Suggested" section): that content is now folded
+// into the single ranked feed instead of being three separate lists.
 function renderHome() {
   if (!state.token) return renderMarketplaceHome();
 
+  // Ad carousel restored here per Carlos's request (moved back from
+  // Marketplace, where it had been living): sits above the stories strip,
+  // same as the original Home layout.
   viewEl.innerHTML = `
     <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
-    <div class="feed-section" id="feed-section-friends">
-      <h2 class="section-heading">${I18N.t("feed.friendsHeading")}</h2>
-      <div class="moments-bar" id="home-moments-bar-friends"></div>
+    <div class="home-stories-strip" id="home-stories-strip">
+      <div class="moments-bar" id="home-loops-bar"></div>
     </div>
-    <div class="home-feed-posts" id="home-feed-posts" style="display:none;"></div>
-    <div class="feed-section" id="feed-section-suggested" style="display:none;">
-      <h2 class="section-heading">${I18N.t("feed.suggestedHeading")}</h2>
-      <div class="moments-bar" id="home-moments-bar-suggested" style="display:none;"></div>
-    </div>
+    <div class="home-swipe-feed" id="home-swipe-feed"><p style="color:var(--text-secondary);text-align:center;padding:40px 0;">${I18N.t("common.loading")}</p></div>
   `;
-  // Draw the "your moment" circle (yellow ring if you already posted one today,
-  // plain "+" to add one otherwise) immediately, from data already in memory -
-  // don't wait on the /api/moments/feed round trip for it, and don't let a
-  // failed/slow fetch hide it later (see loadHomeFeed()'s catch below). This
-  // was previously only drawn after the feed loaded, so on a slow connection
-  // or a feed error it silently never appeared at all.
-  renderMomentGroupsBar(document.getElementById("home-moments-bar-friends"), [], {
-    showAddForUserId: state.user.id,
+  // Draw the "your Loop" circle (colored ring if you have an unviewed-by-
+  // someone-else Loop live, plain "+" to add one otherwise) immediately,
+  // from data already in memory - don't wait on the /api/loops/feed round
+  // trip for it, and don't let a failed/slow fetch hide it later (see
+  // loadHomeStoriesStrip()'s catch below). Mirrors how the old permanent-
+  // Moments version of this strip drew its own-circle placeholder eagerly.
+  renderLoopGroupsBar(document.getElementById("home-loops-bar"), [], {
+    ownUserId: state.user.id,
     ownPhoto: state.user.photo,
     ownName: state.user.name,
-    layout: "rect",
   });
+  wireHomeSwipeFeedResize();
+  sizeHomeSwipeFeed();
   loadAdCarousel();
-  loadHomeFeed();
+  loadHomeStoriesStrip();
+  loadHomeSwipeFeed();
 }
+
+// Thin "stories" strip at the top of Home - the caller's own Loop (if any)
+// plus friends'/followed-pages' Loops from GET /api/loops/feed, grouped by
+// author, rect layout (sized down via .home-stories-strip in style.css).
+// Distinct from the permanent Moments feed below it - see the comment above
+// renderHome().
+async function loadHomeStoriesStrip() {
+  const el = document.getElementById("home-loops-bar");
+  if (!el) return;
+  try {
+    const data = await api("/api/loops/feed", { auth: true });
+    el.style.display = "flex";
+    renderLoopGroupsBar(el, data.groups || [], {
+      ownUserId: state.user.id,
+      ownPhoto: state.user.photo,
+      ownName: state.user.name,
+    });
+  } catch (e) {
+    // Best-effort: leave the "your Loop" circle drawn by renderHome() as-is
+    // rather than wiping the strip - a failed fetch shouldn't make the
+    // add-a-Loop entry point disappear too.
+  }
+}
+
+// The unified ranked Home feed - video AND photo moments from every author,
+// friend/follow-boosted but not friend-filtered (see the comment on
+// /api/moments/videos/feed in server.js), rendered via the same
+// drawSwipeItem()/wireSwipeGestures() engine the full-screen Clips player
+// uses, just mounted inline in normal document flow (see .home-swipe-feed
+// in style.css and sizeHomeSwipeFeed() below) instead of a fixed overlay,
+// so the topbar and bottom nav stay visible around it.
+async function loadHomeSwipeFeed() {
+  const container = document.getElementById("home-swipe-feed");
+  if (!container) return;
+  let items = [];
+  try {
+    items = await api("/api/moments/videos/feed", { auth: true });
+  } catch (e) {}
+  if (!items.length) {
+    // Only happens on a genuinely empty platform (or every moment expired) -
+    // this endpoint isn't friend-filtered, so a normal account with zero
+    // friends still gets content. Same friendly empty state the old
+    // home-feed-posts list used instead of leaving a blank scroller.
+    container.innerHTML = `
+      <div class="empty-state home-feed-empty">
+        <p>${I18N.t("home.feedEmpty")}</p>
+        <div class="home-feed-empty-actions">
+          <a href="#/friends" class="btn btn-secondary">${I18N.t("home.feedEmptyFindPeople")}</a>
+          <a href="#/marketplace" class="btn btn-secondary">${I18N.t("home.feedEmptyBrowse")}</a>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  homeSwipeState = { videos: items, index: 0, rootEl: container, closable: false };
+  drawSwipeItem(homeSwipeState);
+  wireSwipeGestures(container, homeSwipeState);
+}
+
+// The Home swipe feed sits in normal document flow (not a full-screen fixed
+// overlay like Clips) so the topbar and bottom icon-nav stay visible around
+// it - which means its height can't be a fixed vh value, it's "whatever
+// vertical space is actually left" after that chrome, and that differs by
+// screen size (icon-nav moves to a fixed bottom bar under 640px - see the
+// media query in style.css - and the topbar's own height varies with the
+// tagline text wrapping). Measuring it live is simpler and more correct
+// than trying to hardcode every combination in CSS.
+function sizeHomeSwipeFeed() {
+  const container = document.getElementById("home-swipe-feed");
+  if (!container) return;
+  const top = container.getBoundingClientRect().top;
+  const mobileBottomNav = window.innerWidth <= 640;
+  const iconNavEl = document.getElementById("icon-nav");
+  const bottomReserved = mobileBottomNav && iconNavEl ? iconNavEl.offsetHeight : 0;
+  const h = Math.max(320, window.innerHeight - top - bottomReserved);
+  container.style.height = h + "px";
+}
+
+// Wired once ever (idempotent), not per Home visit: renderHome() replaces
+// #home-swipe-feed's own DOM on every visit, but a window-level resize
+// listener added inside renderHome() would otherwise pile up a new one on
+// every navigation back to Home. The handler itself re-queries the DOM
+// fresh each time, so it's a no-op whenever Home isn't the current route.
+let homeSwipeFeedResizeWired = false;
+function wireHomeSwipeFeedResize() {
+  if (homeSwipeFeedResizeWired) return;
+  homeSwipeFeedResizeWired = true;
+  window.addEventListener("resize", sizeHomeSwipeFeed);
+  window.addEventListener("orientationchange", sizeHomeSwipeFeed);
+}
+
+// ---------------- Full-screen overlay back-button support ----------------
+// Camera-style overlays (Moments capture, guided product photo capture,
+// the barcode scanner) are plain DOM overlays stacked on top of the current
+// route, not routes themselves - so the phone/browser Back button used to
+// do nothing about them: it silently changed the underlying page while the
+// camera stayed stuck on screen, leaving the on-screen X as the only way
+// out. We push one throwaway history entry when an overlay opens and
+// consume it on popstate, so Back and X close the overlay the same way.
+let overlayBackGuard = null; // { closeFn } for whichever overlay is open
+
+function guardOverlayForBack(closeFn) {
+  overlayBackGuard = { closeFn };
+  history.pushState({ hiOverlay: true }, "", location.href);
+}
+
+function closeOverlayViaBack(closeFn) {
+  // Used by an overlay's own X/cancel control. If we're still holding the
+  // history entry pushed for it, consume it so a later Back press doesn't
+  // land on a dead state; either way, run the real close logic now.
+  if (overlayBackGuard && overlayBackGuard.closeFn === closeFn) {
+    overlayBackGuard = null;
+    history.back();
+  }
+  closeFn();
+}
+
+window.addEventListener("popstate", () => {
+  if (overlayBackGuard) {
+    const fn = overlayBackGuard.closeFn;
+    overlayBackGuard = null;
+    fn();
+  }
+});
 
 // ---------------- Barcode / ISBN scanner (Marketplace search + listing form) ----------------
 // Shared full-screen scanner reused from two places: the Marketplace search
@@ -717,11 +1194,12 @@ function openBarcodeScanner(onDetected) {
     </div>
   `;
   document.body.appendChild(overlay);
+  guardOverlayForBack(closeBarcodeScanner);
 
-  document.getElementById("barcode-scanner-close").addEventListener("click", closeBarcodeScanner);
+  document.getElementById("barcode-scanner-close").addEventListener("click", () => closeOverlayViaBack(closeBarcodeScanner));
   document.getElementById("barcode-scanner-manual").addEventListener("click", (e) => {
     e.preventDefault();
-    closeBarcodeScanner();
+    closeOverlayViaBack(closeBarcodeScanner);
     const manual = prompt(I18N.t("market.enterIsbnPrompt"));
     if (manual && manual.trim()) onDetected(manual.trim());
   });
@@ -769,7 +1247,7 @@ function openBarcodeScanner(onDetected) {
           try {
             controls.stop();
           } catch (e2) {}
-          closeBarcodeScanner();
+          closeOverlayViaBack(closeBarcodeScanner);
           onDetected(text);
         }
       }
@@ -793,11 +1271,6 @@ function openBarcodeScanner(onDetected) {
 // guests at "#/" and by logged-in users via the Marketplace icon-nav button.
 function renderMarketplaceHome() {
   viewEl.innerHTML = `
-    <div id="ad-carousel" class="ad-carousel" style="display:none;"></div>
-    <div class="hero">
-      <h1>${escapeHtml(I18N.t("site.name"))}</h1>
-      <p>${escapeHtml(I18N.t("site.tagline"))}</p>
-    </div>
     <a href="#/post" class="sell-books-banner">
       <span class="sell-books-banner-icon">&#128218;</span>
       <span class="ai-listing-banner-text">
@@ -806,11 +1279,150 @@ function renderMarketplaceHome() {
       </span>
       <span class="sell-books-banner-arrow">&#8250;</span>
     </a>
+    <div id="my-listings-section" style="display:none;">
+      <button type="button" id="my-listings-toggle" class="my-listings-toggle-btn" aria-expanded="false">
+        <span class="section-heading my-listings-toggle-heading">${I18N.t("home.myListingsHeading")}</span>
+        <span class="my-listings-caret" id="my-listings-caret">&#9662;</span>
+      </button>
+      <div class="classics-preview-row my-listings-row-collapsed" id="my-listings-row"></div>
+    </div>
+    <h2 class="section-heading">${I18N.t("home.allBooksHeading")}</h2>
+    <div class="product-grid product-grid-library" id="home-all-products"><p>${I18N.t("common.loading")}</p></div>
+    <a class="back-link" href="#/category/all">${I18N.t("home.seeAllBooks")} &rarr;</a>
     ${categoryTabsHtml("all")}
-    <h2 class="section-heading">${I18N.t("home.categoriesHeading")}</h2>
-    <div class="category-grid">${categoryCardsHtml()}</div>
+    <button type="button" id="toggle-categories-btn" class="btn btn-outline categories-toggle-btn">
+      ${I18N.t("home.categoriesHeading")} <span class="categories-toggle-caret">&#9662;</span>
+    </button>
+    <div id="classics-preview-section" style="display:none;">
+      <h2 class="section-heading">${I18N.t("classics.previewHeading")}</h2>
+      <div class="classics-preview-row" id="classics-preview-row"></div>
+      <a class="back-link" href="#/classics">${I18N.t("classics.seeAll")} &rarr;</a>
+    </div>
   `;
-  loadAdCarousel();
+  const toggleBtn = document.getElementById("toggle-categories-btn");
+  if (toggleBtn) toggleBtn.addEventListener("click", openBrowseCategoriesOverlay);
+  const myListingsToggle = document.getElementById("my-listings-toggle");
+  if (myListingsToggle) {
+    myListingsToggle.addEventListener("click", () => {
+      const row = document.getElementById("my-listings-row");
+      const caret = document.getElementById("my-listings-caret");
+      if (!row) return;
+      const collapsed = row.classList.toggle("my-listings-row-collapsed");
+      if (caret) caret.innerHTML = collapsed ? "&#9662;" : "&#9652;";
+      myListingsToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    });
+  }
+  loadAllProductsPreview();
+  loadClassicsPreview();
+  loadMyListingsPreview();
+}
+
+// Task: Carlos reported that landing on Marketplace forced people to pick a
+// category before seeing any book - fixed by showing real listings right
+// away (this loader) and moving the category grid behind the toggle above.
+// Library-style browsing: instead of dumping every result at once (or
+// capping at a couple of oversized cards and forcing a click to "see all"),
+// fetch a decent-sized batch and reveal it a page at a time as the user
+// scrolls, like turning pages in a library shelf. See renderMoreHomeProducts
+// / wireHomeProductsInfiniteScroll below.
+const HOME_PRODUCTS_PAGE_SIZE = 12;
+let homeProductsAll = [];
+let homeProductsShown = 0;
+let homeProductsObserver = null;
+
+async function loadAllProductsPreview() {
+  const el = document.getElementById("home-all-products");
+  if (!el) return;
+  if (homeProductsObserver) {
+    homeProductsObserver.disconnect();
+    homeProductsObserver = null;
+  }
+  try {
+    const products = await api("/api/products"); // defaults to newest-first server-side
+    homeProductsAll = products.slice(0, 60);
+    homeProductsShown = 0;
+    if (!homeProductsAll.length) {
+      el.innerHTML = `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+      return;
+    }
+    el.innerHTML = "";
+    renderMoreHomeProducts();
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+  }
+}
+
+function renderMoreHomeProducts() {
+  const el = document.getElementById("home-all-products");
+  if (!el) return;
+  const oldSentinel = document.getElementById("home-products-sentinel");
+  if (oldSentinel) oldSentinel.remove();
+  const next = homeProductsAll.slice(homeProductsShown, homeProductsShown + HOME_PRODUCTS_PAGE_SIZE);
+  el.insertAdjacentHTML("beforeend", next.map(productCardHtml).join(""));
+  homeProductsShown += next.length;
+  if (homeProductsShown < homeProductsAll.length) {
+    el.insertAdjacentHTML(
+      "beforeend",
+      `<div id="home-products-sentinel" class="home-products-sentinel" aria-hidden="true"></div>`
+    );
+    wireHomeProductsInfiniteScroll();
+  } else if (homeProductsObserver) {
+    homeProductsObserver.disconnect();
+    homeProductsObserver = null;
+  }
+}
+
+function wireHomeProductsInfiniteScroll() {
+  if (homeProductsObserver) homeProductsObserver.disconnect();
+  const sentinel = document.getElementById("home-products-sentinel");
+  if (!sentinel) return;
+  // Fire a bit before the sentinel actually enters the viewport (rootMargin)
+  // so the next page is already in place by the time the user reaches it -
+  // that's what makes it feel like scrolling reveals more books, not like
+  // waiting for a spinner.
+  homeProductsObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries[0].isIntersecting) renderMoreHomeProducts();
+    },
+    { rootMargin: "400px" }
+  );
+  homeProductsObserver.observe(sentinel);
+}
+
+// Compact row of the logged-in seller's own active listings, shown near the
+// top of Marketplace (right under the sell-books banner) so a seller can see
+// their own book(s) at a glance without it hijacking the general "All Books"
+// grid below - previously a seller's own newest listing would just be
+// whatever happened to sort first in that grid, rendered at full card size
+// with nothing marking it as "yours".
+async function loadMyListingsPreview() {
+  const section = document.getElementById("my-listings-section");
+  const row = document.getElementById("my-listings-row");
+  if (!section || !row || !state.token || !state.user) return;
+  try {
+    const products = await api("/api/products?sellerId=" + encodeURIComponent(state.user.id));
+    if (!products.length) return;
+    row.innerHTML = products.slice(0, 10).map(productCardHtml).join("");
+    section.style.display = "block";
+  } catch (e) {
+    // best-effort, same pattern as the ad carousel / classics preview
+  }
+}
+
+async function loadClassicsPreview() {
+  const section = document.getElementById("classics-preview-section");
+  const row = document.getElementById("classics-preview-row");
+  if (!section || !row) return;
+  try {
+    const books = await api("/api/classics");
+    if (!books.length) return;
+    // A handful of picks, not the whole library - this row is a teaser that
+    // links to the full #/classics hub, not a duplicate of it.
+    row.innerHTML = books.slice(0, 10).map(classicCardHtml).join("");
+    section.style.display = "block";
+  } catch (e) {
+    // best-effort, same pattern as the ad carousel - never break the home page
+  }
 }
 
 async function loadHomeFeed() {
@@ -849,6 +1461,53 @@ async function loadHomeFeed() {
   }
 }
 
+// ---- AI auto-clip (task #160) trim-window playback helper ------------------
+// A Moment video may carry a trim_start_sec/trim_end_sec window (set by the
+// creator from an AI suggestion in the create wizard - see wireWizardAiClip()
+// below). This is metadata only, never a physically cut file (MVP - no
+// server-side re-encoding), so every place a Moment video plays has to
+// enforce it itself: start playback at the trim start, and loop back there
+// once playback reaches the trim end, instead of ever showing the raw full
+// clip. Shared by the Home feed cards, the full-screen Moments viewer, and
+// the Shorts/Clips swipe feed so the behavior is identical everywhere.
+function momentTrimWindow(m) {
+  if (!m || m.trimStartSec === undefined || m.trimStartSec === null || m.trimEndSec === undefined || m.trimEndSec === null) return null;
+  const start = Number(m.trimStartSec);
+  const end = Number(m.trimEndSec);
+  if (!isFinite(start) || !isFinite(end) || !(end > start)) return null;
+  return { start, end };
+}
+
+// Wires `videoEl` to respect m's trim window, if any. No-op (returns null)
+// for moments without one, so callers can wire this unconditionally without
+// branching. `onLoop` (optional) fires each time playback loops back to the
+// start - callers use it to keep other UI (e.g. a progress bar) in sync.
+function wireMomentTrimLoop(videoEl, m, onLoop) {
+  const trim = momentTrimWindow(m);
+  if (!videoEl || !trim) return null;
+  const seekToStart = () => {
+    try {
+      videoEl.currentTime = trim.start;
+    } catch (e) {}
+  };
+  if (videoEl.readyState >= 1) seekToStart();
+  else videoEl.addEventListener("loadedmetadata", seekToStart, { once: true });
+  videoEl.addEventListener("timeupdate", () => {
+    if (videoEl.currentTime >= trim.end) {
+      seekToStart();
+      if (onLoop) onLoop();
+    }
+  });
+  return trim;
+}
+
+function formatClipTime(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
 // ---- Friends' moments rendered as inline, playable feed cards on Home -----
 // (in addition to the circle bar above). Each card carries the full Reels-
 // style action rail (like/comment/share/repost/save); tapping the media
@@ -858,11 +1517,76 @@ function buildHomeFeedItems(groups) {
   const items = [];
   for (const g of groups) {
     for (const m of g.moments) {
-      items.push({ ...m, userId: g.userId, userName: g.userName, userPhoto: g.userPhoto, isPage: g.isPage });
+      // Mutate the SAME object reference from group.moments (do NOT spread-copy).
+      // The full-screen viewer (openMomentsViewer/drawMomentViewer) reads
+      // group.moments via homeFeedGroupsById, while this list feeds the inline
+      // feed cards. If they were distinct objects, a like/save tap on one
+      // surface wouldn't be reflected on the other. Keeping them as the same
+      // reference means either surface's mutation is instantly visible on both.
+      Object.assign(m, { userId: g.userId, userName: g.userName, userPhoto: g.userPhoto, isPage: g.isPage });
+      items.push(m);
     }
   }
   items.sort((a, b) => b.createdAt - a.createdAt);
   return items;
+}
+
+// Task #204 - renders the text/sticker overlays a creator dragged onto a
+// VIDEO capture (see createWizard.overlays / server.js's mkt_moments.overlay_json)
+// as a plain absolutely-positioned HTML layer on top of the <video> element,
+// at every place a video with overlays is actually played back. Photos never
+// call this - their overlays are baked straight into the JPEG pixels at
+// publish time instead (see bakeWizardOverlays()), so there's nothing left
+// to render as a separate layer for them.
+function renderMediaOverlayLayer(overlays) {
+  if (!overlays || !overlays.length) return "";
+  const textAndStickers = overlays.filter((ov) => ov.type === "text" || ov.type === "sticker");
+  const products = overlays.filter((ov) => ov.type === "product");
+  const voiceover = overlays.find((ov) => ov.type === "voiceover");
+  const itemsHtml = textAndStickers
+    .map((ov) => {
+      const sizeClass = "size-" + (ov.size || "md");
+      const colorStyle = ov.type === "text" ? `color:${ov.color || "#FFD84D"};` : "";
+      const captionClass = ov.caption ? " media-overlay-caption media-overlay-caption-" + (ov.captionStyle || "classic") : "";
+      return `<div class="media-overlay-item ${ov.type === "sticker" ? "sticker" : "text"} ${sizeClass}${captionClass}" style="left:${ov.xPct}%;top:${ov.yPct}%;${colorStyle}">${escapeHtml(ov.value || "")}</div>`;
+    })
+    .join("");
+  // Task: tagged products (from the Moment editor's "Tag products" screen)
+  // show as a small row of tappable pills rather than a floating pin - no
+  // placement coordinates are collected in that screen, so a pin position
+  // would just be a guess.
+  const productsHtml = products.length
+    ? `<div class="media-overlay-products">${products
+        .map((p) => `<a class="media-overlay-product-pill" href="#/products/${encodeURIComponent(p.productId)}">&#127991;&#65039; ${escapeHtml(p.value || "")}</a>`)
+        .join("")}</div>`
+    : "";
+  // Voice-over: a hidden <audio> element, played in sync with the video by
+  // wireMomentVoiceoverSync() (called only where sound-on autoplay is
+  // expected, i.e. the full-screen moment viewer - not the muted/looping
+  // inline feed card, where autoplaying audio-with-sound would be jarring
+  // and browsers block it anyway).
+  const voiceoverHtml = voiceover ? `<audio class="media-overlay-voiceover" src="${voiceover.value}" preload="auto" loop></audio>` : "";
+  return `<div class="media-overlay-layer">${itemsHtml}${productsHtml}${voiceoverHtml}</div>`;
+}
+
+// Keeps a moment's voice-over <audio> element (see renderMediaOverlayLayer())
+// in rough sync with its <video> sibling: play/pause together, and re-seek
+// on manual scrubbing. Deliberately simple (no sample-accurate sync) - this
+// is a lightweight companion track, not a mixed-down audio master.
+function wireMomentVoiceoverSync(wrapEl) {
+  if (!wrapEl) return;
+  const video = wrapEl.querySelector("video");
+  const audio = wrapEl.querySelector(".media-overlay-voiceover");
+  if (!video || !audio) return;
+  audio.volume = 0.9;
+  video.addEventListener("play", () => {
+    try { audio.currentTime = video.currentTime; } catch (e) {}
+    audio.play().catch(() => {});
+  });
+  video.addEventListener("pause", () => audio.pause());
+  video.addEventListener("seeked", () => {
+    try { audio.currentTime = video.currentTime; } catch (e) {}
+  });
 }
 
 function feedMomentCardHtml(m) {
@@ -882,7 +1606,7 @@ function feedMomentCardHtml(m) {
       <div class="feed-moment-media-wrap">
         ${
           m.mediaType === "video"
-            ? `<video class="feed-moment-media" src="${m.mediaUrl}" muted loop playsinline autoplay></video>`
+            ? `<video class="feed-moment-media" src="${m.mediaUrl}" muted loop playsinline autoplay></video>${renderMediaOverlayLayer(m.overlays)}`
             : `<img class="feed-moment-media" src="${m.mediaUrl}" />`
         }
         <div class="feed-moment-actions">
@@ -908,18 +1632,35 @@ function renderHomeFeedPosts(groups) {
   const items = buildHomeFeedItems(groups);
   homeFeedMomentsList = items;
   if (!items.length) {
-    el.innerHTML = "";
-    el.style.display = "none";
+    // A brand-new account with zero friends used to just make this whole
+    // section vanish, leaving Home looking blank/broken on first login.
+    // Show a friendly prompt with somewhere useful to go instead.
+    el.style.display = "flex";
+    el.innerHTML = `
+      <div class="empty-state home-feed-empty">
+        <p>${I18N.t("home.feedEmpty")}</p>
+        <div class="home-feed-empty-actions">
+          <a href="#/friends" class="btn btn-secondary">${I18N.t("home.feedEmptyFindPeople")}</a>
+          <a href="#/marketplace" class="btn btn-secondary">${I18N.t("home.feedEmptyBrowse")}</a>
+        </div>
+      </div>
+    `;
     return;
   }
   el.style.display = "flex";
   el.innerHTML = items.map(feedMomentCardHtml).join("");
+  items.forEach((m) => {
+    if (m.mediaType !== "video") return;
+    const card = el.querySelector('[data-moment-id="' + m.id + '"]');
+    const vid = card && card.querySelector(".feed-moment-media");
+    wireMomentTrimLoop(vid, m);
+  });
   wireHomeFeedPostsDelegation();
 }
 
 // Single delegated listener (wired once, survives re-renders since the
 // container itself is never replaced) so we don't need per-card unique ids
-// the way the single-instance Stories/Shorts overlays do.
+// the way the single-instance Stories/Clips overlays do.
 function wireHomeFeedPostsDelegation() {
   const el = document.getElementById("home-feed-posts");
   if (!el || el.dataset.wired === "1") return;
@@ -1049,26 +1790,8 @@ async function loadAdCarousel() {
 
 // ---------------- Category listing ----------------
 
-async function renderCategory(slug, query) {
-  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
-
-  const params = new URLSearchParams();
-  if (slug !== "all") params.set("category", slug);
-  if (query.q) params.set("q", query.q);
-  if (query.country) params.set("country", query.country);
-  if (query.state) params.set("state", query.state);
-  if (query.city) params.set("city", query.city);
-  if (query.minPrice) params.set("minPrice", query.minPrice);
-  if (query.maxPrice) params.set("maxPrice", query.maxPrice);
-  if (query.sort) params.set("sort", query.sort);
-
-  const products = await api("/api/products?" + params.toString());
-  const heading = slug === "all" ? (query.q || "") : I18N.categoryName(slug);
-
-  const cards = products.length
-    ? products
-        .map(
-          (p) => `
+function productCardHtml(p) {
+  return `
       <a class="product-card" href="#/product/${p.id}">
         <div class="product-thumb-wrap">
           ${
@@ -1088,10 +1811,26 @@ async function renderCategory(slug, query) {
             ${ratingMarkup(p.sellerRating)}
           </div>
         </div>
-      </a>`
-        )
-        .join("")
-    : `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
+      </a>`;
+}
+
+async function renderCategory(slug, query) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  const params = new URLSearchParams();
+  if (slug !== "all") params.set("category", slug);
+  if (query.q) params.set("q", query.q);
+  if (query.country) params.set("country", query.country);
+  if (query.state) params.set("state", query.state);
+  if (query.city) params.set("city", query.city);
+  if (query.minPrice) params.set("minPrice", query.minPrice);
+  if (query.maxPrice) params.set("maxPrice", query.maxPrice);
+  if (query.sort) params.set("sort", query.sort);
+
+  const products = await api("/api/products?" + params.toString());
+  const heading = slug === "all" ? (query.q || "") : I18N.categoryName(slug);
+
+  const cards = products.length ? products.map(productCardHtml).join("") : `<div class="empty-state">${I18N.t("category.noResults")}</div>`;
 
   viewEl.innerHTML = `
     <a class="back-link" href="#/">&larr; ${I18N.t("category.back")}</a>
@@ -1180,6 +1919,15 @@ async function renderProductDetail(id) {
                 </button>`
           }
         </div>
+        ${
+          !isOwnerOfListing && p.sellerPaymentsReady
+            ? `<p class="detail-shipping-note">${
+                p.liveShippingEnabled
+                  ? I18N.t("product.plusShippingNoteLive")
+                  : I18N.t("product.plusShippingNote").replace("{fee}", fmtPrice(SHIPPING_FLAT_FEE_DISPLAY))
+              }</p>`
+            : ""
+        }
         <div class="detail-meta">\u{1F4CD} ${escapeHtml(locationLabel(p)) || "-"} &middot; ${fmtDate(p.createdAt)}</div>
         <div>
           <span class="badge">${escapeHtml(I18N.categoryName(p.category))}</span>
@@ -1220,7 +1968,19 @@ async function renderProductDetail(id) {
         }
       </div>
     </div>
+    <div id="product-related-videos"></div>
   `;
+
+  // "Related videos" (task #231) - fetched separately after the main
+  // product paint so a slow/failed videos lookup never blocks or breaks the
+  // product page itself; the container simply stays empty (no section
+  // rendered at all) if there are none, per the feature's own spec.
+  api("/api/videos/by-product/" + id)
+    .then((videos) => {
+      const el = document.getElementById("product-related-videos");
+      if (el && videos && videos.length) el.innerHTML = relatedVideosStripHtml(videos);
+    })
+    .catch(() => {});
 
   document.querySelectorAll(".gallery-thumbs img").forEach((img) => {
     img.addEventListener("click", () => {
@@ -1284,9 +2044,39 @@ async function renderProductDetail(id) {
   }
 }
 
+// Keep in sync with SHIPPING_FLAT_FEE in server.js (task #313) - shown here
+// only for display (a calm, small-text note next to the price), the real
+// charge always comes from the server's own Stripe line item so this number
+// being briefly stale on the client would never let anyone pay the wrong
+// amount, just show an inaccurate preview until the page is refreshed.
+const SHIPPING_FLAT_FEE_DISPLAY = 4.99;
+
 function renderProductActions(p) {
   if (!state.token) {
     return `<p class="form-msg" style="margin-top:14px;">${I18N.t("product.loginToOffer")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+  }
+  // Fix (2026-09 technical review): once a listing is no longer "active"
+  // (someone else already paid for it, is mid-checkout, or the seller marked
+  // it sold/reserved), never show a working buy button - the backend already
+  // rejects the purchase, but showing a live "Pay Now" button anyway just
+  // invites a confusing failed-payment attempt.
+  if (p.status && p.status !== "active") {
+    return `<p class="form-msg" style="margin-top:14px;">${I18N.t("product.noLongerAvailable")}</p>`;
+  }
+  // Task #58/#127 - real, protected checkout. Only offered once the seller
+  // has finished Stripe onboarding (sellerPaymentsReady); otherwise this
+  // falls back to the old "express interest" flow so browsing/negotiating
+  // never breaks for listings from sellers who haven't set payments up yet.
+  if (p.sellerPaymentsReady) {
+    return `
+      <div class="action-row">
+        <a class="btn btn-outline" href="#/messages/${p.sellerId}">${I18N.t("product.contactSeller")}</a>
+        ${p.allowOffers ? `<button class="btn btn-outline" id="btn-offer">${I18N.t("product.makeOffer")}</button>` : ""}
+        <button class="btn btn-gold" id="btn-pay-now">${I18N.t("product.payNow")}</button>
+      </div>
+      <p class="buy-safety-note">${I18N.t("product.escrowSafetyNote")}</p>
+      ${stripeInlineBadgeHtml()}
+    `;
   }
   return `
     <div class="action-row">
@@ -1294,6 +2084,8 @@ function renderProductActions(p) {
       ${p.allowOffers ? `<button class="btn btn-outline" id="btn-offer">${I18N.t("product.makeOffer")}</button>` : ""}
       <button class="btn btn-gold" id="btn-buy">${I18N.t("product.buyNow")}</button>
     </div>
+    <p class="buy-safety-note">${I18N.t("product.buySafetyNote")}</p>
+    <p class="buy-safety-note">${I18N.t("product.sellerNotPaymentsReady")}</p>
   `;
 }
 
@@ -1342,6 +2134,701 @@ function wireProductActions(p) {
       }
     });
   }
+
+  const btnPayNow = document.getElementById("btn-pay-now");
+  if (btnPayNow) {
+    btnPayNow.addEventListener("click", () => {
+      if (p.liveShippingEnabled) {
+        openShippingCheckoutOverlay(p);
+      } else {
+        goToPlainCheckout(p, btnPayNow, offerArea);
+      }
+    });
+  }
+}
+
+// Old flat-fee checkout path (task #313, before live rates) - still used as
+// the fallback whenever live carrier rates aren't available: EASYPOST_API_KEY
+// not configured yet, the seller hasn't added a ship-from address, or the
+// live rate lookup itself failed for any reason. Stripe's own hosted page
+// collects the buyer's address in this path, same as before.
+async function goToPlainCheckout(p, btnPayNow, offerArea) {
+  btnPayNow.disabled = true;
+  btnPayNow.textContent = I18N.t("product.redirectingToCheckout");
+  try {
+    const data = await api("/api/orders", { method: "POST", auth: true, body: { productId: p.id } });
+    window.location.href = data.checkoutUrl;
+  } catch (e) {
+    btnPayNow.disabled = false;
+    btnPayNow.textContent = I18N.t("product.payNow");
+    offerArea.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// Task #313 phase 2, per Carlos's decision 2026-08-24: buyer picks their own
+// real shipping address, sees live carrier options (USPS/UPS/FedEx/...) each
+// already including HieloIce's disclosed commission, and picks freely. Falls
+// back to the old single-fee flow (goToPlainCheckout above) the moment
+// anything about live rates doesn't pan out, so checkout never gets stuck.
+function openShippingCheckoutOverlay(p) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box shipping-checkout-box">
+      <h2 class="section-heading">${I18N.t("orders.chooseShippingHeading")}</h2>
+      <form id="shipping-address-form">
+        <div class="form-group">
+          <label>${I18N.t("orders.shipToNameLabel")}</label>
+          <input type="text" id="ship-to-name" value="${escapeHtml((state.user && state.user.name) || "")}" required />
+        </div>
+        <div class="form-group">
+          <label>${I18N.t("orders.shipLine1Placeholder")}</label>
+          <input type="text" id="ship-to-line1" required />
+        </div>
+        <div class="form-group">
+          <label>${I18N.t("orders.shipLine2Placeholder")}</label>
+          <input type="text" id="ship-to-line2" />
+        </div>
+        <div class="form-row-split">
+          <div class="form-group">
+            <label>${I18N.t("orders.shipCityPlaceholder")}</label>
+            <input type="text" id="ship-to-city" required />
+          </div>
+          <div class="form-group">
+            <label>${I18N.t("orders.shipStatePlaceholder")}</label>
+            <input type="text" id="ship-to-state" />
+          </div>
+        </div>
+        <div class="form-row-split">
+          <div class="form-group">
+            <label>${I18N.t("orders.shipPostalPlaceholder")}</label>
+            <input type="text" id="ship-to-postal" required />
+          </div>
+          <div class="form-group">
+            <label>${I18N.t("orders.shipCountryPlaceholder")}</label>
+            <input type="text" id="ship-to-country" maxlength="2" value="US" required />
+          </div>
+        </div>
+        <div class="action-row">
+          <button type="submit" class="btn btn-gold" id="ship-rates-continue">${I18N.t("orders.seeShippingOptions")}</button>
+          <button type="button" class="btn btn-secondary" id="ship-rates-cancel">${I18N.t("common.cancel")}</button>
+        </div>
+        <p class="form-msg" id="shipping-checkout-msg"></p>
+      </form>
+      <div id="shipping-rates-list" style="display:none;"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.getElementById("ship-rates-cancel").addEventListener("click", () => overlay.remove());
+
+  document.getElementById("shipping-address-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msgEl = document.getElementById("shipping-checkout-msg");
+    const continueBtn = document.getElementById("ship-rates-continue");
+    const address = {
+      name: document.getElementById("ship-to-name").value.trim(),
+      line1: document.getElementById("ship-to-line1").value.trim(),
+      line2: document.getElementById("ship-to-line2").value.trim(),
+      city: document.getElementById("ship-to-city").value.trim(),
+      state: document.getElementById("ship-to-state").value.trim(),
+      postalCode: document.getElementById("ship-to-postal").value.trim(),
+      country: document.getElementById("ship-to-country").value.trim().toUpperCase(),
+    };
+    continueBtn.disabled = true;
+    msgEl.textContent = I18N.t("orders.lookingUpRates");
+    msgEl.className = "form-msg";
+    try {
+      const res = await api("/api/orders/shipping-rates", { method: "POST", auth: true, body: { productId: p.id, address } });
+      if (!res.configured || !res.rates || !res.rates.length) {
+        // No live rates available for this address/seller right now - fall
+        // back to the old flow rather than leaving the buyer stuck.
+        overlay.remove();
+        const data = await api("/api/orders", { method: "POST", auth: true, body: { productId: p.id } });
+        window.location.href = data.checkoutUrl;
+        return;
+      }
+      renderShippingRatesList(overlay, p, address, res.shipmentId, res.rates);
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+      continueBtn.disabled = false;
+    }
+  });
+}
+
+function renderShippingRatesList(overlay, p, address, shipmentId, rates) {
+  const formEl = overlay.querySelector("#shipping-address-form");
+  const listEl = overlay.querySelector("#shipping-rates-list");
+  formEl.style.display = "none";
+  listEl.style.display = "block";
+  listEl.innerHTML = `
+    <p class="buy-safety-note" style="margin-bottom:10px;">${I18N.t("orders.shippingRatesHint")}</p>
+    ${rates
+      .map(
+        (r, i) => `
+      <label class="shipping-rate-option">
+        <input type="radio" name="shipping-rate" value="${escapeHtml(r.id)}" ${i === 0 ? "checked" : ""} />
+        <span class="shipping-rate-carrier">${escapeHtml(r.carrier)} ${escapeHtml(r.service)}</span>
+        <span class="shipping-rate-days">${r.deliveryDays ? I18N.t("orders.deliveryDays").replace("{days}", r.deliveryDays) : ""}</span>
+        <span class="shipping-rate-price">${fmtPrice(r.price)}</span>
+      </label>
+    `
+      )
+      .join("")}
+    <div class="action-row" style="margin-top:14px;">
+      <button type="button" class="btn btn-gold" id="ship-rate-confirm">${I18N.t("product.payNow")}</button>
+      <button type="button" class="btn btn-secondary" id="ship-rate-back">${I18N.t("common.back")}</button>
+    </div>
+    <p class="form-msg" id="shipping-rate-msg"></p>
+  `;
+  overlay.querySelector("#ship-rate-back").addEventListener("click", () => {
+    listEl.style.display = "none";
+    formEl.style.display = "block";
+    document.getElementById("ship-rates-continue").disabled = false;
+  });
+  overlay.querySelector("#ship-rate-confirm").addEventListener("click", async () => {
+    const confirmBtn = overlay.querySelector("#ship-rate-confirm");
+    const msgEl = overlay.querySelector("#shipping-rate-msg");
+    const chosen = overlay.querySelector('input[name="shipping-rate"]:checked');
+    if (!chosen) return;
+    confirmBtn.disabled = true;
+    msgEl.textContent = I18N.t("product.redirectingToCheckout");
+    msgEl.className = "form-msg";
+    try {
+      const data = await api("/api/orders", {
+        method: "POST",
+        auth: true,
+        body: { productId: p.id, shipmentId, rateId: chosen.value, address },
+      });
+      window.location.href = data.checkoutUrl;
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+      confirmBtn.disabled = false;
+    }
+  });
+}
+
+// ---------------- Orders (task #58/#127 - real payments, buyer protection) ----------------
+
+function orderStatusLabel(status) {
+  return I18N.t("orders.status." + status) || status;
+}
+
+function orderStatusBadgeClass(status) {
+  if (status === "released") return "badge";
+  if (status === "disputed") return "badge no";
+  if (status === "refunded") return "badge no";
+  return "badge";
+}
+
+async function renderOrdersList() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `<h2 class="section-heading">${I18N.t("orders.myOrders")}</h2><p>${I18N.t("common.loading")}</p>`;
+  let orders;
+  try {
+    orders = await api("/api/orders/mine", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!orders.length) {
+    viewEl.innerHTML = `<h2 class="section-heading">${I18N.t("orders.myOrders")}</h2><p class="form-msg">${I18N.t("orders.empty")}</p>`;
+    return;
+  }
+  viewEl.innerHTML = `
+    <h2 class="section-heading">${I18N.t("orders.myOrders")}</h2>
+    <div class="order-list">
+      ${orders
+        .map(
+          (o) => `
+        <a class="order-row" href="#/orders/${o.id}">
+          ${o.productPhoto ? `<img src="${o.productPhoto}" class="order-row-thumb" />` : `<div class="order-row-thumb-empty">\u{1F4E6}</div>`}
+          <div class="order-row-info">
+            <div class="order-row-title">${escapeHtml(o.productTitle)}</div>
+            <div class="order-row-meta">${o.role === "buyer" ? I18N.t("orders.roleBuyer") : I18N.t("orders.roleSeller")} &middot; ${fmtPrice(o.amount)}</div>
+          </div>
+          <span class="${orderStatusBadgeClass(o.status)}">${orderStatusLabel(o.status)}</span>
+        </a>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+async function renderOrderDetail(id) {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let o;
+  try {
+    o = await api("/api/orders/" + id, { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const steps = ["paid_held", "shipped", "released"];
+  const timelineHtml = `
+    <div class="order-timeline">
+      ${steps
+        .map((s, i) => {
+          const passed = steps.indexOf(o.status) >= i || o.status === "released";
+          const isDisputedOrRefunded = o.status === "disputed" || o.status === "refunded";
+          return `<div class="order-step ${passed && !isDisputedOrRefunded ? "done" : ""}">
+            <span class="order-step-dot"></span>
+            <span class="order-step-label">${I18N.t("orders.step." + s)}</span>
+          </div>`;
+        })
+        .join("")}
+    </div>
+  `;
+
+  // Task #312 - basic shipping: address + tracking. The buyer's address was
+  // collected by Stripe's own hosted checkout page and only exists on the
+  // order once payment clears, so this block naturally stays hidden until
+  // then. Shown to both sides: the seller needs it to actually mail the
+  // book, and the buyer gets a chance to notice a typo early.
+  const shippingHtml = o.shippingAddress
+    ? `<div class="order-shipping-block">
+        <h3 class="order-shipping-heading">${I18N.t("orders.shipToHeading")}</h3>
+        <p class="order-shipping-address">
+          ${o.shippingAddress.name ? escapeHtml(o.shippingAddress.name) + "<br>" : ""}
+          ${escapeHtml(o.shippingAddress.line1 || "")}<br>
+          ${o.shippingAddress.line2 ? escapeHtml(o.shippingAddress.line2) + "<br>" : ""}
+          ${escapeHtml([o.shippingAddress.city, o.shippingAddress.state, o.shippingAddress.postalCode].filter(Boolean).join(", "))}<br>
+          ${escapeHtml(o.shippingAddress.country || "")}
+        </p>
+      </div>`
+    : "";
+  const trackingHtml = o.trackingNumber || o.trackingCarrier
+    ? `<div class="order-shipping-block">
+        <h3 class="order-shipping-heading">${I18N.t("orders.trackingHeading")}</h3>
+        <p class="order-shipping-address">${o.trackingCarrier ? escapeHtml(o.trackingCarrier) + " &mdash; " : ""}${escapeHtml(o.trackingNumber || "")}</p>
+        ${o.role === "seller" && o.labelUrl ? `<a class="btn btn-outline" style="margin-top:10px;" href="${escapeHtml(o.labelUrl)}" target="_blank" rel="noopener">${I18N.t("orders.downloadLabel")}</a>` : ""}
+      </div>`
+    : "";
+
+  let actionHtml = "";
+  if (o.role === "seller" && o.status === "paid_held") {
+    // Task #313 phase 2: if EasyPost already auto-purchased a label and
+    // tracking number (see trackingHtml/labelUrl above), there's nothing
+    // left to type - just confirm the book actually went out. Only sellers
+    // without a live label yet (EasyPost not configured, or the buyer went
+    // through the old flat-fee flow) see the manual entry fields.
+    if (o.trackingNumber) {
+      actionHtml = `
+        <div class="order-ship-form">
+          <p class="buy-safety-note">${I18N.t("orders.labelReadyHint")}</p>
+          <button class="btn btn-gold" id="order-ship-btn">${I18N.t("orders.markShipped")}</button>
+        </div>
+      `;
+    } else {
+      actionHtml = `
+        <div class="order-ship-form">
+          <div class="form-group">
+            <label>${I18N.t("orders.trackingCarrierLabel")}</label>
+            <input type="text" id="order-tracking-carrier" placeholder="${escapeHtml(I18N.t("orders.trackingCarrierPlaceholder"))}" />
+          </div>
+          <div class="form-group">
+            <label>${I18N.t("orders.trackingNumberLabel")}</label>
+            <input type="text" id="order-tracking-number" placeholder="${escapeHtml(I18N.t("orders.trackingNumberPlaceholder"))}" />
+          </div>
+          <p class="buy-safety-note">${I18N.t("orders.trackingHint")}</p>
+          <button class="btn btn-gold" id="order-ship-btn">${I18N.t("orders.markShipped")}</button>
+        </div>
+      `;
+    }
+  } else if (o.role === "buyer" && o.status === "shipped") {
+    actionHtml = `
+      <button class="btn btn-gold" id="order-confirm-btn">${I18N.t("orders.confirmArrival")}</button>
+      <button class="btn btn-outline" id="order-dispute-btn">${I18N.t("orders.reportProblem")}</button>
+      <p class="buy-safety-note">${I18N.t("orders.autoReleaseNote")}</p>
+    `;
+  } else if (o.status === "disputed") {
+    actionHtml = `<p class="form-msg">${I18N.t("orders.disputeUnderReview")}</p>`;
+  } else if (o.status === "released") {
+    actionHtml = `<p class="form-msg ok">${I18N.t("orders.releasedNote")}</p>`;
+  } else if (o.status === "refunded") {
+    actionHtml = `<p class="form-msg">${I18N.t("orders.refundedNote")}</p>`;
+  } else if (o.status === "pending_payment") {
+    actionHtml = `<p class="form-msg">${I18N.t("orders.pendingPaymentNote")}</p>`;
+  }
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/orders">&larr; ${I18N.t("orders.myOrders")}</a>
+    <div class="form-panel">
+      <h2 class="section-heading">${escapeHtml(o.productTitle || "")}</h2>
+      <span class="${orderStatusBadgeClass(o.status)}">${orderStatusLabel(o.status)}</span>
+      ${timelineHtml}
+      <p style="margin-top:14px;">${I18N.t("orders.amountLabel")}: ${fmtPrice(o.amount)}</p>
+      ${o.shippingFee ? `<p>${I18N.t("orders.shippingFeeLabel")}: ${fmtPrice(o.shippingFee)}</p>` : ""}
+      ${o.shippingFee ? `<p><strong>${I18N.t("orders.totalPaidLabel")}: ${fmtPrice(o.amount + o.shippingFee)}</strong></p>` : ""}
+      ${o.role === "seller" ? `<p>${I18N.t("orders.payoutLabel")}: ${fmtPrice(o.sellerPayout)}</p>` : ""}
+      ${shippingHtml}
+      ${trackingHtml}
+      <div id="order-action-area" class="action-row" style="margin-top:16px;">${actionHtml}</div>
+      <div id="order-dispute-form"></div>
+      <p id="order-msg" class="form-msg"></p>
+      ${stripeInlineBadgeHtml()}
+    </div>
+  `;
+
+  const msgEl = document.getElementById("order-msg");
+  const shipBtn = document.getElementById("order-ship-btn");
+  if (shipBtn) {
+    shipBtn.addEventListener("click", async () => {
+      try {
+        const carrierEl = document.getElementById("order-tracking-carrier");
+        const numberEl = document.getElementById("order-tracking-number");
+        await api("/api/orders/" + o.id + "/ship", {
+          method: "POST",
+          auth: true,
+          body: {
+            trackingCarrier: carrierEl ? carrierEl.value.trim() : "",
+            trackingNumber: numberEl ? numberEl.value.trim() : "",
+          },
+        });
+        router();
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+  const confirmBtn = document.getElementById("order-confirm-btn");
+  if (confirmBtn) {
+    confirmBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("orders.confirmArrivalPrompt"))) return;
+      try {
+        await api("/api/orders/" + o.id + "/confirm", { method: "POST", auth: true, body: {} });
+        router();
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+  const disputeBtn = document.getElementById("order-dispute-btn");
+  if (disputeBtn) {
+    disputeBtn.addEventListener("click", () => {
+      document.getElementById("order-dispute-form").innerHTML = `
+        <div class="form-group" style="margin-top:14px;">
+          <label>${I18N.t("orders.disputeReasonLabel")}</label>
+          <textarea id="dispute-reason" rows="3"></textarea>
+        </div>
+        <button class="btn btn-danger" id="dispute-submit-btn">${I18N.t("orders.submitDispute")}</button>
+      `;
+      document.getElementById("dispute-submit-btn").addEventListener("click", async () => {
+        const reason = document.getElementById("dispute-reason").value;
+        try {
+          await api("/api/orders/" + o.id + "/dispute", { method: "POST", auth: true, body: { reason } });
+          router();
+        } catch (e) {
+          msgEl.textContent = e.message;
+          msgEl.className = "form-msg error";
+        }
+      });
+    });
+  }
+}
+
+// ---------------- Classics (public-domain library, Phase 1: browsing only)
+// ----------------
+// Books come from Project Gutenberg's public-domain catalog. Per Carlos's
+// instruction this is connected "silently" - the source is never surfaced
+// in the UI copy - and no price/buy button appears yet, since real pricing
+// only gets wired once the live Lulu print-cost calculation (Phase 2) is
+// built and verified. Showing a wrong price is worse than showing none.
+const CLASSICS_CATEGORIES = [
+  "fiction_classics",
+  "world_literature",
+  "adventure_scifi",
+  "mystery_adventure",
+  "childrens",
+  "philosophy",
+  "history_ideas",
+  "poetry_drama",
+];
+
+function classicCategoryLabel(cat) {
+  return I18N.t("classics.category." + cat) || cat;
+}
+
+// Original, HieloIce-owned cover art (task: Carlos wants covers with zero
+// copyright ambiguity - Gutenberg's own cover thumbnails couldn't be
+// guaranteed 100% clear of any rights, so instead of using an external
+// image at all, every classic gets a generated typographic cover: just
+// title + author on a category-tinted background, drawn as inline SVG.
+// Nothing here is downloaded from anywhere - it's built from plain text,
+// so there is nothing to have a copyright dispute about.
+// Each theme is a soft top-to-bottom "night sky" gradient (tinted per
+// category) plus one accent color used for the border, icon, stars and
+// text - this is what gives the covers an elegant, of-their-era, dreamy
+// feel (Carlos's request: "elegantes, acorde a su epoca, invitar a sonar
+// y volar e imaginar") while staying 100% hand-drawn, zero external images.
+const CLASSICS_COVER_THEMES = {
+  fiction_classics: { top: "#6b2f37", bottom: "#241014", accent: "#f4d9a0" },
+  world_literature: { top: "#274a6b", bottom: "#0e1c2e", accent: "#f0e3c0" },
+  adventure_scifi: { top: "#1f5c54", bottom: "#0b2521", accent: "#eee7c8" },
+  mystery_adventure: { top: "#2c2c52", bottom: "#111122", accent: "#e6dfc4" },
+  childrens: { top: "#8a6a1c", bottom: "#382a08", accent: "#fff3d0" },
+  philosophy: { top: "#4a3068", bottom: "#1c132c", accent: "#e9dcf5" },
+  history_ideas: { top: "#33543f", bottom: "#112016", accent: "#e6ecd8" },
+  poetry_drama: { top: "#5c2648", bottom: "#230e1d", accent: "#f4d9e6" },
+};
+
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h << 5) - h + s.charCodeAt(i);
+    h |= 0;
+  }
+  return h;
+}
+
+// A small hand-drawn emblem per category - each one points at the same
+// idea (dreaming, soaring, imagining) through a motif that fits the
+// category: a crescent moon for classic fiction, a compass/globe for
+// world literature, a ship under the stars for adventure & sci-fi, a
+// lantern for mystery, a hot-air balloon for children's, an owl for
+// philosophy, a laurel wreath for history, a quill for poetry & drama.
+function classicCoverIcon(category, accent) {
+  switch (category) {
+    case "fiction_classics":
+      return `<path d="M108 45a12 12 0 1 0 0 24 9 9 0 1 1 0-24" fill="${accent}" opacity="0.9"/>
+        <circle cx="82" cy="38" r="1.3" fill="${accent}"/>
+        <circle cx="128" cy="52" r="1" fill="${accent}"/>
+        <circle cx="92" cy="60" r="0.8" fill="${accent}"/>`;
+    case "world_literature":
+      return `<circle cx="100" cy="49" r="15" fill="none" stroke="${accent}" stroke-width="1"/>
+        <ellipse cx="100" cy="49" rx="15" ry="6" fill="none" stroke="${accent}" stroke-width="0.7"/>
+        <ellipse cx="100" cy="49" rx="6.5" ry="15" fill="none" stroke="${accent}" stroke-width="0.7"/>
+        <line x1="100" y1="34" x2="100" y2="64" stroke="${accent}" stroke-width="0.7"/>
+        <circle cx="122" cy="34" r="1.2" fill="${accent}"/>`;
+    case "adventure_scifi":
+      return `<path d="M100 33 L100 58" stroke="${accent}" stroke-width="1"/>
+        <path d="M100 35 L116 55 L100 55 Z" fill="${accent}" opacity="0.85"/>
+        <path d="M100 40 L87 55 L100 55 Z" fill="${accent}" opacity="0.6"/>
+        <path d="M80 60 Q100 68 120 60 L116 64 Q100 71 84 64 Z" fill="${accent}"/>
+        <circle cx="131" cy="29" r="1" fill="${accent}"/>
+        <circle cx="71" cy="34" r="0.8" fill="${accent}"/>`;
+    case "mystery_adventure":
+      return `<circle cx="113" cy="39" r="9" fill="none" stroke="${accent}" stroke-width="0.7" opacity="0.55"/>
+        <rect x="92" y="45" width="14" height="17" rx="2" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M95 45 Q99 39 103 45" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="99" cy="53" r="1.8" fill="${accent}"/>`;
+    case "childrens":
+      return `<ellipse cx="100" cy="44" rx="11" ry="14" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M91 56 L94 64 L106 64 L109 56" fill="none" stroke="${accent}" stroke-width="1"/>
+        <rect x="96" y="64" width="8" height="5" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="76" cy="35" r="1.2" fill="${accent}"/>
+        <circle cx="125" cy="41" r="1" fill="${accent}"/>
+        <circle cx="118" cy="23" r="0.8" fill="${accent}"/>`;
+    case "philosophy":
+      return `<circle cx="92" cy="47" r="7.5" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="108" cy="47" r="7.5" fill="none" stroke="${accent}" stroke-width="1"/>
+        <circle cx="92" cy="47" r="2.2" fill="${accent}"/>
+        <circle cx="108" cy="47" r="2.2" fill="${accent}"/>
+        <path d="M96 54 L100 60 L104 54" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M83 39 Q92 32 97 38" fill="none" stroke="${accent}" stroke-width="0.8"/>
+        <path d="M103 38 Q108 32 117 39" fill="none" stroke="${accent}" stroke-width="0.8"/>`;
+    case "history_ideas":
+      return `<path d="M84 60 Q78 44 90 32" fill="none" stroke="${accent}" stroke-width="1"/>
+        <path d="M116 60 Q122 44 110 32" fill="none" stroke="${accent}" stroke-width="1"/>
+        <ellipse cx="87" cy="41" rx="3" ry="1.6" fill="${accent}" transform="rotate(-30 87 41)"/>
+        <ellipse cx="82" cy="52" rx="3" ry="1.6" fill="${accent}" transform="rotate(-15 82 52)"/>
+        <ellipse cx="113" cy="41" rx="3" ry="1.6" fill="${accent}" transform="rotate(30 113 41)"/>
+        <ellipse cx="118" cy="52" rx="3" ry="1.6" fill="${accent}" transform="rotate(15 118 52)"/>`;
+    case "poetry_drama":
+      return `<path d="M90 62 Q99 29 116 32 Q103 38 99 50 Q107 46 111 38" fill="none" stroke="${accent}" stroke-width="1.1"/>
+        <circle cx="89" cy="64" r="1.4" fill="${accent}"/>`;
+    default:
+      return `<circle cx="100" cy="47" r="10" fill="none" stroke="${accent}" stroke-width="1"/>`;
+  }
+}
+
+function wrapCoverText(text, maxCharsPerLine, maxLines) {
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let current = "";
+  for (const w of words) {
+    const candidate = current ? current + " " + w : w;
+    if (candidate.length > maxCharsPerLine && current) {
+      lines.push(current);
+      current = w;
+    } else {
+      current = candidate;
+    }
+    if (lines.length === maxLines - 1) {
+      // last line gets whatever remains, truncated with an ellipsis if long
+      break;
+    }
+  }
+  const usedWords = lines.join(" ").split(/\s+/).filter(Boolean).length;
+  const remaining = words.slice(usedWords).join(" ");
+  if (remaining) {
+    lines.push(remaining.length > maxCharsPerLine + 3 ? remaining.slice(0, maxCharsPerLine) + "…" : remaining);
+  } else if (current && lines[lines.length - 1] !== current) {
+    lines.push(current);
+  }
+  return lines.slice(0, maxLines);
+}
+
+function classicCoverSvg(title, author, category) {
+  const theme = CLASSICS_COVER_THEMES[category] || CLASSICS_COVER_THEMES.fiction_classics;
+  const uid = "cvr" + Math.abs(hashStr(title + "|" + author)).toString(36);
+  const titleLines = wrapCoverText(title, 16, 4);
+  const titleStartY = 100;
+  const titleTspans = titleLines
+    .map((line, i) => `<tspan x="100" y="${titleStartY + i * 22}">${escapeHtml(line)}</tspan>`)
+    .join("");
+  const authorStartY = titleStartY + titleLines.length * 22 + 18;
+  const authorLines = wrapCoverText(author.toUpperCase(), 24, 2);
+  const authorTspans = authorLines
+    .map((line, i) => `<tspan x="100" y="${authorStartY + i * 16}">${escapeHtml(line)}</tspan>`)
+    .join("");
+  // A quiet scattered night sky - the same idea ("soar, dream, imagine")
+  // running underneath every category, regardless of its accent color.
+  const stars = [
+    [26, 26, 1.3, 0.85], [172, 32, 1, 0.7], [48, 18, 0.8, 0.6], [152, 20, 1.1, 0.75],
+    [20, 84, 0.7, 0.5], [180, 96, 0.9, 0.6], [16, 130, 0.6, 0.4], [186, 150, 0.85, 0.55],
+    [34, 258, 0.7, 0.45], [166, 268, 0.9, 0.5],
+  ]
+    .map(([x, y, r, o]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${theme.accent}" opacity="${o}"/>`)
+    .join("");
+  const dividerY = 78;
+  return `<svg viewBox="0 0 200 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHtml(title)}">
+    <defs>
+      <linearGradient id="${uid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${theme.top}" />
+        <stop offset="100%" stop-color="${theme.bottom}" />
+      </linearGradient>
+    </defs>
+    <rect width="200" height="300" fill="url(#${uid})" />
+    ${stars}
+    <rect x="9" y="9" width="182" height="282" fill="none" stroke="${theme.accent}" stroke-width="1" opacity="0.9" />
+    <rect x="13" y="13" width="174" height="274" fill="none" stroke="${theme.accent}" stroke-width="0.5" opacity="0.45" />
+    <path d="M9 24 L9 9 L24 9" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    <path d="M176 9 L191 9 L191 24" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    <path d="M9 276 L9 291 L24 291" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    <path d="M191 276 L191 291 L176 291" fill="none" stroke="${theme.accent}" stroke-width="1.2"/>
+    ${classicCoverIcon(category, theme.accent)}
+    <g opacity="0.85">
+      <line x1="68" y1="${dividerY}" x2="88" y2="${dividerY}" stroke="${theme.accent}" stroke-width="0.8"/>
+      <rect x="97" y="${dividerY - 3}" width="6" height="6" fill="${theme.accent}" transform="rotate(45 100 ${dividerY})"/>
+      <line x1="112" y1="${dividerY}" x2="132" y2="${dividerY}" stroke="${theme.accent}" stroke-width="0.8"/>
+    </g>
+    <text font-family="Playfair Display, Georgia, serif" font-weight="700" font-size="19" fill="#faf3e0" text-anchor="middle">${titleTspans}</text>
+    <text font-family="Georgia, serif" font-size="10" letter-spacing="1.5" fill="${theme.accent}" text-anchor="middle">${authorTspans}</text>
+    <text x="100" y="283" font-family="Georgia, serif" font-size="7" letter-spacing="2" fill="${theme.accent}" text-anchor="middle" opacity="0.85">HIELOICE CLASSICS</text>
+  </svg>`;
+}
+
+// Prefer a real, museum-verified public-domain painting (see cover_image_url,
+// sourced from the Met Museum's Open Access API, isPublicDomain:true only)
+// as the cover art - falls back to the hand-drawn SVG cover for the rare
+// book where no confident match was found, so every title always has art.
+function classicCoverMarkup(b) {
+  if (b.cover_image_url) {
+    return `
+      <img class="classics-cover-photo" src="${escapeHtml(b.cover_image_url_small || b.cover_image_url)}" alt="${escapeHtml(b.title)}" loading="lazy" />
+      <div class="classics-cover-gradient"></div>
+      <div class="classics-cover-text">
+        <p class="classics-cover-title">${escapeHtml(b.title)}</p>
+        <p class="classics-cover-author">${escapeHtml(b.author)}</p>
+      </div>`;
+  }
+  return classicCoverSvg(b.title, b.author, b.category);
+}
+
+function classicCardHtml(b) {
+  return `
+    <a class="product-card" href="#/classics/${b.id}">
+      <div class="product-thumb-wrap classics-cover-wrap">
+        ${classicCoverMarkup(b)}
+        <span class="badge classics-new-badge">${I18N.t("classics.newBadge")}</span>
+      </div>
+      <div class="product-card-body">
+        <p class="product-title">${escapeHtml(b.title)}</p>
+        <p class="product-location">${escapeHtml(b.author)}</p>
+      </div>
+    </a>`;
+}
+
+async function renderClassicsHub(query) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const activeCat = query && query.category ? query.category : "";
+  let books;
+  try {
+    const params = new URLSearchParams();
+    if (activeCat) params.set("category", activeCat);
+    books = await api("/api/classics?" + params.toString());
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const pillsHtml = `
+    <div class="category-tabs-row">
+      <a class="category-tab-pill ${!activeCat ? "active" : ""}" href="#/classics">${I18N.t("classics.allCategories")}</a>
+      ${CLASSICS_CATEGORIES.map(
+        (c) => `<a class="category-tab-pill ${activeCat === c ? "active" : ""}" href="#/classics?category=${c}">${classicCategoryLabel(c)}</a>`
+      ).join("")}
+    </div>
+  `;
+
+  viewEl.innerHTML = `
+    <div class="hero">
+      <h1>${I18N.t("classics.heading")}</h1>
+      <p>${I18N.t("classics.subheading")}</p>
+    </div>
+    ${pillsHtml}
+    <div class="category-grid">
+      ${books.length ? books.map(classicCardHtml).join("") : `<div class="empty-state">${I18N.t("category.noResults")}</div>`}
+    </div>
+  `;
+}
+
+async function renderClassicDetail(id) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let b;
+  try {
+    b = await api("/api/classics/" + id);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const creditHtml = b.cover_image_url && b.cover_artwork_title
+    ? `<p class="classics-cover-credit">${I18N.t("classics.coverCredit")}: <em>${escapeHtml(b.cover_artwork_title)}</em>${b.cover_artist ? ", " + escapeHtml(b.cover_artist) : ""}${b.cover_object_date ? " (" + escapeHtml(b.cover_object_date) + ")" : ""} &mdash; ${I18N.t("classics.metMuseum")}</p>`
+    : "";
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/classics">&larr; ${I18N.t("classics.heading")}</a>
+    <div class="form-panel classics-detail">
+      <div class="classics-detail-cover">${classicCoverMarkup(b)}</div>
+      <div class="classics-detail-info">
+        <span class="badge classics-new-badge">${I18N.t("classics.newBadge")}</span>
+        <h2 class="section-heading">${escapeHtml(b.title)}</h2>
+        <p class="product-location">${escapeHtml(b.author)}</p>
+        <p style="margin-top:10px;">${escapeHtml(b.description || "")}</p>
+        ${creditHtml}
+        <div class="classics-buy-box">
+          <div class="classics-buy-price">
+            <span class="classics-buy-price-label">${I18N.t("classics.priceLabel")}</span>
+            <span class="classics-buy-price-value">${I18N.t("classics.pricePending")}</span>
+          </div>
+          <button class="btn btn-primary classics-buy-btn" disabled title="${escapeHtml(I18N.t("classics.comingSoonNote"))}">${I18N.t("classics.buyButton")}</button>
+          <p class="form-msg" style="margin-top:10px;">${I18N.t("classics.comingSoonNote")}</p>
+          ${stripeInlineBadgeHtml()}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // ---------------- Report modal (report a listing or a user) ----------------
@@ -1364,6 +2851,8 @@ function openReportModal(targetType, targetId) {
           <option value="prohibited">${I18N.t("report.reasonProhibited")}</option>
           <option value="inappropriate">${I18N.t("report.reasonInappropriate")}</option>
           <option value="fraud">${I18N.t("report.reasonFraud")}</option>
+          ${targetType === "user" ? `<option value="harassment">${I18N.t("report.reasonHarassment")}</option>` : ""}
+          ${targetType === "user" ? `<option value="fake_profile">${I18N.t("report.reasonFakeProfile")}</option>` : ""}
           <option value="other">${I18N.t("report.reasonOther")}</option>
         </select>
       </div>
@@ -1407,6 +2896,22 @@ function openReportModal(targetType, targetId) {
 
 // ---------------- Auth views ----------------
 
+// Official Google "G" and Facebook "f" mark SVGs, used only inside the
+// Google/Facebook login buttons per each company's own button-branding
+// guidelines (this is the sanctioned, required way to show their login
+// buttons - not a decorative use of their logos elsewhere in the app).
+function googleGIconSvg() {
+  return '<svg width="18" height="18" viewBox="0 0 18 18" style="flex-shrink:0;"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.706A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.706V4.962H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.038l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.962L3.964 7.294C4.672 5.167 6.656 3.58 9 3.58z"/></svg>';
+}
+function facebookFIconSvg() {
+  return '<svg width="18" height="18" viewBox="0 0 36 36" style="flex-shrink:0;"><path fill="#fff" d="M36 18c0-9.94-8.06-18-18-18S0 8.06 0 18c0 8.98 6.58 16.41 15.19 17.76V23.2h-4.57V18h4.57v-3.97c0-4.51 2.69-7 6.8-7 1.97 0 4.03.35 4.03.35v4.43h-2.27c-2.24 0-2.94 1.39-2.94 2.82V18h5l-.8 5.2h-4.2v12.76C29.42 34.41 36 26.98 36 18z"/></svg>';
+}
+function oauthButtonsHtml(idPrefix) {
+  return `
+      <a class="btn btn-google" style="width:100%;" href="/api/auth/google">${googleGIconSvg()}<span>${I18N.t("auth.continueGoogle")}</span></a>
+      <a class="btn btn-facebook" style="width:100%;margin-top:8px;" href="/api/auth/facebook">${facebookFIconSvg()}<span>${I18N.t("auth.continueFacebook")}</span></a>`;
+}
+
 function renderLogin() {
   viewEl.innerHTML = `
     <div class="form-panel">
@@ -1422,8 +2927,7 @@ function renderLogin() {
       <button class="btn btn-primary" id="login-submit" style="width:100%;">${I18N.t("auth.submitLogin")}</button>
       <p class="form-msg" id="login-msg"></p>
       <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      ${oauthButtonsHtml()}
       <p class="form-footer-link">${I18N.t("auth.needAccount")} <a href="#/register">${I18N.t("auth.goRegister")}</a></p>
     </div>
   `;
@@ -1456,17 +2960,22 @@ function renderRegister() {
       </div>
       <div class="form-group">
         <label>${I18N.t("auth.password")}</label>
-        <input type="password" id="reg-password" />
+        <input type="password" id="reg-password" minlength="6" />
+        <p class="form-field-hint">${I18N.t("auth.passwordHint")}</p>
       </div>
       <div class="form-group">
         <label>${I18N.t("auth.phone")}</label>
         <input type="tel" id="reg-phone" placeholder="+1 555 555 5555" />
       </div>
+      <div class="form-group">
+        <label>${I18N.t("auth.birthdate")}</label>
+        <input type="date" id="reg-birthdate" />
+        <p class="form-field-hint">${I18N.t("auth.birthdateHint")}</p>
+      </div>
       <button class="btn btn-primary" id="reg-submit" style="width:100%;">${I18N.t("auth.submitRegister")}</button>
       <p class="form-msg" id="reg-msg"></p>
       <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-      <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-      <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+      ${oauthButtonsHtml()}
       <p class="form-footer-link">${I18N.t("auth.haveAccount")} <a href="#/login">${I18N.t("auth.goLogin")}</a></p>
     </div>
   `;
@@ -1475,15 +2984,55 @@ function renderRegister() {
     const email = document.getElementById("reg-email").value;
     const password = document.getElementById("reg-password").value;
     const phone = document.getElementById("reg-phone").value;
+    const birthdate = document.getElementById("reg-birthdate").value;
     const msgEl = document.getElementById("reg-msg");
     try {
-      const data = await api("/api/auth/register", { method: "POST", body: { name, email, password, phone } });
+      const data = await api("/api/auth/register", { method: "POST", body: { name, email, password, phone, birthdate } });
       setAuth(data.token, data.user);
       location.hash = "#/";
     } catch (e) {
       msgEl.textContent = e.message;
       msgEl.className = "form-msg error";
     }
+  });
+}
+
+// One-time gate for logged-in accounts that don't have a birthdate on file
+// yet (Google/Facebook signups, or pre-existing accounts from before this
+// requirement existed). Blocks every other route until confirmed - see the
+// AGE_GATE_EXEMPT_ROUTES check in router(). Self-attestation only, same
+// disclosed limitation as the registration-form check.
+function renderConfirmAge() {
+  viewEl.innerHTML = `
+    <div class="form-panel">
+      <h2 class="section-heading">${I18N.t("auth.confirmAgeTitle")}</h2>
+      <p class="form-field-hint">${I18N.t("auth.confirmAgeBody")}</p>
+      <div class="form-group">
+        <label>${I18N.t("auth.birthdate")}</label>
+        <input type="date" id="confirm-age-birthdate" />
+      </div>
+      <button class="btn btn-primary" id="confirm-age-submit" style="width:100%;">${I18N.t("common.continue")}</button>
+      <p class="form-msg" id="confirm-age-msg"></p>
+      <p class="form-footer-link"><a href="#" id="confirm-age-logout">${I18N.t("nav.logout")}</a></p>
+    </div>
+  `;
+  document.getElementById("confirm-age-submit").addEventListener("click", async () => {
+    const birthdate = document.getElementById("confirm-age-birthdate").value;
+    const msgEl = document.getElementById("confirm-age-msg");
+    try {
+      const data = await api("/api/auth/birthdate", { method: "PUT", auth: true, body: { birthdate } });
+      setAuth(state.token, data.user);
+      location.hash = "#/";
+      router();
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  });
+  document.getElementById("confirm-age-logout").addEventListener("click", (e) => {
+    e.preventDefault();
+    setAuth(null, null);
+    location.hash = "#/login";
   });
 }
 
@@ -1526,8 +3075,7 @@ function renderDeleteAccount() {
         <button class="btn btn-primary" id="del-login-submit" style="width:100%;">${I18N.t("auth.submitLogin")}</button>
         <p class="form-msg" id="del-login-msg"></p>
         <div class="oauth-divider"><span>${I18N.t("auth.orContinueWith")}</span></div>
-        <a class="btn btn-google" style="width:100%;display:flex;" href="/api/auth/google">${I18N.t("auth.continueGoogle")}</a>
-        <a class="btn btn-facebook" style="width:100%;display:flex;margin-top:8px;" href="/api/auth/facebook">${I18N.t("auth.continueFacebook")}</a>
+        ${oauthButtonsHtml()}
       </div>
     `;
     document.getElementById("del-login-submit").addEventListener("click", async () => {
@@ -1584,6 +3132,47 @@ function renderDeleteAccount() {
   });
 }
 
+// The footer "Report a Bug" link (#/report-bug) pointed nowhere - the
+// bug.* i18n strings existed but no route/view ever consumed them. Wired
+// up 2026-09 together with POST /api/bug-reports in server.js.
+function renderReportBug() {
+  viewEl.innerHTML = `
+    <div class="form-panel">
+      <h2 class="section-heading">${I18N.t("bug.title")}</h2>
+      <p>${I18N.t("bug.intro")}</p>
+      <div class="form-group">
+        <label>${I18N.t("bug.description")}</label>
+        <textarea id="bug-description" rows="5" placeholder="${escapeHtml(I18N.t("bug.descriptionPlaceholder"))}"></textarea>
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("bug.email")}</label>
+        <input type="email" id="bug-email" value="${state.user ? escapeHtml(state.user.email || "") : ""}" />
+      </div>
+      <button class="btn btn-primary" id="bug-submit" style="width:100%;">${I18N.t("bug.submit")}</button>
+      <p class="form-msg" id="bug-msg"></p>
+    </div>
+  `;
+  document.getElementById("bug-submit").addEventListener("click", async () => {
+    const msgEl = document.getElementById("bug-msg");
+    const description = document.getElementById("bug-description").value.trim();
+    const email = document.getElementById("bug-email").value.trim();
+    if (!description) {
+      msgEl.textContent = I18N.t("bug.required");
+      msgEl.className = "form-msg error";
+      return;
+    }
+    try {
+      await api("/api/bug-reports", { method: "POST", auth: true, body: { description, email, pageUrl: location.href } });
+      msgEl.textContent = I18N.t("bug.sent");
+      msgEl.className = "form-msg success";
+      document.getElementById("bug-description").value = "";
+    } catch (e) {
+      msgEl.textContent = e.message || I18N.t("bug.required");
+      msgEl.className = "form-msg error";
+    }
+  });
+}
+
 // ---------------- Post / Edit Ad ----------------
 
 let photoBuffer = [];
@@ -1618,7 +3207,10 @@ async function renderPostAd(editId) {
 
   viewEl.innerHTML = `
     <div class="form-panel wide">
-      <h2 class="section-heading">${I18N.t("postAd.title")}</h2>
+      <div class="post-ad-header-row">
+        <h2 class="section-heading">${I18N.t("postAd.title")}</h2>
+        <a href="#/marketplace" class="post-ad-cancel-link" id="post-ad-cancel">${I18N.t("common.cancel")}</a>
+      </div>
       <button type="button" class="ai-listing-banner" id="ai-listing-banner">
         <span class="ai-listing-banner-icon">&#10024;</span>
         <span class="ai-listing-banner-text">
@@ -1678,6 +3270,7 @@ async function renderPostAd(editId) {
         <label>${I18N.t("postAd.photosField")}</label>
         <div class="photo-upload-grid" id="photo-grid"></div>
         <input type="file" id="p-photos" accept="image/*" multiple style="font-size:12px;" />
+        <button type="button" class="btn btn-secondary" id="p-guided-capture" style="margin-top:8px;">&#128247; ${I18N.t("postAd.guidedCaptureBtn")}</button>
         <button type="button" class="btn btn-ai-suggest" id="p-ai-suggest" style="margin-top:8px;">&#10024; ${I18N.t("postAd.aiSuggest")}</button>
         <p class="post-isbn-lookup-hint" id="p-ai-hint"></p>
       </div>
@@ -1717,9 +3310,14 @@ async function renderPostAd(editId) {
     openBarcodeScanner((code) => {
       document.getElementById("p-isbn").value = code;
       isbnLookupAndFill(code);
+      // Keep the seller moving in one continuous flow: scan -> photograph.
+      // If they haven't added photos yet, jump straight into guided capture
+      // instead of leaving them to hunt for the button themselves.
+      if (photoBuffer.length === 0) openGuidedPhotoCapture();
     });
   });
   document.getElementById("p-isbn").addEventListener("blur", (e) => isbnLookupAndFill(e.target.value.trim()));
+  document.getElementById("p-guided-capture").addEventListener("click", openGuidedPhotoCapture);
 
   const aiHintEl = document.getElementById("p-ai-hint");
   const aiSuggestBtn = document.getElementById("p-ai-suggest");
@@ -1837,9 +3435,14 @@ function renderPhotoGrid() {
   let html = "";
   for (let i = 0; i < MAX_PHOTOS; i++) {
     if (photoBuffer[i]) {
-      html += `<div class="photo-slot"><img src="${photoBuffer[i]}" /><button class="remove-photo" data-i="${i}">&times;</button></div>`;
+      html += `
+        <div class="photo-slot">
+          <img src="${photoBuffer[i]}" data-i="${i}" class="photo-slot-img" />
+          <button type="button" class="edit-photo" data-i="${i}" aria-label="${I18N.t("postAd.editPhotoBtn")}">&#9998;</button>
+          <button type="button" class="remove-photo" data-i="${i}" aria-label="${I18N.t("postAd.removePhoto")}">&times;</button>
+        </div>`;
     } else {
-      html += `<div class="photo-slot">+</div>`;
+      html += `<button type="button" class="photo-slot photo-slot-add" aria-label="${I18N.t("postAd.addPhotoSlot")}">+</button>`;
     }
   }
   grid.innerHTML = html;
@@ -1849,6 +3452,428 @@ function renderPhotoGrid() {
       renderPhotoGrid();
     });
   });
+  // Tapping the photo itself, or the pencil icon, opens the crop/rotate editor
+  // for that slot. Tapping an empty "+" slot opens the same file picker as
+  // the "Elegir archivos" button below, so every "+" is a real, working
+  // shortcut into the folder picker instead of just decoration.
+  grid.querySelectorAll(".edit-photo, .photo-slot-img").forEach((el) => {
+    el.addEventListener("click", () => {
+      const i = Number(el.dataset.i);
+      openPhotoEditor({
+        src: photoBuffer[i],
+        onApply: (out) => {
+          photoBuffer[i] = out;
+          renderPhotoGrid();
+        },
+      });
+    });
+  });
+  grid.querySelectorAll(".photo-slot-add").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const input = document.getElementById("p-photos");
+      if (input) input.click();
+    });
+  });
+}
+
+// ---------------- Photo editor (crop / rotate / AI-improve a listing photo) ----------------
+// Opened both from the Post Ad photo grid (tapping an existing thumbnail or
+// its pencil icon) and from the guided-capture review screen (a "Crop"
+// button right after a shot is taken) - one shared editor, called with
+// { src, onApply } so each caller decides where the result gets written back
+// to (photoBuffer[i] vs. a guidedCapture shot). The visible canvas *is* the
+// crop output - drag to pan, the slider to zoom, a button to rotate 90 deg -
+// so "Apply" just reads the canvas back out with toDataURL(). The "Mejorar
+// con IA" button sends that same canvas to /api/ai/suggest-photo-fix, which
+// reviews focus/lighting/framing/how-clearly-the-condition-shows and returns
+// brightness/contrast/saturation multipliers; those are applied live via
+// ctx.filter as a preview the seller can keep (Apply) or discard (Cancel) -
+// the AI never edits pixels itself, it only proposes numbers this canvas
+// then renders.
+function openPhotoEditor({ src, onApply }) {
+  if (!src) return;
+  // Guard against a second overlay stacking on top of the first (e.g. the
+  // user tapping Crop/pencil more than once before the modal finishes
+  // mounting - easy to do, and it's what happened to Carlos). Two overlays
+  // both using the same element ids meant document.getElementById() always
+  // resolved to the FIRST (hidden, underneath) one, so the buttons the user
+  // could actually see and tap had no listeners attached - a dead screen
+  // with no way out. Fix: only ever allow one instance, and look up every
+  // element scoped to *this* overlay (overlay.querySelector) instead of the
+  // global document, so this class of bug can't happen even indirectly.
+  const already = document.getElementById("photo-editor-overlay");
+  if (already) already.remove();
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay photo-editor-overlay";
+  overlay.id = "photo-editor-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box photo-editor-box">
+      <h2 class="section-heading">${I18N.t("postAd.editPhoto")}</h2>
+      <div class="photo-editor-canvas-wrap">
+        <canvas class="photo-editor-canvas" data-role="canvas" width="800" height="1000"></canvas>
+      </div>
+      <div class="photo-editor-controls">
+        <span class="photo-editor-zoom-icon">&#128269;</span>
+        <input type="range" data-role="zoom" min="1" max="3" step="0.01" value="1" />
+        <button type="button" class="btn btn-outline" data-role="rotate">&#8635; ${I18N.t("postAd.rotate")}</button>
+      </div>
+      <button type="button" class="btn btn-ai-suggest" data-role="ai-btn" style="width:100%;margin-bottom:10px;">&#10024; ${I18N.t("postAd.aiImprovePhoto")}</button>
+      <p class="post-isbn-lookup-hint" data-role="ai-hint"></p>
+      <div class="action-row">
+        <button class="btn btn-primary" data-role="apply">${I18N.t("postAd.applyEdit")}</button>
+        <button class="btn btn-secondary" data-role="cancel">${I18N.t("common.cancel")}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const canvas = overlay.querySelector('[data-role="canvas"]');
+  const ctx = canvas.getContext("2d");
+  const CW = canvas.width;
+  const CH = canvas.height;
+
+  const img = new Image();
+  let rotation = 0;
+  let zoom = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let dragging = false;
+  let lastX = 0;
+  let lastY = 0;
+  let ready = false;
+  let brightness = 1;
+  let contrast = 1;
+  let saturation = 1;
+
+  function fitScale() {
+    const w = rotation % 180 === 0 ? img.naturalWidth : img.naturalHeight;
+    const h = rotation % 180 === 0 ? img.naturalHeight : img.naturalWidth;
+    return Math.max(CW / w, CH / h);
+  }
+
+  function clampOffsets(scale) {
+    const w = (rotation % 180 === 0 ? img.naturalWidth : img.naturalHeight) * scale;
+    const h = (rotation % 180 === 0 ? img.naturalHeight : img.naturalWidth) * scale;
+    const maxX = Math.max(0, (w - CW) / 2);
+    const maxY = Math.max(0, (h - CH) / 2);
+    offsetX = Math.max(-maxX, Math.min(maxX, offsetX));
+    offsetY = Math.max(-maxY, Math.min(maxY, offsetY));
+  }
+
+  function draw() {
+    if (!ready) return;
+    const scale = fitScale() * zoom;
+    clampOffsets(scale);
+    ctx.save();
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, CW, CH);
+    ctx.filter = `brightness(${brightness}) contrast(${contrast}) saturate(${saturation})`;
+    ctx.translate(CW / 2 + offsetX, CH / 2 + offsetY);
+    ctx.rotate((rotation * Math.PI) / 180);
+    ctx.drawImage(
+      img,
+      (-img.naturalWidth * scale) / 2,
+      (-img.naturalHeight * scale) / 2,
+      img.naturalWidth * scale,
+      img.naturalHeight * scale
+    );
+    ctx.restore();
+  }
+
+  img.onload = () => {
+    ready = true;
+    draw();
+  };
+  img.onerror = () => {
+    // Broken/unreadable source - don't leave the seller staring at a black
+    // canvas with no explanation; let them back out via Cancel.
+    const hint = overlay.querySelector('[data-role="ai-hint"]');
+    if (hint) {
+      hint.textContent = I18N.t("postAd.aiPhotoError");
+      hint.className = "post-isbn-lookup-hint error";
+    }
+  };
+  img.src = src;
+
+  const zoomInput = overlay.querySelector('[data-role="zoom"]');
+  zoomInput.addEventListener("input", () => {
+    zoom = Number(zoomInput.value);
+    draw();
+  });
+
+  overlay.querySelector('[data-role="rotate"]').addEventListener("click", () => {
+    rotation = (rotation + 90) % 360;
+    offsetX = 0;
+    offsetY = 0;
+    zoom = 1;
+    zoomInput.value = "1";
+    draw();
+  });
+
+  function pointFromEvent(e) {
+    return e.touches && e.touches[0] ? e.touches[0] : e;
+  }
+  function pointerDown(e) {
+    if (!ready) return;
+    dragging = true;
+    const p = pointFromEvent(e);
+    lastX = p.clientX;
+    lastY = p.clientY;
+  }
+  function pointerMove(e) {
+    if (!dragging) return;
+    const p = pointFromEvent(e);
+    offsetX += p.clientX - lastX;
+    offsetY += p.clientY - lastY;
+    lastX = p.clientX;
+    lastY = p.clientY;
+    draw();
+    if (e.cancelable) e.preventDefault();
+  }
+  function pointerUp() {
+    dragging = false;
+  }
+  canvas.addEventListener("mousedown", pointerDown);
+  window.addEventListener("mousemove", pointerMove);
+  window.addEventListener("mouseup", pointerUp);
+  canvas.addEventListener("touchstart", pointerDown, { passive: true });
+  canvas.addEventListener("touchmove", pointerMove, { passive: false });
+  canvas.addEventListener("touchend", pointerUp);
+
+  function cleanup() {
+    window.removeEventListener("mousemove", pointerMove);
+    window.removeEventListener("mouseup", pointerUp);
+    overlay.remove();
+  }
+
+  // Wire into the same history-guard every other full-screen overlay in the
+  // app uses, so the phone/browser Back button closes this editor instead
+  // of leaving it stuck on screen (this is the "no pude salir" part of what
+  // went wrong for Carlos - this modal had never been hooked up to it).
+  guardOverlayForBack(cleanup);
+
+  overlay.querySelector('[data-role="cancel"]').addEventListener("click", () => closeOverlayViaBack(cleanup));
+  overlay.querySelector('[data-role="apply"]').addEventListener("click", () => {
+    const out = canvas.toDataURL("image/jpeg", 0.9);
+    closeOverlayViaBack(cleanup);
+    onApply(out);
+  });
+
+  const aiBtn = overlay.querySelector('[data-role="ai-btn"]');
+  const aiHint = overlay.querySelector('[data-role="ai-hint"]');
+  aiBtn.addEventListener("click", async () => {
+    if (!ready) return;
+    aiBtn.disabled = true;
+    aiHint.textContent = I18N.t("postAd.aiPhotoThinking");
+    aiHint.className = "post-isbn-lookup-hint";
+    try {
+      // Send exactly what's currently framed (crop/rotate/zoom already
+      // applied) so the AI reviews the same thing the seller is about to
+      // publish, not the original unedited photo.
+      const currentFilter = ctx.filter;
+      ctx.filter = "none";
+      draw();
+      ctx.filter = "brightness(1) contrast(1) saturate(1)";
+      const snapshot = canvas.toDataURL("image/jpeg", 0.9);
+      ctx.filter = currentFilter;
+      draw();
+      const data = await api("/api/ai/suggest-photo-fix", {
+        method: "POST",
+        auth: true,
+        body: { image: snapshot, locale: I18N.lang },
+      });
+      brightness = data.brightness || 1;
+      contrast = data.contrast || 1;
+      saturation = data.saturation || 1;
+      draw();
+      let msg = data.issues && data.issues.length ? data.issues.join(" · ") + ". " : "";
+      msg += data.suggestion || (data.quality === "good" ? I18N.t("postAd.aiPhotoGood") : "");
+      const noAdjust = brightness === 1 && contrast === 1 && saturation === 1;
+      if (!noAdjust) msg += " " + I18N.t("postAd.aiPhotoApplied");
+      if (data.cropSuggested) msg += " " + I18N.t("postAd.aiPhotoCropHint");
+      aiHint.textContent = msg.trim();
+      aiHint.className = "post-isbn-lookup-hint " + (data.quality === "poor" ? "error" : "ok");
+    } catch (e) {
+      aiHint.textContent = e.message || I18N.t("postAd.aiPhotoError");
+      aiHint.className = "post-isbn-lookup-hint error";
+    } finally {
+      aiBtn.disabled = false;
+    }
+  });
+}
+
+// ---------------- Guided photo capture (product mode) ----------------
+// Walks a seller through a fixed shot sequence (front cover, back cover,
+// spine, optional damage close-up) instead of one loose photo at a time -
+// this is the highest-leverage camera improvement for book listings per the
+// C2C-books strategy: it directly improves listing quality/speed, which is
+// the "logistics" half of "easy to use + great logistics."
+const GUIDED_SHOT_SEQUENCE = [
+  { key: "front", required: true },
+  { key: "back", required: true },
+  { key: "spine", required: false },
+  { key: "damage", required: false },
+];
+
+let guidedCapture = null;
+
+function openGuidedPhotoCapture() {
+  if (photoBuffer.length >= MAX_PHOTOS) {
+    alert(I18N.t("postAd.guidedMaxReached"));
+    return;
+  }
+  guidedCapture = {
+    index: 0,
+    stream: null,
+    shots: GUIDED_SHOT_SEQUENCE.map((s) => ({ ...s, dataUrl: null })),
+  };
+  const overlay = document.createElement("div");
+  overlay.id = "guided-capture-overlay";
+  overlay.className = "guided-capture-overlay";
+  document.body.appendChild(overlay);
+  guardOverlayForBack(closeGuidedCapture);
+  drawGuidedCapture();
+  startGuidedStream();
+}
+
+function startGuidedStream() {
+  if (!guidedCapture || !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) return;
+  navigator.mediaDevices
+    .getUserMedia({ video: { facingMode: "environment" } })
+    .then((stream) => {
+      if (!guidedCapture) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      guidedCapture.stream = stream;
+      const video = document.getElementById("guided-video");
+      if (video) video.srcObject = stream;
+    })
+    .catch(() => {
+      const hint = document.getElementById("guided-capture-hint");
+      if (hint) hint.textContent = I18N.t("create.cameraUnavailable");
+    });
+}
+
+function closeGuidedCapture() {
+  if (guidedCapture && guidedCapture.stream) guidedCapture.stream.getTracks().forEach((t) => t.stop());
+  const overlay = document.getElementById("guided-capture-overlay");
+  if (overlay) overlay.remove();
+  guidedCapture = null;
+}
+
+function guidedCaptureShot() {
+  const video = document.getElementById("guided-video");
+  if (!video || !video.srcObject) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth || 900;
+  canvas.height = video.videoHeight || 900;
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  guidedCapture.shots[guidedCapture.index].dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  drawGuidedCapture();
+}
+
+function guidedRetake() {
+  guidedCapture.shots[guidedCapture.index].dataUrl = null;
+  drawGuidedCapture();
+}
+
+function guidedAdvance() {
+  if (guidedCapture.index < guidedCapture.shots.length - 1) {
+    guidedCapture.index += 1;
+    drawGuidedCapture();
+  } else {
+    finishGuidedCapture();
+  }
+}
+
+async function finishGuidedCapture() {
+  const captured = guidedCapture.shots.filter((s) => s.dataUrl);
+  for (const s of captured) {
+    if (photoBuffer.length >= MAX_PHOTOS) break;
+    const cleaned = await autoEnhanceImage(s.dataUrl);
+    photoBuffer.push(cleaned);
+  }
+  renderPhotoGrid();
+  closeOverlayViaBack(closeGuidedCapture);
+}
+
+function drawGuidedCapture() {
+  const overlay = document.getElementById("guided-capture-overlay");
+  if (!overlay || !guidedCapture) return;
+  const shot = guidedCapture.shots[guidedCapture.index];
+  const n = guidedCapture.shots.length;
+  const stepLabel = I18N.t("postAd.guidedStepOf")
+    .replace("{i}", String(guidedCapture.index + 1))
+    .replace("{n}", String(n));
+  const shotLabel = I18N.t("postAd.guidedShot_" + shot.key);
+  const thumbsHtml = guidedCapture.shots
+    .map(
+      (s, i) =>
+        `<span class="guided-thumb ${i === guidedCapture.index ? "current" : ""} ${s.dataUrl ? "done" : ""}">${
+          s.dataUrl ? `<img src="${s.dataUrl}" />` : ""
+        }</span>`
+    )
+    .join("");
+
+  overlay.innerHTML = `
+    <div class="guided-capture-topbar">
+      <button class="wizard-fs-icon-btn" id="guided-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+      <span class="guided-capture-step">${stepLabel}: ${shotLabel}${shot.required ? "" : " (" + I18N.t("postAd.guidedOptional") + ")"}</span>
+    </div>
+    <div class="guided-capture-video-wrap">
+      ${
+        shot.dataUrl
+          ? `<img class="guided-capture-preview" src="${shot.dataUrl}" />`
+          : `<video id="guided-video" autoplay playsinline muted></video><p class="wizard-fs-hint" id="guided-capture-hint"></p>`
+      }
+    </div>
+    <div class="guided-capture-thumbs">${thumbsHtml}</div>
+    <div class="guided-capture-controls">
+      ${
+        shot.dataUrl
+          ? `<button class="btn btn-secondary" id="guided-retake">${I18N.t("postAd.guidedRetake")}</button>
+             <button class="btn btn-outline" id="guided-crop">&#9986; ${I18N.t("postAd.cropBtn")}</button>
+             <button class="btn btn-primary" id="guided-next">${guidedCapture.index === n - 1 ? I18N.t("postAd.guidedFinish") : I18N.t("postAd.guidedNext")}</button>`
+          : `<div class="wizard-fs-capture-wrap"><button class="wizard-fs-capture-btn" id="guided-shutter" aria-label="${I18N.t("create.capturePhoto")}"></button></div>`
+      }
+    </div>
+    ${!shot.dataUrl && !shot.required ? `<p class="guided-capture-skip"><a href="#" id="guided-skip">${I18N.t("postAd.guidedSkip")}</a></p>` : ""}
+  `;
+
+  const video = document.getElementById("guided-video");
+  if (video && guidedCapture.stream) video.srcObject = guidedCapture.stream;
+
+  document.getElementById("guided-close").addEventListener("click", () => closeOverlayViaBack(closeGuidedCapture));
+  if (shot.dataUrl) {
+    document.getElementById("guided-retake").addEventListener("click", guidedRetake);
+    document.getElementById("guided-next").addEventListener("click", guidedAdvance);
+    // Crop right here in the review step, per Carlos's requirement that the
+    // seller be able to remove anything outside the book "al momento de
+    // tomar las fotografias" - not just later in the Post Ad grid. Same
+    // shared editor, writes the result back into this exact shot.
+    document.getElementById("guided-crop").addEventListener("click", () => {
+      const shotIndex = guidedCapture.index;
+      openPhotoEditor({
+        src: guidedCapture.shots[shotIndex].dataUrl,
+        onApply: (out) => {
+          guidedCapture.shots[shotIndex].dataUrl = out;
+          drawGuidedCapture();
+        },
+      });
+    });
+  } else {
+    const shutter = document.getElementById("guided-shutter");
+    if (shutter) shutter.addEventListener("click", guidedCaptureShot);
+    const skip = document.getElementById("guided-skip");
+    if (skip) {
+      skip.addEventListener("click", (e) => {
+        e.preventDefault();
+        guidedAdvance();
+      });
+    }
+  }
 }
 
 // ---------------- Friends ----------------
@@ -2150,6 +4175,7 @@ async function renderFriendsPage() {
     <div class="friends-search-tabs">
       <button class="friends-search-tab ${friendsPageTab === "friends" ? "active" : ""}" data-tab="friends">${I18N.t("friendsPage.tabFriends")}</button>
       <button class="friends-search-tab ${friendsPageTab === "people" ? "active" : ""}" data-tab="people">${I18N.t("friendsPage.tabPeople")}</button>
+      <a class="friends-search-tab friends-search-tab-dating" href="#/dating">💘 ${I18N.t("friendsPage.tabDating")}</a>
     </div>
     <input type="text" id="friends-search-input" class="friends-search-input" placeholder="${friendsPageTab === "people" ? I18N.t("friendsPage.searchPeoplePlaceholder") : I18N.t("friendsPage.searchFriendsPlaceholder")}" />
     <div id="friends-page-body"><p>${I18N.t("common.loading")}</p></div>
@@ -2520,6 +4546,800 @@ async function renderGroupDetail(slug) {
   });
 }
 
+// ---------------- Book Club ("#/book-club", "#/book-club/:slug") ----------------
+// Task #240 - reuses the exact same mkt_groups/mkt_group_posts backend as
+// Communities (see groupOut()/POST/GET /api/groups in server.js), just
+// filtered to isBookClub groups and with book-specific extras: a required
+// book title, an optional link to the seller's own listing, a free group
+// video call (Jitsi Meet, no account/API key needed - see POST
+// /api/groups/:slug/video-room), and a "Pick of the Month" author-rights
+// panel that stays visible but locked until Carlos finishes the legal
+// agreement (task #242, AUTHOR_PICK_PROGRAM_ENABLED in server.js).
+
+let bookClubConfigCache = null;
+async function getBookClubConfig() {
+  if (bookClubConfigCache) return bookClubConfigCache;
+  try {
+    bookClubConfigCache = await api("/api/book-club/config");
+  } catch (e) {
+    bookClubConfigCache = { authorPickEnabled: false };
+  }
+  return bookClubConfigCache;
+}
+
+async function renderBookClubHome() {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const groups = await api("/api/groups?bookClub=true");
+
+  const listHtml = groups.length
+    ? `<div class="groups-grid bookclub-grid">${groups
+        .map(
+          (g) => `
+      <a class="group-card bookclub-card" href="#/book-club/${g.slug}">
+        <p class="bookclub-card-book">&#128214; ${escapeHtml(g.bookTitle || "")}</p>
+        <p class="group-card-name">${escapeHtml(g.name)}</p>
+        <p class="group-card-meta">${[g.city].filter(Boolean).map(escapeHtml).join(" · ")}</p>
+        ${g.description ? `<p class="group-card-desc">${escapeHtml(g.description)}</p>` : ""}
+      </a>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("bookClub.empty")}</div>`;
+
+  viewEl.innerHTML = `
+    <div class="groups-header">
+      <h2 class="section-heading">${I18N.t("bookClub.heading")}</h2>
+      ${state.token ? `<button class="btn btn-primary" id="bookclub-create-btn">${I18N.t("bookClub.create")}</button>` : ""}
+    </div>
+    <p class="groups-subtitle">${I18N.t("bookClub.subtitle")}</p>
+    <div id="bookclub-create-form" style="display:none;"></div>
+    ${listHtml}
+  `;
+
+  const createBtn = document.getElementById("bookclub-create-btn");
+  if (createBtn) {
+    createBtn.addEventListener("click", () => {
+      const formWrap = document.getElementById("bookclub-create-form");
+      if (formWrap.style.display !== "none") {
+        formWrap.style.display = "none";
+        return;
+      }
+      formWrap.style.display = "block";
+      formWrap.innerHTML = `
+        <form id="bookclub-create-form-el" class="stacked-form">
+          <label>${I18N.t("bookClub.bookTitle")}<input type="text" name="bookTitle" required maxlength="200" placeholder="${I18N.t("bookClub.bookTitlePlaceholder")}" /></label>
+          <label>${I18N.t("groups.name")}<input type="text" name="name" required maxlength="100" placeholder="${I18N.t("bookClub.namePlaceholder")}" /></label>
+          <label>${I18N.t("groups.city")}<input type="text" name="city" maxlength="80" placeholder="${I18N.t("bookClub.cityPlaceholder")}" /></label>
+          <label>${I18N.t("groups.description")}<textarea name="description" maxlength="1000"></textarea></label>
+          <button type="submit" class="btn btn-primary">${I18N.t("bookClub.createSubmit")}</button>
+          <p class="form-msg" id="bookclub-create-msg"></p>
+        </form>
+      `;
+      document.getElementById("bookclub-create-form-el").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const msgEl = document.getElementById("bookclub-create-msg");
+        try {
+          const g = await api("/api/groups", {
+            method: "POST",
+            auth: true,
+            body: {
+              isBookClub: true,
+              bookTitle: fd.get("bookTitle"),
+              name: fd.get("name"),
+              city: fd.get("city"),
+              description: fd.get("description"),
+            },
+          });
+          location.hash = "#/book-club/" + g.slug;
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+        }
+      });
+    });
+  }
+}
+
+function openBookClubVideoOverlay(roomName) {
+  const overlay = document.createElement("div");
+  overlay.className = "bookclub-video-overlay";
+  overlay.innerHTML = `
+    <div class="bookclub-video-topbar">
+      <span>${I18N.t("bookClub.videoCallLive")}</span>
+      <button class="bookclub-video-close" id="bookclub-video-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
+    </div>
+    <iframe class="bookclub-video-frame" src="https://meet.jit.si/${encodeURIComponent(roomName)}#config.prejoinPageEnabled=true" allow="camera; microphone; fullscreen; display-capture; autoplay"></iframe>
+  `;
+  document.body.appendChild(overlay);
+  document.getElementById("bookclub-video-close").addEventListener("click", () => overlay.remove());
+}
+
+// Task #242 - navigable-but-inert "Pick of the Month" submission preview.
+// Opens a real modal with a real form; submitting calls the real endpoint,
+// which (while AUTHOR_PICK_PROGRAM_ENABLED is false) always answers with
+// { ok:false, comingSoon:true } and never touches the database. We treat
+// that response as success-of-the-preview, not an error, so the flow feels
+// complete end to end.
+function openAuthorPickModal(slug, group) {
+  const overlay = document.createElement("div");
+  overlay.className = "bookclub-authorpick-modal-overlay";
+  overlay.id = "bookclub-authorpick-modal-overlay";
+  overlay.innerHTML = `
+    <div class="bookclub-authorpick-modal">
+      <button type="button" class="bookclub-authorpick-modal-close" id="bookclub-authorpick-modal-close" aria-label="${I18N.t("bookClub.authorPickClose")}">&times;</button>
+      <h3 class="bookclub-authorpick-modal-title">&#127942; ${I18N.t("bookClub.authorPickModalTitle")}</h3>
+      <p class="bookclub-authorpick-modal-intro">${I18N.t("bookClub.authorPickModalIntro")}</p>
+      <form id="bookclub-authorpick-form" class="stacked-form">
+        <label>${I18N.t("bookClub.authorPickBookLabel")}
+          <input type="text" name="bookTitle" required maxlength="200" value="${escapeHtml(group.bookTitle || "")}" />
+        </label>
+        <label>${I18N.t("bookClub.authorPickPitchLabel")}
+          <textarea name="pitch" maxlength="2000" placeholder="${I18N.t("bookClub.authorPickPitchPlaceholder")}"></textarea>
+        </label>
+        <button type="submit" class="btn btn-primary" id="bookclub-authorpick-form-submit">${I18N.t("bookClub.authorPickModalSubmit")}</button>
+        <p class="form-msg" id="bookclub-authorpick-form-msg"></p>
+      </form>
+      <div class="bookclub-authorpick-thanks" id="bookclub-authorpick-thanks" style="display:none;">
+        <p class="bookclub-authorpick-thanks-title">&#10024; ${I18N.t("bookClub.authorPickThanksTitle")}</p>
+        <p class="bookclub-authorpick-thanks-desc">${I18N.t("bookClub.authorPickThanksDesc")}</p>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  document.getElementById("bookclub-authorpick-modal-close").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+
+  const form = document.getElementById("bookclub-authorpick-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!state.token) {
+      location.hash = "#/login";
+      return;
+    }
+    const submitBtn = document.getElementById("bookclub-authorpick-form-submit");
+    const msgEl = document.getElementById("bookclub-authorpick-form-msg");
+    submitBtn.disabled = true;
+    try {
+      await api("/api/groups/" + encodeURIComponent(slug) + "/author-pick", { method: "POST", auth: true });
+      form.style.display = "none";
+      document.getElementById("bookclub-authorpick-thanks").style.display = "";
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+async function renderBookClubDetail(slug) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let group, posts, bcConfig;
+  try {
+    [group, posts, bcConfig] = await Promise.all([
+      api("/api/groups/" + encodeURIComponent(slug)),
+      api("/api/groups/" + encodeURIComponent(slug) + "/posts", state.token ? { auth: true } : {}),
+      getBookClubConfig(),
+    ]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const postsHtml = posts.length
+    ? posts
+        .map(
+          (p) => `
+      <div class="group-post" data-post="${p.id}">
+        <div class="group-post-votes">
+          <button class="vote-btn vote-up ${p.myVote === 1 ? "active" : ""}" data-vote="${p.id}" data-value="1">&#9650;</button>
+          <span class="vote-score">${p.score}</span>
+          <button class="vote-btn vote-down ${p.myVote === -1 ? "active" : ""}" data-vote="${p.id}" data-value="-1">&#9660;</button>
+        </div>
+        <div class="group-post-body">
+          <span class="group-post-type group-post-type-${p.postType}">${I18N.t("groups.postType." + p.postType)}</span>
+          <p class="group-post-title">${escapeHtml(p.title)}</p>
+          ${p.body ? `<p class="group-post-text">${escapeHtml(p.body)}</p>` : ""}
+          <p class="group-post-meta">${escapeHtml(p.authorName)} &middot; ${fmtDate(p.createdAt)}</p>
+        </div>
+      </div>`
+        )
+        .join("")
+    : `<div class="empty-state">${I18N.t("groups.noPosts")}</div>`;
+
+  // Task #242 - the "Pick of the Month" panel is always rendered AND its
+  // button is always real/clickable (per Carlos: "dejalo visual y navegable
+  // pero sin poder accionar" - let people click all the way through the
+  // flow so they can get familiar with it and he can react to the UX), but
+  // nothing is actually submitted while AUTHOR_PICK_PROGRAM_ENABLED is off:
+  // the modal opened below is clearly labeled as a preview, and its submit
+  // handler always ends in the friendly "thanks for trying it, nothing was
+  // sent" state instead of a real confirmation, because the backend never
+  // writes to the database until that flag is flipped.
+  const authorPickHtml = `
+    <div class="bookclub-authorpick">
+      <div class="bookclub-authorpick-headrow">
+        <p class="bookclub-authorpick-title">&#127942; ${I18N.t("bookClub.authorPickTitle")}</p>
+        ${!bcConfig.authorPickEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+      </div>
+      <p class="bookclub-authorpick-desc">${I18N.t("bookClub.authorPickDesc")}</p>
+      <button type="button" class="btn btn-primary" id="bookclub-authorpick-btn">${I18N.t("bookClub.authorPickSubmit")}</button>
+    </div>
+  `;
+
+  viewEl.innerHTML = `
+    <a href="#/book-club" class="back-link">&larr; ${I18N.t("bookClub.backToList")}</a>
+    <div class="bookclub-detail-header">
+      <div>
+        <p class="bookclub-detail-book">&#128214; ${escapeHtml(group.bookTitle || "")}</p>
+        <h2 class="section-heading">${escapeHtml(group.name)}</h2>
+        <p class="groups-subtitle">${[group.city].filter(Boolean).map(escapeHtml).join(" · ")}</p>
+      </div>
+      <button class="btn btn-primary bookclub-video-btn" id="bookclub-video-btn">&#128249; ${I18N.t("bookClub.joinVideoCall")}</button>
+    </div>
+    ${group.description ? `<p class="group-detail-desc">${escapeHtml(group.description)}</p>` : ""}
+    ${authorPickHtml}
+    <div id="group-post-form-wrap">${
+      state.token
+        ? `
+      <form id="group-post-form" class="stacked-form">
+        <label>${I18N.t("groups.postTitleLabel")}<input type="text" name="title" required maxlength="200" /></label>
+        <label>${I18N.t("groups.postBodyLabel")}<textarea name="body" maxlength="5000"></textarea></label>
+        <label>${I18N.t("groups.postTypeLabel")}
+          <select name="postType">
+            <option value="discussion">${I18N.t("groups.postType.discussion")}</option>
+            <option value="question">${I18N.t("groups.postType.question")}</option>
+            <option value="review">${I18N.t("groups.postType.review")}</option>
+            <option value="warning">${I18N.t("groups.postType.warning")}</option>
+          </select>
+        </label>
+        <button type="submit" class="btn btn-primary">${I18N.t("groups.postSubmit")}</button>
+        <p class="form-msg" id="group-post-msg"></p>
+      </form>`
+        : `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`
+    }</div>
+    <div id="group-posts-list">${postsHtml}</div>
+  `;
+
+  const videoBtn = document.getElementById("bookclub-video-btn");
+  if (videoBtn) {
+    videoBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      videoBtn.disabled = true;
+      try {
+        const { videoRoomName } = await api("/api/groups/" + encodeURIComponent(slug) + "/video-room", { method: "POST", auth: true });
+        openBookClubVideoOverlay(videoRoomName);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        videoBtn.disabled = false;
+      }
+    });
+  }
+
+  const authorPickBtn = document.getElementById("bookclub-authorpick-btn");
+  if (authorPickBtn) {
+    authorPickBtn.addEventListener("click", () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      openAuthorPickModal(slug, group);
+    });
+  }
+
+  const postForm = document.getElementById("group-post-form");
+  if (postForm) {
+    postForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("group-post-msg");
+      try {
+        await api("/api/groups/" + encodeURIComponent(slug) + "/posts", {
+          method: "POST",
+          auth: true,
+          body: {
+            title: fd.get("title"),
+            body: fd.get("body"),
+            postType: fd.get("postType"),
+          },
+        });
+        renderBookClubDetail(slug);
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+
+  document.querySelectorAll("[data-vote]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      try {
+        const result = await api("/api/posts/" + btn.dataset.vote + "/vote", {
+          method: "POST",
+          auth: true,
+          body: { value: Number(btn.dataset.value) },
+        });
+        const postEl = btn.closest(".group-post");
+        postEl.querySelector(".vote-score").textContent = result.score;
+        postEl.querySelectorAll(".vote-btn").forEach((b) => b.classList.remove("active"));
+        if (result.myVote !== 0) {
+          postEl.querySelector('[data-value="' + result.myVote + '"]').classList.add("active");
+        }
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+}
+
+// ---------------- Publish a Book ("#/publish-book", task #244) ----------------
+// Independent-author pipeline, separate from selling a used physical book
+// (#/post) and from the Book Club "Pick of the Month" panel. Author writes
+// chapters (optionally with AI co-writing help), submits, gets an automated
+// AI first-pass review, and - if that passes - lands in our team's review
+// queue. Nothing here ever becomes a public/purchasable listing until
+// ORIGINAL_BOOK_PROGRAM_ENABLED flips true on the server once real legal/
+// monetization terms exist, so every step here is real and navigable.
+
+let publishBookConfigCache = null;
+async function getPublishBookConfig() {
+  if (publishBookConfigCache) return publishBookConfigCache;
+  try {
+    publishBookConfigCache = await api("/api/original-works/config");
+  } catch (e) {
+    publishBookConfigCache = { programEnabled: false };
+  }
+  return publishBookConfigCache;
+}
+
+function publishBookStatusBadge(status) {
+  const cls = { draft: "", needs_revision: "warn", team_review: "pending", approved_pending_legal: "approved", published: "approved", rejected: "rejected" }[status] || "";
+  return `<span class="publishbook-status publishbook-status-${cls || "draft"}">${I18N.t("publishBook.status." + status)}</span>`;
+}
+
+async function renderPublishBookHome() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  let works, bpConfig;
+  try {
+    [works, bpConfig] = await Promise.all([api("/api/original-works/mine", { auth: true }), getPublishBookConfig()]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const worksHtml = works.length
+    ? `<div class="publishbook-grid">${works
+        .map(
+          (w) => `
+      <a class="card publishbook-card" href="#/publish-book/${w.id}">
+        <p class="publishbook-card-genre">${escapeHtml(w.genre || I18N.t("publishBook.genreUnset"))}</p>
+        <h3>${escapeHtml(w.title || I18N.t("publishBook.untitled"))}</h3>
+        ${publishBookStatusBadge(w.status)}
+      </a>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("publishBook.empty")}</div>`;
+
+  const steps = [
+    { emoji: "&#9997;&#65039;", title: I18N.t("publishBook.howStep1Title"), body: I18N.t("publishBook.howStep1Body") },
+    { emoji: "&#129302;", title: I18N.t("publishBook.howStep2Title"), body: I18N.t("publishBook.howStep2Body") },
+    { emoji: "&#128101;", title: I18N.t("publishBook.howStep3Title"), body: I18N.t("publishBook.howStep3Body") },
+    { emoji: "&#127942;", title: I18N.t("publishBook.howStep4Title"), body: I18N.t("publishBook.howStep4Body") },
+    { emoji: "&#128176;", title: I18N.t("publishBook.howStep5Title"), body: I18N.t("publishBook.howStep5Body") },
+  ];
+
+  viewEl.innerHTML = `
+    <div class="publishbook-hero">
+      <p class="publishbook-hero-eyebrow">${I18N.t("publishBook.eyebrow")}</p>
+      <h2 class="publishbook-hero-title">${I18N.t("publishBook.heading")}</h2>
+      <p class="publishbook-hero-subtitle">${I18N.t("publishBook.subtitle")}</p>
+      ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+      <button type="button" class="btn btn-primary publishbook-hero-cta" id="publishbook-new-btn">${I18N.t("publishBook.newBook")}</button>
+    </div>
+
+    <h3 class="publishbook-how-heading">${I18N.t("publishBook.howHeading")}</h3>
+    <div class="publishbook-how-grid">
+      ${steps
+        .map(
+          (s, i) => `
+        <div class="publishbook-how-card">
+          <span class="publishbook-how-num">${i + 1}</span>
+          <p class="publishbook-how-emoji">${s.emoji}</p>
+          <p class="publishbook-how-title">${s.title}</p>
+          <p class="publishbook-how-body">${s.body}</p>
+        </div>`
+        )
+        .join("")}
+    </div>
+
+    <form id="publishbook-new-form" class="stacked-form publishbook-new-form" style="display:none;">
+      <h3 class="publishbook-chapters-heading">${I18N.t("publishBook.newBook")}</h3>
+      <label>${I18N.t("publishBook.titleLabel")}<input type="text" name="title" required maxlength="200" /></label>
+      <label>${I18N.t("publishBook.genreLabel")}<input type="text" name="genre" maxlength="60" placeholder="${I18N.t("publishBook.genrePlaceholder")}" /></label>
+      <label>${I18N.t("publishBook.synopsisLabel")}<textarea name="synopsis" maxlength="2000" placeholder="${I18N.t("publishBook.synopsisPlaceholder")}"></textarea></label>
+      <button type="submit" class="btn btn-primary">${I18N.t("publishBook.createSubmit")}</button>
+      <p class="form-msg" id="publishbook-new-msg"></p>
+    </form>
+
+    ${works.length ? `<h3 class="publishbook-chapters-heading">${I18N.t("publishBook.yourBooks")}</h3>` : ""}
+    <div style="margin-top:8px;">${worksHtml}</div>
+  `;
+
+  const newBtn = document.getElementById("publishbook-new-btn");
+  const newForm = document.getElementById("publishbook-new-form");
+  if (newBtn && newForm) {
+    newBtn.addEventListener("click", () => {
+      newForm.style.display = "block";
+      newForm.scrollIntoView({ behavior: "smooth", block: "center" });
+      const titleInput = newForm.querySelector('[name="title"]');
+      if (titleInput) titleInput.focus();
+    });
+    newForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("publishbook-new-msg");
+      try {
+        const created = await api("/api/original-works", {
+          method: "POST",
+          auth: true,
+          body: { title: fd.get("title"), genre: fd.get("genre"), synopsis: fd.get("synopsis") },
+        });
+        location.hash = "#/publish-book/" + created.id;
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+  }
+}
+
+async function renderPublishBookEditor(id) {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  let work, bpConfig;
+  try {
+    [work, bpConfig] = await Promise.all([api("/api/original-works/" + encodeURIComponent(id), { auth: true }), getPublishBookConfig()]);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const editable = work.status === "draft" || work.status === "needs_revision";
+  const chapters = work.chapters && work.chapters.length ? work.chapters : [{ title: "", content: "" }];
+
+  let statusNoteHtml = "";
+  if (work.status === "needs_revision" && work.aiReviewNotes) {
+    statusNoteHtml = `<p class="publishbook-status-note">&#129302; ${escapeHtml(work.aiReviewNotes)}</p>`;
+  } else if (work.status === "team_review") {
+    statusNoteHtml = `<p class="publishbook-status-note">${I18N.t("publishBook.teamReviewNote")}</p>`;
+  } else if (work.status === "approved_pending_legal") {
+    statusNoteHtml = `<p class="publishbook-status-note">&#10024; ${I18N.t("publishBook.approvedNote")}</p>`;
+  } else if (work.status === "rejected" && work.teamDecisionNotes) {
+    statusNoteHtml = `<p class="publishbook-status-note">${escapeHtml(work.teamDecisionNotes)}</p>`;
+  }
+
+  function chapterBlockHtml(c, i) {
+    return `
+    <div class="publishbook-chapter" data-chapter="${i}">
+      <div class="publishbook-chapter-head">
+        <input type="text" class="publishbook-chapter-title" value="${escapeHtml(c.title || "")}" placeholder="${I18N.t("publishBook.chapterTitlePlaceholder")} ${i + 1}" ${editable ? "" : "disabled"} />
+        ${editable ? `<button type="button" class="publishbook-chapter-remove" data-remove-chapter aria-label="${I18N.t("common.cancel")}">&times;</button>` : ""}
+      </div>
+      <textarea class="publishbook-chapter-content" rows="8" placeholder="${I18N.t("publishBook.chapterContentPlaceholder")}" ${editable ? "" : "disabled"}>${escapeHtml(c.content || "")}</textarea>
+      ${
+        editable
+          ? `<button type="button" class="btn btn-secondary publishbook-ai-btn" data-ai-toggle>&#129302; ${I18N.t("publishBook.askAi")}</button>
+      <div class="publishbook-ai-panel" data-ai-panel style="display:none;">
+        <input type="text" class="publishbook-ai-instruction" placeholder="${I18N.t("publishBook.aiInstructionPlaceholder")}" />
+        <button type="button" class="btn btn-primary" data-ai-go>${I18N.t("publishBook.aiGo")}</button>
+        <p class="form-msg" data-ai-msg></p>
+        <div class="publishbook-ai-suggestion" data-ai-suggestion style="display:none;">
+          <p class="publishbook-ai-suggestion-text"></p>
+          <button type="button" class="btn btn-primary" data-ai-insert>${I18N.t("publishBook.aiInsert")}</button>
+        </div>
+      </div>`
+          : ""
+      }
+    </div>`;
+  }
+
+  // Wires the AI-assist / remove buttons for exactly one chapter block, so
+  // new chapters added mid-session work without re-rendering (and losing)
+  // the wizard's current step.
+  function wireChapterBlock(el) {
+    const removeBtn = el.querySelector("[data-remove-chapter]");
+    if (removeBtn) {
+      removeBtn.addEventListener("click", () => {
+        if (document.querySelectorAll(".publishbook-chapter").length <= 1) return;
+        el.remove();
+        saveDraft().catch(() => {});
+        renumberChapters();
+      });
+    }
+    const aiToggle = el.querySelector("[data-ai-toggle]");
+    const aiPanel = el.querySelector("[data-ai-panel]");
+    if (aiToggle && aiPanel) {
+      aiToggle.addEventListener("click", () => {
+        aiPanel.style.display = aiPanel.style.display === "none" ? "block" : "none";
+      });
+    }
+    const aiGoBtn = el.querySelector("[data-ai-go]");
+    if (aiGoBtn) {
+      aiGoBtn.addEventListener("click", async () => {
+        const instruction = el.querySelector(".publishbook-ai-instruction").value.trim();
+        const currentText = el.querySelector(".publishbook-chapter-content").value;
+        const msgEl = el.querySelector("[data-ai-msg]");
+        if (!instruction) {
+          msgEl.textContent = I18N.t("publishBook.aiInstructionRequired");
+          msgEl.className = "form-msg error";
+          return;
+        }
+        msgEl.textContent = "";
+        aiGoBtn.disabled = true;
+        try {
+          const { suggestion } = await api("/api/original-works/" + encodeURIComponent(id) + "/ai-assist", {
+            method: "POST",
+            auth: true,
+            body: { instruction, currentText, locale: I18N.lang },
+          });
+          const suggestionBox = el.querySelector("[data-ai-suggestion]");
+          suggestionBox.querySelector(".publishbook-ai-suggestion-text").textContent = suggestion;
+          suggestionBox.style.display = "block";
+        } catch (err) {
+          msgEl.textContent = err.message;
+          msgEl.className = "form-msg error";
+        } finally {
+          aiGoBtn.disabled = false;
+        }
+      });
+    }
+    const aiInsertBtn = el.querySelector("[data-ai-insert]");
+    if (aiInsertBtn) {
+      aiInsertBtn.addEventListener("click", () => {
+        const suggestionBox = el.querySelector("[data-ai-suggestion]");
+        const suggestionText = suggestionBox.querySelector(".publishbook-ai-suggestion-text").textContent;
+        const textarea = el.querySelector(".publishbook-chapter-content");
+        textarea.value = (textarea.value ? textarea.value + "\n\n" : "") + suggestionText;
+        suggestionBox.style.display = "none";
+      });
+    }
+  }
+
+  function renumberChapters() {
+    document.querySelectorAll(".publishbook-chapter").forEach((el, i) => {
+      el.dataset.chapter = i;
+      const titleInput = el.querySelector(".publishbook-chapter-title");
+      if (titleInput && !titleInput.value) titleInput.placeholder = I18N.t("publishBook.chapterTitlePlaceholder") + " " + (i + 1);
+    });
+  }
+
+  function collectChapters() {
+    return Array.from(document.querySelectorAll(".publishbook-chapter")).map((el) => ({
+      title: el.querySelector(".publishbook-chapter-title").value,
+      content: el.querySelector(".publishbook-chapter-content").value,
+    }));
+  }
+
+  async function saveDraft(chaptersOverride) {
+    const formEl = document.getElementById("publishbook-form");
+    const fd = formEl ? new FormData(formEl) : null;
+    return api("/api/original-works/" + encodeURIComponent(id), {
+      method: "PATCH",
+      auth: true,
+      body: {
+        title: fd ? fd.get("title") : work.title,
+        genre: fd ? fd.get("genre") : work.genre,
+        synopsis: fd ? fd.get("synopsis") : work.synopsis,
+        chapters: chaptersOverride || collectChapters(),
+      },
+    });
+  }
+
+  if (!editable) {
+    viewEl.innerHTML = `
+      <a href="#/publish-book" class="back-link">&larr; ${I18N.t("publishBook.backToList")}</a>
+      <div class="publishbook-detail-header">
+        <div>
+          ${publishBookStatusBadge(work.status)}
+          ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+        </div>
+      </div>
+      <h2 class="section-heading">${escapeHtml(work.title || I18N.t("publishBook.untitled"))}</h2>
+      <p class="groups-subtitle">${escapeHtml(work.genre || I18N.t("publishBook.genreUnset"))}</p>
+      ${statusNoteHtml}
+      ${
+        work.status === "approved_pending_legal"
+          ? `<div class="publishbook-publish-wrap" id="publishbook-publish-wrap">
+        <button type="button" class="btn btn-primary publishbook-publish-btn" id="publishbook-publish-btn">&#128640; ${I18N.t("publishBook.publishNow")}</button>
+      </div>`
+          : ""
+      }
+      ${work.synopsis ? `<p class="group-detail-desc">${escapeHtml(work.synopsis)}</p>` : ""}
+      <h3 class="publishbook-chapters-heading">${I18N.t("publishBook.chaptersHeading")}</h3>
+      <div id="publishbook-chapters">${chapters.map(chapterBlockHtml).join("")}</div>
+    `;
+
+    const publishBtn = document.getElementById("publishbook-publish-btn");
+    if (publishBtn) {
+      publishBtn.addEventListener("click", async () => {
+        publishBtn.disabled = true;
+        try {
+          await api("/api/original-works/" + encodeURIComponent(id) + "/publish", { method: "POST", auth: true });
+          document.getElementById("publishbook-publish-wrap").innerHTML = `
+            <div class="publishbook-publish-thanks">
+              <p class="publishbook-publish-thanks-title">&#10024; ${I18N.t("publishBook.publishComingSoonTitle")}</p>
+              <p class="publishbook-publish-thanks-desc">${I18N.t("publishBook.publishComingSoonDesc")}</p>
+            </div>`;
+        } catch (err) {
+          alert(err.message);
+          publishBtn.disabled = false;
+        }
+      });
+    }
+    return;
+  }
+
+  // ---- Editable state: a guided 3-step wizard (Details -> Chapters ->
+  // Review & Submit) instead of one long form, per Carlos's request that
+  // publishing an original work feel fantastic and walk the author through
+  // it step by step. Submitting still never makes anything public - see
+  // ORIGINAL_BOOK_PROGRAM_ENABLED in server.js - but the whole exercise,
+  // including AI co-writing and the automated review verdict, is real.
+  viewEl.innerHTML = `
+    <a href="#/publish-book" class="back-link">&larr; ${I18N.t("publishBook.backToList")}</a>
+    <div class="publishbook-detail-header">
+      <h2 class="section-heading">${I18N.t("publishBook.wizardHeading")}</h2>
+      ${!bpConfig.programEnabled ? `<span class="bookclub-authorpick-badge">${I18N.t("bookClub.authorPickPreviewBadge")}</span>` : ""}
+    </div>
+    ${statusNoteHtml}
+    <div class="publishbook-steps">
+      <span class="publishbook-step-dot active" data-step-indicator="1"><span class="publishbook-step-num">1</span>${I18N.t("publishBook.stepDetails")}</span>
+      <span class="publishbook-step-line"></span>
+      <span class="publishbook-step-dot" data-step-indicator="2"><span class="publishbook-step-num">2</span>${I18N.t("publishBook.stepChapters")}</span>
+      <span class="publishbook-step-line"></span>
+      <span class="publishbook-step-dot" data-step-indicator="3"><span class="publishbook-step-num">3</span>${I18N.t("publishBook.stepReview")}</span>
+    </div>
+
+    <div class="publishbook-step-panel" data-step="1">
+      <p class="publishbook-step-intro">${I18N.t("publishBook.step1Intro")}</p>
+      <form id="publishbook-form" class="stacked-form">
+        <label>${I18N.t("publishBook.titleLabel")}<input type="text" name="title" required maxlength="200" value="${escapeHtml(work.title || "")}" /></label>
+        <label>${I18N.t("publishBook.genreLabel")}<input type="text" name="genre" maxlength="60" value="${escapeHtml(work.genre || "")}" placeholder="${I18N.t("publishBook.genrePlaceholder")}" /></label>
+        <label>${I18N.t("publishBook.synopsisLabel")}<textarea name="synopsis" maxlength="2000" placeholder="${I18N.t("publishBook.synopsisPlaceholder")}">${escapeHtml(work.synopsis || "")}</textarea></label>
+      </form>
+      <div class="publishbook-actions">
+        <button type="button" class="btn btn-primary" data-next="2">${I18N.t("publishBook.continueToChapters")}</button>
+      </div>
+    </div>
+
+    <div class="publishbook-step-panel" data-step="2" style="display:none;">
+      <p class="publishbook-step-intro">${I18N.t("publishBook.step2Intro")}</p>
+      <div id="publishbook-chapters">${chapters.map(chapterBlockHtml).join("")}</div>
+      <button type="button" class="btn btn-secondary" id="publishbook-add-chapter">+ ${I18N.t("publishBook.addChapter")}</button>
+      <div class="publishbook-actions">
+        <button type="button" class="btn btn-secondary" data-back="1">${I18N.t("publishBook.back")}</button>
+        <button type="button" class="btn btn-primary" data-next="3">${I18N.t("publishBook.continueToReview")}</button>
+      </div>
+    </div>
+
+    <div class="publishbook-step-panel" data-step="3" style="display:none;">
+      <p class="publishbook-step-intro">${I18N.t("publishBook.step3Intro")}</p>
+      <div class="publishbook-review-card" id="publishbook-review-card"></div>
+      <p class="publishbook-legal-note">&#128274; ${I18N.t("publishBook.legalPreviewNote")}</p>
+      <div class="publishbook-actions">
+        <button type="button" class="btn btn-secondary" data-back="2">${I18N.t("publishBook.back")}</button>
+        <button type="button" class="btn btn-primary" id="publishbook-submit-btn">${I18N.t("publishBook.submitForReview")}</button>
+      </div>
+      <p class="form-msg" id="publishbook-save-msg"></p>
+    </div>
+    <p class="publishbook-autosave-note">${I18N.t("publishBook.autosaveNote")}</p>
+  `;
+
+  document.querySelectorAll(".publishbook-chapter").forEach(wireChapterBlock);
+
+  function goToStep(n) {
+    document.querySelectorAll(".publishbook-step-panel").forEach((el) => {
+      el.style.display = Number(el.dataset.step) === n ? "" : "none";
+    });
+    document.querySelectorAll(".publishbook-step-dot").forEach((el) => {
+      el.classList.toggle("active", Number(el.dataset.stepIndicator) <= n);
+    });
+    viewEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (n === 3) populateReview();
+  }
+
+  function populateReview() {
+    const fd = new FormData(document.getElementById("publishbook-form"));
+    const title = fd.get("title") || I18N.t("publishBook.untitled");
+    const genre = fd.get("genre") || I18N.t("publishBook.genreUnset");
+    const synopsis = fd.get("synopsis") || "";
+    const chs = collectChapters();
+    const wordCount = chs.reduce((sum, c) => sum + String(c.content || "").trim().split(/\s+/).filter(Boolean).length, 0);
+    document.getElementById("publishbook-review-card").innerHTML = `
+      <p class="publishbook-review-genre">${escapeHtml(genre)}</p>
+      <h3>${escapeHtml(title)}</h3>
+      ${synopsis ? `<p class="publishbook-review-synopsis">${escapeHtml(synopsis)}</p>` : ""}
+      <p class="publishbook-review-stats">${chs.length} ${I18N.t("publishBook.chaptersHeading")} &middot; ${wordCount} ${I18N.t("publishBook.words")}</p>
+    `;
+  }
+
+  document.querySelectorAll("[data-next]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const target = Number(btn.dataset.next);
+      const formEl = document.getElementById("publishbook-form");
+      if (formEl && !formEl.reportValidity()) return;
+      btn.disabled = true;
+      try {
+        await saveDraft();
+        goToStep(target);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+  document.querySelectorAll("[data-back]").forEach((btn) => {
+    btn.addEventListener("click", () => goToStep(Number(btn.dataset.back)));
+  });
+
+  const addChapterBtn = document.getElementById("publishbook-add-chapter");
+  if (addChapterBtn) {
+    addChapterBtn.addEventListener("click", () => {
+      const container = document.getElementById("publishbook-chapters");
+      const index = container.children.length;
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = chapterBlockHtml({ title: "", content: "" }, index);
+      const newEl = wrapper.firstElementChild;
+      container.appendChild(newEl);
+      wireChapterBlock(newEl);
+      saveDraft().catch(() => {});
+      newEl.querySelector(".publishbook-chapter-title").focus();
+    });
+  }
+
+  const submitBtn = document.getElementById("publishbook-submit-btn");
+  if (submitBtn) {
+    submitBtn.addEventListener("click", async () => {
+      const msgEl = document.getElementById("publishbook-save-msg");
+      submitBtn.disabled = true;
+      try {
+        await saveDraft();
+        await api("/api/original-works/" + encodeURIComponent(id) + "/submit", {
+          method: "POST",
+          auth: true,
+          body: { locale: I18N.lang },
+        });
+        renderPublishBookEditor(id);
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+        submitBtn.disabled = false;
+      }
+    });
+  }
+}
+
 // ---------------- Notifications page ("#/notifications", reached from the icon nav) ----------------
 
 async function renderNotificationsPage() {
@@ -2594,7 +5414,7 @@ function renderPhotosGalleryTab(photos, isMe) {
       (p) => `
     <div class="photo-gallery-item" data-id="${p.id}">
       <img src="${p.url}" />
-      ${isMe ? `<button class="photo-remove-btn" data-id="${p.id}">&times;</button>` : ""}
+      ${isMe ? `<button class="photo-remove-btn" data-id="${p.id}" aria-label="${I18N.t("postAd.removePhoto")}">&times;</button>` : ""}
     </div>`
     )
     .join("");
@@ -2622,7 +5442,8 @@ function renderPhotosGalleryTab(photos, isMe) {
       reader.readAsDataURL(file);
     });
     el.querySelectorAll(".photo-remove-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
         if (!confirm(I18N.t("common.delete") + "?")) return;
         try {
           await api("/api/photos/" + btn.dataset.id, { method: "DELETE", auth: true });
@@ -2631,6 +5452,196 @@ function renderPhotosGalleryTab(photos, isMe) {
           alert(err.message);
         }
       });
+    });
+  }
+
+  // Tap a photo to open it full-size with like/comment - see
+  // openPhotoLightbox() below. Excludes the "+" add tile and the remove (x)
+  // button, which have their own handlers above.
+  el.querySelectorAll(".photo-gallery-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      const p = photos.find((x) => String(x.id) === item.dataset.id);
+      if (p) openPhotoLightbox(p);
+    });
+  });
+}
+
+// ---------------- Simple image lightbox (enlarge only, no like/comment) ----------------
+// Used for the profile cover photo - unlike the profile picture, a cover
+// photo isn't something people are expected to like/comment on individually,
+// just view enlarged.
+function openImageLightboxSimple(url) {
+  if (!url) return;
+  const overlay = document.createElement("div");
+  overlay.className = "photo-lightbox-overlay simple-image-lightbox-overlay";
+  overlay.innerHTML = `
+    <div class="photo-lightbox-backdrop"></div>
+    <div class="photo-lightbox-panel simple-image-lightbox-panel">
+      <button class="photo-lightbox-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      <div class="photo-lightbox-image-wrap"><img class="photo-lightbox-image" src="${url}" /></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.body.style.overflow = "hidden";
+  function close() {
+    overlay.remove();
+    document.body.style.overflow = "";
+  }
+  overlay.querySelector(".photo-lightbox-backdrop").addEventListener("click", close);
+  overlay.querySelector(".photo-lightbox-close").addEventListener("click", close);
+}
+
+// ---------------- Photo lightbox: view full-size, like, comment ----------------
+// Mirrors the Moments comments-sheet pattern above (openMomentComments/
+// drawMomentComments) but for a single profile-gallery photo, whose engagement
+// lives in mkt_photo_likes/mkt_photo_comments on the server (separate tables
+// from moments - see attachPhotoEngagement() in server.js).
+let photoLightboxState = null;
+
+function openPhotoLightbox(photo) {
+  photoLightboxState = {
+    photo: { ...photo },
+    comments: [],
+    commentsLoading: true,
+    replyTo: null,
+  };
+  const overlay = document.createElement("div");
+  overlay.className = "photo-lightbox-overlay";
+  overlay.id = "photo-lightbox-overlay";
+  document.body.appendChild(overlay);
+  document.body.style.overflow = "hidden";
+  drawPhotoLightbox();
+  api("/api/photos/" + photo.id + "/comments")
+    .then((rows) => {
+      if (!photoLightboxState || photoLightboxState.photo.id !== photo.id) return;
+      photoLightboxState.comments = rows;
+      photoLightboxState.commentsLoading = false;
+      drawPhotoLightbox();
+    })
+    .catch(() => {
+      if (photoLightboxState) {
+        photoLightboxState.commentsLoading = false;
+        drawPhotoLightbox();
+      }
+    });
+}
+
+function closePhotoLightbox() {
+  const overlay = document.getElementById("photo-lightbox-overlay");
+  if (overlay) overlay.remove();
+  photoLightboxState = null;
+  document.body.style.overflow = "";
+}
+
+function drawPhotoLightbox() {
+  const overlay = document.getElementById("photo-lightbox-overlay");
+  if (!overlay || !photoLightboxState) return;
+  const { photo, comments, commentsLoading, replyTo } = photoLightboxState;
+  const topLevel = comments.filter((c) => !c.parentCommentId);
+  const repliesOf = (id) => comments.filter((c) => c.parentCommentId === id);
+
+  const commentRowHtml = (c, isReply) => `
+    <div class="photo-comment-row ${isReply ? "is-reply" : ""}">
+      ${c.userPhoto ? `<img class="photo-comment-avatar" src="${c.userPhoto}" />` : `<div class="photo-comment-avatar photo-comment-avatar-placeholder">${initials(c.userName || "")}</div>`}
+      <div class="photo-comment-body">
+        <div class="photo-comment-meta"><span class="photo-comment-name">${escapeHtml(c.userName || "")}</span><span class="photo-comment-age">${timeAgoStr(c.createdAt)}</span></div>
+        <div class="photo-comment-text">${escapeHtml(c.text)}</div>
+        ${!isReply ? `<button class="photo-comment-reply-btn" data-reply-to="${c.id}" data-reply-name="${escapeHtml(c.userName || "")}">${I18N.t("moments.commentReply") || "Reply"}</button>` : ""}
+      </div>
+    </div>`;
+
+  const listHtml = topLevel.length
+    ? topLevel.map((c) => commentRowHtml(c, false) + repliesOf(c.id).map((r) => commentRowHtml(r, true)).join("")).join("")
+    : commentsLoading
+    ? `<div class="moment-comments-empty">${I18N.t("common.loading")}</div>`
+    : `<div class="moment-comments-empty">${I18N.t("moments.commentsEmpty") || "No comments yet."}</div>`;
+
+  overlay.innerHTML = `
+    <div class="photo-lightbox-backdrop" id="photo-lightbox-backdrop"></div>
+    <div class="photo-lightbox-panel">
+      <button class="photo-lightbox-close" id="photo-lightbox-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      <div class="photo-lightbox-image-wrap"><img class="photo-lightbox-image" src="${photo.url}" /></div>
+      <div class="photo-lightbox-actions">
+        <button type="button" class="photo-lightbox-like-btn ${photo.likedByMe ? "active" : ""}" id="photo-lightbox-like-btn">${photo.likedByMe ? "&#10084;&#65039;" : "&#129293;"} <span id="photo-lightbox-like-count">${photo.likesCount || 0}</span></button>
+        <span class="photo-lightbox-comment-count">&#128172; ${photo.commentsCount || 0}</span>
+      </div>
+      <div class="photo-lightbox-comments-list">${listHtml}</div>
+      ${
+        replyTo
+          ? `<div class="moment-comment-replying-chip">${(I18N.t("moments.replyingTo") || "Replying to")} @${escapeHtml(replyTo.name)} <button id="photo-comment-cancel-reply">&times;</button></div>`
+          : ""
+      }
+      <form class="moment-comments-input-row" id="photo-comments-form">
+        <input type="text" id="photo-comments-input" maxlength="500" placeholder="${I18N.t("moments.commentPlaceholder") || "Add a comment..."}" ${state.token ? "" : "disabled"} />
+        <button type="submit" ${state.token ? "" : "disabled"}>${I18N.t("messages.send")}</button>
+      </form>
+    </div>`;
+
+  document.getElementById("photo-lightbox-backdrop").addEventListener("click", closePhotoLightbox);
+  document.getElementById("photo-lightbox-close").addEventListener("click", closePhotoLightbox);
+
+  const likeBtn = document.getElementById("photo-lightbox-like-btn");
+  likeBtn.addEventListener("click", async () => {
+    if (!state.token) {
+      location.hash = "#/login";
+      return;
+    }
+    const wasLiked = photoLightboxState.photo.likedByMe;
+    photoLightboxState.photo.likedByMe = !wasLiked;
+    photoLightboxState.photo.likesCount = (photoLightboxState.photo.likesCount || 0) + (wasLiked ? -1 : 1);
+    drawPhotoLightbox();
+    try {
+      await api("/api/photos/" + photo.id + "/like", { method: wasLiked ? "DELETE" : "POST", auth: true });
+    } catch (err) {
+      photoLightboxState.photo.likedByMe = wasLiked;
+      photoLightboxState.photo.likesCount = (photoLightboxState.photo.likesCount || 0) + (wasLiked ? 1 : -1);
+      drawPhotoLightbox();
+    }
+  });
+
+  overlay.querySelectorAll(".photo-comment-reply-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      photoLightboxState.replyTo = { id: btn.dataset.replyTo, name: btn.dataset.replyName };
+      drawPhotoLightbox();
+      const input = document.getElementById("photo-comments-input");
+      if (input) input.focus();
+    });
+  });
+  const cancelReplyBtn = document.getElementById("photo-comment-cancel-reply");
+  if (cancelReplyBtn) {
+    cancelReplyBtn.addEventListener("click", () => {
+      photoLightboxState.replyTo = null;
+      drawPhotoLightbox();
+    });
+  }
+  const form = document.getElementById("photo-comments-form");
+  if (form) {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      const input = document.getElementById("photo-comments-input");
+      const text = (input.value || "").trim();
+      if (!text) return;
+      input.disabled = true;
+      try {
+        const created = await api("/api/photos/" + photo.id + "/comments", {
+          method: "POST",
+          auth: true,
+          body: { text, parentCommentId: photoLightboxState.replyTo ? photoLightboxState.replyTo.id : undefined },
+        });
+        photoLightboxState.comments.push(created);
+        photoLightboxState.photo.commentsCount = (photoLightboxState.photo.commentsCount || 0) + 1;
+        photoLightboxState.replyTo = null;
+        drawPhotoLightbox();
+        const freshInput = document.getElementById("photo-comments-input");
+        if (freshInput) freshInput.focus();
+      } catch (err) {
+        input.disabled = false;
+        alert(err.message);
+      }
     });
   }
 }
@@ -2731,6 +5742,81 @@ function renderMomentGroupsBar(containerEl, groups, opts) {
   });
 }
 
+// Renders the Loops "stories" strip on Home (see the .home-stories-strip
+// comment on renderHome()). Deliberately a separate function from
+// renderMomentGroupsBar() above rather than a third opts-flag on it: the
+// data shape differs (groups carry `loops` + a per-loop `viewed` flag
+// instead of `moments`), the ring needs a seen/unseen state Moments never
+// had once they went permanent, and the "own" affordance opens the create
+// wizard directly instead of the Moments-specific upload modal - trying to
+// thread all of that through one shared function would leave more
+// conditionals than shared code. Own dedicated CSS classes too
+// (.loop-rect-*, mirroring .moment-rect-*) for the same reason.
+function renderLoopGroupsBar(containerEl, groups, opts) {
+  const mine = opts && opts.ownUserId ? groups.find((g) => g.userId === opts.ownUserId) : null;
+  const hasOwn = !!(mine && mine.loops.length);
+  let html = "";
+  if (opts && opts.ownUserId) {
+    const thumb = hasOwn && mine.loops[0].mediaType === "photo" ? mine.loops[0].mediaUrl : opts.ownPhoto;
+    html += `
+      <div class="loop-rect-wrap loop-rect-add" id="loop-add-circle" style="${thumb ? `background-image:url('${thumb}')` : ""}">
+        ${!thumb ? `<div class="loop-rect-placeholder">${initials(opts.ownName || "")}</div>` : ""}
+        <span class="loop-rect-shade"></span>
+        <span class="loop-rect-add-badge" id="loop-add-badge" title="${I18N.t("loops.add")}">+</span>
+        <span class="loop-rect-name">${I18N.t("loops.yourLoop")}</span>
+      </div>`;
+  }
+  const others = opts && opts.ownUserId ? groups.filter((g) => g.userId !== opts.ownUserId) : groups;
+  others.forEach((g) => {
+    // Ring reads "unviewed" (colored/gold, same treatment the always-gold
+    // .moment-rect-avatar border used to signal "new") as long as ANY of
+    // this author's Loops hasn't been seen by the current viewer yet, and
+    // flips to a plain/gray ring only once every one of them has - same
+    // all-or-nothing rule Instagram/FB Stories use for a person's ring.
+    const allViewed = g.loops.every((l) => l.viewed);
+    const thumb = g.loops[0] && g.loops[0].mediaType === "photo" ? g.loops[0].mediaUrl : g.userPhoto;
+    html += `
+      <div class="loop-rect-wrap" data-uid="${g.userId}" style="${thumb ? `background-image:url('${thumb}')` : ""}">
+        ${!thumb ? `<div class="loop-rect-placeholder">${initials(g.userName)}</div>` : ""}
+        <span class="loop-rect-shade"></span>
+        <div class="loop-rect-avatar ${allViewed ? "loop-rect-avatar-viewed" : "loop-rect-avatar-unviewed"}">
+          ${g.userPhoto ? `<img src="${g.userPhoto}" />` : `<div class="loop-rect-avatar-placeholder">${initials(g.userName)}</div>`}
+        </div>
+        <span class="loop-rect-name">${escapeHtml(g.userName)}</span>
+      </div>`;
+  });
+  containerEl.innerHTML = html;
+
+  if (opts && opts.ownUserId) {
+    const addCircle = document.getElementById("loop-add-circle");
+    if (addCircle) {
+      addCircle.addEventListener("click", () => {
+        if (mine && mine.loops.length) {
+          openLoopsViewer(mine.loops, 0, mine);
+        } else {
+          openCreateWizard("loop");
+        }
+      });
+    }
+    // The small "+" badge always opens the capture flow to add another Loop,
+    // even if the user already has active ones - tapping the rest of the
+    // circle views your current Loop(s), same split as the Moments bar's
+    // add badge vs. circle.
+    const addBadge = document.getElementById("loop-add-badge");
+    if (addBadge) {
+      addBadge.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openCreateWizard("loop");
+      });
+    }
+  }
+  containerEl.querySelectorAll(".loop-rect-wrap[data-uid]").forEach((wrap) => {
+    wrap.addEventListener("click", () => {
+      const g = groups.find((x) => x.userId === wrap.dataset.uid);
+      if (g) openLoopsViewer(g.loops, 0, g);
+    });
+  });
+}
 
 function renderProfileMomentsBar(userId, userName, userPhoto, moments, isMe) {
   const el = document.getElementById("profile-moments-bar");
@@ -2753,7 +5839,7 @@ let momentViewerTimer = null;
 let homeFeedMomentsList = [];
 let homeFeedGroupsById = {};
 
-// Reels/Shorts-style action rail icons for the Moments story viewer: white
+// Vertical-video-style action rail icons for the Moments story viewer: white
 // outline by default, filled via the ".active" CSS class (persistent for
 // like/save, momentary for message/share/repost as a press-feedback flash).
 const MOMENT_ICON_HEART =
@@ -2903,7 +5989,7 @@ function resumeMomentViewerPlayback() {
 async function openMomentComments(m, overlayId, context) {
   overlayId = overlayId || "moment-viewer-overlay";
   context = context || "story";
-  if (context === "shorts") pauseShortsPlayback();
+  if (context === "clips") pauseClipsPlayback();
   else pauseMomentViewerPlayback();
   momentCommentsState = { momentId: m.id, comments: [], replyTo: null, loading: true, context };
   const overlay = document.getElementById(overlayId);
@@ -2932,17 +6018,17 @@ function closeMomentComments() {
   if (panel) panel.remove();
   const context = momentCommentsState ? momentCommentsState.context : "story";
   momentCommentsState = null;
-  if (context === "shorts") resumeShortsPlayback();
+  if (context === "clips") resumeClipsPlayback();
   else resumeMomentViewerPlayback();
 }
 
-function pauseShortsPlayback() {
-  const videoEl = document.getElementById("shorts-video");
+function pauseClipsPlayback() {
+  const videoEl = document.getElementById("clips-video");
   if (videoEl) videoEl.pause();
 }
 
-function resumeShortsPlayback() {
-  const videoEl = document.getElementById("shorts-video");
+function resumeClipsPlayback() {
+  const videoEl = document.getElementById("clips-video");
   if (videoEl) videoEl.play().catch(() => {});
 }
 
@@ -2974,7 +6060,7 @@ function drawMomentComments() {
     <div class="moment-comments-sheet">
       <div class="moment-comments-head">
         <span>${I18N.t("moments.commentsTitle") || "Comments"}</span>
-        <button class="moment-comments-close" id="moment-comments-close">&times;</button>
+        <button class="moment-comments-close" id="moment-comments-close" aria-label="${I18N.t("common.close")}">&times;</button>
       </div>
       <div class="moment-comments-list">${listHtml}</div>
       ${
@@ -3101,11 +6187,11 @@ function drawMomentViewer() {
               }</button>`
             : ""
         }
-        <button class="moment-viewer-close" id="moment-viewer-close">&times;</button>
+        <button class="moment-viewer-close" id="moment-viewer-close" aria-label="${I18N.t("common.close")}">&times;</button>
       </div>
       ${
         m.mediaType === "video"
-          ? `<video class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>`
+          ? `<video class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>${renderMediaOverlayLayer(m.overlays)}`
           : `<img class="moment-viewer-media" id="moment-viewer-media" src="${m.mediaUrl}" />`
       }
       ${m.caption ? `<div class="moment-viewer-caption">${linkifyHashtags(escapeHtml(m.caption))}</div>` : ""}
@@ -3122,6 +6208,7 @@ function drawMomentViewer() {
     </div>
   `;
 
+  wireMomentVoiceoverSync(overlay.querySelector(".moment-viewer-media-wrap"));
   document.getElementById("moment-viewer-close").addEventListener("click", closeMomentsViewer);
   document.getElementById("moment-viewer-prev").addEventListener("click", () => stepMomentViewer(-1));
   document.getElementById("moment-viewer-next").addEventListener("click", () => stepMomentViewer(1));
@@ -3182,15 +6269,27 @@ function drawMomentViewer() {
     if (videoEl) {
       videoEl.muted = false;
       videoEl.volume = 1;
-      videoEl.addEventListener("loadedmetadata", () => {
-        if (fill && videoEl.duration && isFinite(videoEl.duration)) {
-          requestAnimationFrame(() => {
-            fill.style.transition = "width " + videoEl.duration * 1000 + "ms linear";
-            fill.style.width = "100%";
-          });
-        }
-      });
-      videoEl.addEventListener("ended", () => stepMomentViewer(1));
+      const startProgressAnim = (durationMs) => {
+        if (!fill) return;
+        fill.style.transition = "none";
+        fill.style.width = "0%";
+        requestAnimationFrame(() => {
+          fill.style.transition = "width " + durationMs + "ms linear";
+          fill.style.width = "100%";
+        });
+      };
+      // AI auto-clip (task #160): a trimmed Moment loops within its
+      // suggested window instead of auto-advancing to the next story on
+      // "ended" (it never reaches its real end - see wireMomentTrimLoop()).
+      const trim = wireMomentTrimLoop(videoEl, m, () => startProgressAnim((trim.end - trim.start) * 1000));
+      if (trim) {
+        videoEl.addEventListener("loadedmetadata", () => startProgressAnim((trim.end - trim.start) * 1000));
+      } else {
+        videoEl.addEventListener("loadedmetadata", () => {
+          if (videoEl.duration && isFinite(videoEl.duration)) startProgressAnim(videoEl.duration * 1000);
+        });
+        videoEl.addEventListener("ended", () => stepMomentViewer(1));
+      }
     }
   } else {
     const duration = 5000;
@@ -3216,187 +6315,428 @@ function stepMomentViewer(dir) {
   drawMomentViewer();
 }
 
-// ---------------- "Moments" full-screen video feed ("#/shorts") ----------------
-// A single vertical stream of every active video Moment on the platform,
-// ranked by /api/moments/videos/feed (friends > followed Pages > Pages >
-// recency). Distinct from the story-style moments-bar above: this is a
-// continuous scroll/swipe feed like Reels/Shorts, browsing all video content.
+// ---------------- Loops full-screen viewer ----------------
+// Its own function rather than a second mode bolted onto
+// openMomentsViewer()/drawMomentViewer() above: the interaction model is
+// genuinely different (tap-to-advance + auto-advance timing vs. that
+// viewer's like/message/share/repost/save action rail and follow button),
+// and Loops has no equivalent of any of those social actions in v1 (see the
+// scope note in the PR/report - out of scope for now, tap-through +
+// seen/unseen + owner view count + delete is the full v1 feature set).
+// Reuses the same overlay-back-button pattern (guardOverlayForBack /
+// closeOverlayViaBack) as every other full-screen overlay in the app.
+let loopViewerState = null; // { loops, index, group, viewedIds: Set<loopId> }
+let loopViewerTimer = null; // photo auto-advance timer - always cleared before being reassigned or on close, so it can never leak or double-fire
+const LOOP_PHOTO_DURATION_MS = 5000; // same fixed "how long a photo stays up" as the Moments viewer uses
 
-let shortsState = null;
+function openLoopsViewer(loops, startIndex, group) {
+  if (!loops || !loops.length) return;
+  loopViewerState = { loops: loops.slice(), index: startIndex || 0, group, viewedIds: new Set() };
+  const overlay = document.createElement("div");
+  overlay.className = "loop-viewer-overlay";
+  overlay.id = "loop-viewer-overlay";
+  document.body.appendChild(overlay);
+  guardOverlayForBack(closeLoopsViewer);
+  drawLoopViewer();
+}
 
-async function renderShorts() {
+function closeLoopsViewer() {
+  if (loopViewerTimer) {
+    clearTimeout(loopViewerTimer);
+    loopViewerTimer = null;
+  }
+  const overlay = document.getElementById("loop-viewer-overlay");
+  if (overlay) overlay.remove();
+  loopViewerState = null;
+}
+
+function drawLoopViewer() {
+  const overlay = document.getElementById("loop-viewer-overlay");
+  if (!overlay || !loopViewerState) return;
+  // Always clear any still-pending photo-advance timer before redrawing -
+  // drawLoopViewer() is called both on navigation and after an in-place
+  // mutation (delete), so without this a stale timer from the previous
+  // loop could fire after the DOM (and its progress bar) has moved on.
+  if (loopViewerTimer) {
+    clearTimeout(loopViewerTimer);
+    loopViewerTimer = null;
+  }
+  const { loops, index, group } = loopViewerState;
+  const m = loops[index];
+  const isOwn = state.user && m.userId === state.user.id;
+
+  // Record the view once per loop per viewer-session (the endpoint is
+  // idempotent server-side too, but no need to re-fire it every time the
+  // user steps back and forth over the same loop in one sitting).
+  if (!loopViewerState.viewedIds.has(m.id)) {
+    loopViewerState.viewedIds.add(m.id);
+    api("/api/loops/" + m.id + "/view", { method: "POST", auth: true }).catch(() => {});
+  }
+
+  const bars = loops
+    .map((_, i) => `<div class="loop-viewer-progress-bar ${i < index ? "done" : ""}"><div class="loop-viewer-progress-fill" id="loop-progress-fill-${i}"></div></div>`)
+    .join("");
+
+  overlay.innerHTML = `
+    <div class="loop-viewer-media-wrap">
+      <div class="loop-viewer-progress">${bars}</div>
+      <div class="loop-viewer-head">
+        <button class="loop-viewer-head-link" id="loop-viewer-head-link" ${group && group.userId ? "" : "disabled"}>
+          ${group && group.userPhoto ? `<img src="${group.userPhoto}" />` : ""}
+          <span class="loop-viewer-head-name">${escapeHtml((group && group.userName) || "")}${group && group.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        </button>
+        ${isOwn ? `<span class="loop-viewer-view-count" title="${I18N.t("loops.views")}">&#128065; ${m.viewCount || 0}</span>` : ""}
+        <button class="loop-viewer-close" id="loop-viewer-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      ${
+        m.mediaType === "video"
+          ? `<video class="loop-viewer-media" id="loop-viewer-media" src="${m.mediaUrl}" autoplay playsinline></video>`
+          : `<img class="loop-viewer-media" id="loop-viewer-media" src="${m.mediaUrl}" />`
+      }
+      ${m.caption ? `<div class="loop-viewer-caption">${linkifyHashtags(escapeHtml(m.caption))}</div>` : ""}
+      ${isOwn ? `<button class="loop-viewer-delete" id="loop-viewer-delete">${I18N.t("loops.delete")}</button>` : ""}
+      <button class="loop-viewer-nav prev" id="loop-viewer-prev"></button>
+      <button class="loop-viewer-nav next" id="loop-viewer-next"></button>
+    </div>
+  `;
+
+  document.getElementById("loop-viewer-close").addEventListener("click", () => closeOverlayViaBack(closeLoopsViewer));
+  document.getElementById("loop-viewer-prev").addEventListener("click", () => stepLoopViewer(-1));
+  document.getElementById("loop-viewer-next").addEventListener("click", () => stepLoopViewer(1));
+  const headLink = document.getElementById("loop-viewer-head-link");
+  if (headLink && !headLink.disabled) {
+    headLink.addEventListener("click", () => {
+      const uid = group && group.userId;
+      if (!uid) return;
+      closeOverlayViaBack(closeLoopsViewer);
+      location.hash = "#/profile/" + uid;
+    });
+  }
+  const delBtn = document.getElementById("loop-viewer-delete");
+  if (delBtn) {
+    delBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("loops.confirmDelete"))) return;
+      try {
+        await api("/api/loops/" + m.id, { method: "DELETE", auth: true });
+        loopViewerState.loops.splice(index, 1);
+        if (!loopViewerState.loops.length) {
+          closeOverlayViaBack(closeLoopsViewer);
+          router();
+          return;
+        }
+        loopViewerState.index = Math.min(index, loopViewerState.loops.length - 1);
+        drawLoopViewer();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+
+  const fill = document.getElementById("loop-progress-fill-" + index);
+  if (m.mediaType === "video") {
+    const videoEl = document.getElementById("loop-viewer-media");
+    if (videoEl) {
+      videoEl.muted = false;
+      videoEl.volume = 1;
+      videoEl.addEventListener("loadedmetadata", () => {
+        if (fill && videoEl.duration && isFinite(videoEl.duration)) {
+          requestAnimationFrame(() => {
+            fill.style.transition = "width " + videoEl.duration * 1000 + "ms linear";
+            fill.style.width = "100%";
+          });
+        }
+      });
+      videoEl.addEventListener("ended", () => stepLoopViewer(1));
+    }
+  } else {
+    if (fill) {
+      requestAnimationFrame(() => {
+        fill.style.transition = "width " + LOOP_PHOTO_DURATION_MS + "ms linear";
+        fill.style.width = "100%";
+      });
+    }
+    loopViewerTimer = setTimeout(() => stepLoopViewer(1), LOOP_PHOTO_DURATION_MS);
+  }
+}
+
+function stepLoopViewer(dir) {
+  if (!loopViewerState) return;
+  const next = loopViewerState.index + dir;
+  if (next < 0) return;
+  if (next >= loopViewerState.loops.length) {
+    closeLoopsViewer();
+    return;
+  }
+  loopViewerState.index = next;
+  drawLoopViewer();
+}
+
+// ---------------- Shared vertical swipe-feed engine ----------------
+// Both the full-screen "Clips" player ("#/clips": a TikTok-style takeover
+// with the topbar/bottom nav hidden) and the inline Home feed (mixed
+// photo+video moments, scrolling in normal document flow with the topbar
+// and bottom nav still visible - see renderHome()/loadHomeSwipeFeed() far
+// below) show the same ranked list from /api/moments/videos/feed and need
+// identical per-item rendering, swipe/wheel gestures, and watch-time
+// reporting. Every function here takes an explicit swipe-feed state object
+// (called `sw` below - NOT the unrelated global session `state`, which is
+// why the param isn't named `state`) shaped like
+// { videos, index, rootEl, closable, watchStart, currentDurationMs } so the
+// two surfaces run as fully independent instances instead of fighting over
+// one global. `clipsState` (the full-screen player) and `homeSwipeState`
+// (the inline Home feed) are the two live instances of that shape.
+
+// A photo has no natural "duration" to wait out the way a video does, so a
+// swipe-away after roughly this long counts as "watched it", short of that
+// counts as a "skip" - the same complete/skip signal the ranking in
+// /api/moments/videos/feed already consumes for videos, just fed a fixed
+// nominal duration instead of a real one (see reportSwipeWatch()).
+const SWIPE_PHOTO_DWELL_MS = 4000;
+
+let clipsState = null;
+let homeSwipeState = null;
+
+async function renderClips() {
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
   let videos = [];
   try {
     videos = await api("/api/moments/videos/feed", { auth: true });
   } catch (e) {}
   if (!videos.length) {
-    viewEl.innerHTML = `<div class="empty-state">${I18N.t("shorts.empty")}</div>`;
+    viewEl.innerHTML = `<div class="empty-state">${I18N.t("clips.empty")}</div>`;
     return;
   }
   viewEl.innerHTML = "";
-  openShortsPlayer(videos, 0);
+  openClipsPlayer(videos, 0);
 }
 
-function openShortsPlayer(videos, startIndex) {
-  shortsState = { videos, index: startIndex || 0 };
+function openClipsPlayer(videos, startIndex) {
   const overlay = document.createElement("div");
-  overlay.className = "shorts-overlay";
-  overlay.id = "shorts-overlay";
+  overlay.className = "clips-overlay";
+  overlay.id = "clips-overlay";
   document.body.appendChild(overlay);
-  drawShorts();
-
-  overlay.addEventListener(
-    "wheel",
-    (e) => {
-      if (overlay.dataset.wheelLock === "1") return;
-      overlay.dataset.wheelLock = "1";
-      setTimeout(() => (overlay.dataset.wheelLock = "0"), 500);
-      if (e.deltaY > 30) stepShorts(1);
-      else if (e.deltaY < -30) stepShorts(-1);
-    },
-    { passive: true }
-  );
-
-  // ---- Vertical swipe navigation (TikTok/Reels style) ----
-  // The current video visibly follows the finger as you drag, then either
-  // completes the transition to the next/previous video on release or
-  // snaps back if the swipe was too short. Replaces the old up/down arrow
-  // buttons entirely - this is the only way to move between moments now.
-  let touchStartY = null;
-  let touchStartX = null;
-  let dragging = false;
-  let lockedAxis = null; // "y" | "x" | null - decided a few px into the gesture
-
-  overlay.addEventListener(
-    "touchstart",
-    (e) => {
-      if (e.touches.length !== 1) return;
-      touchStartY = e.touches[0].clientY;
-      touchStartX = e.touches[0].clientX;
-      dragging = true;
-      lockedAxis = null;
-      const item = overlay.querySelector(".shorts-item");
-      if (item) item.style.transition = "none";
-    },
-    { passive: true }
-  );
-
-  overlay.addEventListener(
-    "touchmove",
-    (e) => {
-      if (!dragging || touchStartY === null) return;
-      const dy = e.touches[0].clientY - touchStartY;
-      const dx = e.touches[0].clientX - touchStartX;
-      if (!lockedAxis) {
-        if (Math.abs(dy) < 6 && Math.abs(dx) < 6) return;
-        lockedAxis = Math.abs(dy) > Math.abs(dx) ? "y" : "x";
-      }
-      if (lockedAxis !== "y") return;
-      e.preventDefault();
-      const atFirst = shortsState.index === 0 && dy > 0;
-      const atLast = shortsState.index === shortsState.videos.length - 1 && dy < 0;
-      const damped = atFirst || atLast ? dy * 0.35 : dy;
-      const item = overlay.querySelector(".shorts-item");
-      if (item) item.style.transform = `translateY(${damped}px)`;
-    },
-    { passive: false }
-  );
-
-  overlay.addEventListener(
-    "touchend",
-    (e) => {
-      if (!dragging || touchStartY === null) {
-        dragging = false;
-        return;
-      }
-      dragging = false;
-      const dy = e.changedTouches[0].clientY - touchStartY;
-      touchStartY = null;
-      touchStartX = null;
-      if (lockedAxis !== "y") return;
-      const item = overlay.querySelector(".shorts-item");
-      const THRESHOLD = 60;
-      if (dy < -THRESHOLD) {
-        stepShorts(1);
-      } else if (dy > THRESHOLD) {
-        stepShorts(-1);
-      } else if (item) {
-        item.style.transition = "transform 0.2s ease";
-        item.style.transform = "translateY(0)";
-      }
-    },
-    { passive: true }
-  );
+  clipsState = { videos, index: startIndex || 0, rootEl: overlay, closable: true };
+  drawSwipeItem(clipsState);
+  wireSwipeGestures(overlay, clipsState);
 }
 
-function closeShortsPlayer() {
-  reportShortsWatch();
-  const overlay = document.getElementById("shorts-overlay");
-  if (overlay) overlay.remove();
-  shortsState = null;
-  if (location.hash.startsWith("#/shorts")) location.hash = "#/";
+// Shared close path for any closable swipe-feed instance (today only the
+// full-screen Clips overlay sets closable:true - the inline Home feed has
+// no "X", it just scrolls away). Reports the outgoing item's watch time,
+// tears down the overlay DOM, and - only for the Clips instance
+// specifically - resets the "#/clips" hash back to Home.
+function closeSwipeFeed(sw) {
+  reportSwipeWatch(sw);
+  if (sw && sw.closable && sw.rootEl) sw.rootEl.remove();
+  if (sw === clipsState) {
+    clipsState = null;
+    if (location.hash.startsWith("#/clips")) location.hash = "#/";
+  }
 }
 
-// Reports how the viewer engaged with the video currently on screen -
-// "complete" if they stuck around for most of it (it loops, so a near-full
-// watch counts even without a real "ended" event), "skip" otherwise. Called
-// right before we move away from a video, feeding the affinity/popularity
-// signals the v2 ranking in /api/moments/videos/feed uses.
-function reportShortsWatch() {
-  if (!shortsState) return;
-  const v = shortsState.videos[shortsState.index];
-  if (!v || !shortsState.watchStart) return;
-  const watchMs = Date.now() - shortsState.watchStart;
-  const durationMs = shortsState.currentDurationMs || 0;
+function closeClipsPlayer() {
+  closeSwipeFeed(clipsState);
+}
+
+// ---- Videos hub (task #231) - general-purpose long-form video section,
+// reached from the Marketplace nav dropdown (#/videos). Deliberately a
+// normal scrollable page (thumbnail grid + a plain watch page below), NOT
+// the full-screen swipe player Moments/Clips use - short-form passive
+// scroll and long-form active browsing are different mental modes and stay
+// visually separate on purpose (see server.js's is_long_video split). Every
+// video here really is an mkt_moments row under the hood, so likes/saves/
+// comments reuse the exact same /api/moments/:id/... endpoints as Moments -
+// the watch page below renders them with the same #moment-viewer-* element
+// ids wireMomentViewerActions()/openMomentComments() already know how to
+// wire, instead of duplicating that logic. ----
+
+async function renderVideosFeed() {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let videos = [];
+  try {
+    videos = await api("/api/videos/feed");
+  } catch (e) {}
+  viewEl.innerHTML = `
+    <div style="margin:16px;">
+      <h1 class="section-heading">${I18N.t("videos.feedTitle")}</h1>
+      ${
+        videos.length
+          ? `<div class="videos-grid">${videos.map(videoCardHtml).join("")}</div>`
+          : `<div class="empty-state">${I18N.t("videos.empty")}</div>`
+      }
+    </div>
+  `;
+}
+
+function videoCardHtml(v) {
+  return `
+    <a class="video-card" href="#/videos/${v.id}">
+      <div class="video-card-thumb-wrap">
+        <video class="video-card-thumb" src="${v.mediaUrl}#t=0.1" muted preload="metadata"></video>
+      </div>
+      <div class="video-card-body">
+        <p class="video-card-title">${escapeHtml(v.title || "")}</p>
+        <a class="video-card-channel" href="#/profile/${v.userId}" onclick="event.stopPropagation()">${escapeHtml(v.userName || "")}</a>
+        <p class="video-card-meta">\u{2764}\u{FE0F} ${v.likeCount || 0} &middot; ${fmtDate(v.createdAt)}</p>
+      </div>
+    </a>
+  `;
+}
+
+// Small horizontal strip used on a product detail page ("Related videos") -
+// hidden entirely (returns "") when there are none, per task #231's spec.
+function relatedVideosStripHtml(videos) {
+  if (!videos || !videos.length) return "";
+  return `
+    <div class="related-videos-section">
+      <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("videos.relatedTitle")}</h2>
+      <div class="related-videos-row">
+        ${videos
+          .map(
+            (v) => `
+          <a class="related-video-card" href="#/videos/${v.id}">
+            <video class="related-video-thumb" src="${v.mediaUrl}#t=0.1" muted preload="metadata"></video>
+            <span class="related-video-title">${escapeHtml(v.title || "")}</span>
+          </a>`
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+async function renderVideoWatch(id) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let v;
+  try {
+    v = await api("/api/moments/" + id);
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${I18N.t("videos.notFound")}</p>`;
+    return;
+  }
+  if (!v || !v.isLongVideo) {
+    viewEl.innerHTML = `<p class="form-msg error">${I18N.t("videos.notFound")}</p>`;
+    return;
+  }
+  let linkedProduct = null;
+  if (v.linkedProductId) {
+    try {
+      linkedProduct = await api("/api/products/" + v.linkedProductId);
+    } catch (e) {}
+  }
+  const isOwn = state.user && state.user.id === v.userId;
+
+  viewEl.innerHTML = `
+    <div class="video-watch-wrap" id="moment-viewer-overlay">
+      <div class="video-watch-player-wrap">
+        <video class="video-watch-player" id="moment-viewer-media" src="${v.mediaUrl}" controls playsinline></video>
+        ${renderMediaOverlayLayer(v.overlays)}
+      </div>
+      <div class="video-watch-body">
+        <h1 class="video-watch-title">${escapeHtml(v.title || "")}</h1>
+        <a class="video-watch-channel" href="#/profile/${v.userId}">
+          ${v.userPhoto ? `<img class="video-watch-avatar" src="${v.userPhoto}" />` : `<div class="video-watch-avatar-placeholder">${initials(v.userName)}</div>`}
+          <span>${escapeHtml(v.userName || "")}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+        </a>
+        <div class="video-watch-actions">
+          <button class="video-watch-action-btn ${v.liked ? "active" : ""}" id="moment-viewer-like">${MOMENT_ICON_HEART} <span>${v.likeCount || 0}</span></button>
+          <button class="video-watch-action-btn" id="moment-viewer-message">${MOMENT_ICON_MESSAGE} <span>${I18N.t("videos.comments")}</span></button>
+          <button class="video-watch-action-btn ${v.saved ? "active" : ""}" id="moment-viewer-save">${MOMENT_ICON_SAVE} <span>${I18N.t("saved.save")}</span></button>
+          <button class="video-watch-action-btn" id="moment-viewer-share">${MOMENT_ICON_SHARE} <span>${I18N.t("videos.share")}</span></button>
+        </div>
+        ${v.caption ? `<p class="video-watch-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
+        ${
+          linkedProduct
+            ? `<a class="video-watch-product-card" href="#/product/${linkedProduct.id}">
+                 ${linkedProduct.photos && linkedProduct.photos[0] ? `<img src="${linkedProduct.photos[0]}" />` : `<div class="product-thumb-empty">\u{1F4E6}</div>`}
+                 <div>
+                   <p class="field-hint">${I18N.t("videos.linkedProductLabel")}</p>
+                   <p class="video-watch-product-title">${escapeHtml(linkedProduct.title)}</p>
+                   <p class="product-price">${fmtPrice(linkedProduct.price)}</p>
+                 </div>
+               </a>`
+            : ""
+        }
+        ${isOwn ? `<div class="action-row"><button class="btn btn-danger" id="video-watch-delete">${I18N.t("moments.delete")}</button></div>` : ""}
+      </div>
+    </div>
+  `;
+  wireMomentViewerActions(v);
+  const delBtn = document.getElementById("video-watch-delete");
+  if (delBtn) {
+    delBtn.addEventListener("click", async () => {
+      if (!confirm("Delete this video? / ¿Eliminar este video?")) return;
+      try {
+        await api("/api/moments/" + v.id, { method: "DELETE", auth: true });
+        location.hash = "#/profile";
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+}
+
+// Reports how the viewer engaged with the item currently on screen -
+// "complete" if they stuck around for most of it (video loops, so a
+// near-full watch counts even without a real "ended" event; photos use the
+// fixed SWIPE_PHOTO_DWELL_MS above), "skip" otherwise. Called right before
+// we move away from an item, feeding the affinity/popularity signals the
+// v2 ranking in /api/moments/videos/feed uses.
+function reportSwipeWatch(sw) {
+  if (!sw) return;
+  const v = sw.videos[sw.index];
+  if (!v || !sw.watchStart) return;
+  const watchMs = Date.now() - sw.watchStart;
+  const durationMs = sw.currentDurationMs || 0;
   const type = durationMs && watchMs >= durationMs * 0.85 ? "complete" : "skip";
   api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type, watchMs, durationMs } }).catch(() => {});
-  shortsState.watchStart = null;
+  sw.watchStart = null;
 }
 
-function toggleShortsLike() {
-  if (!shortsState) return;
+function toggleSwipeLike(sw) {
+  if (!sw) return;
   if (!state.token) {
     location.hash = "#/login";
     return;
   }
-  const v = shortsState.videos[shortsState.index];
+  const v = sw.videos[sw.index];
   const wasLiked = v.liked;
   v.liked = !wasLiked;
   v.likeCount = Math.max(0, (v.likeCount || 0) + (v.liked ? 1 : -1));
-  updateShortsLikeUI();
+  updateSwipeLikeUI(sw);
   api("/api/moments/" + v.id + "/like", { method: v.liked ? "POST" : "DELETE", auth: true, body: {} }).catch(() => {
     v.liked = wasLiked;
     v.likeCount = Math.max(0, (v.likeCount || 0) + (wasLiked ? 1 : -1));
-    updateShortsLikeUI();
+    updateSwipeLikeUI(sw);
   });
   if (v.liked) {
     api("/api/moments/" + v.id + "/event", { method: "POST", auth: true, body: { type: "like" } }).catch(() => {});
   }
 }
 
-function updateShortsLikeUI() {
-  if (!shortsState) return;
-  const v = shortsState.videos[shortsState.index];
-  const btn = document.getElementById("shorts-like");
-  const countEl = document.getElementById("shorts-like-count");
+function updateSwipeLikeUI(sw) {
+  if (!sw) return;
+  const v = sw.videos[sw.index];
+  const btn = document.getElementById("clips-like");
+  const countEl = document.getElementById("clips-like-count");
   if (btn) btn.classList.toggle("active", !!v.liked);
   if (countEl) countEl.textContent = v.likeCount || 0;
 }
 
-// Comment/share/repost/save for the Shorts player - mirrors
-// wireMomentViewerActions() so both surfaces behave identically (optimistic
-// toggle, revert on failure, same icon set and "active" styling).
-function wireShortsActions(v) {
-  const msgBtn = document.getElementById("shorts-message");
+// Comment/share/repost/save for a swipe-feed item - mirrors
+// wireMomentViewerActions() so all three surfaces (story viewer, Clips,
+// Home) behave identically (optimistic toggle, revert on failure, same
+// icon set and "active" styling).
+function wireSwipeActions(sw, v) {
+  const msgBtn = document.getElementById("clips-message");
   if (msgBtn) {
     msgBtn.addEventListener("click", () => {
       flashMomentAction(msgBtn);
-      openMomentComments(v, "shorts-overlay", "shorts");
+      openMomentComments(v, sw.rootEl.id, "clips");
     });
   }
 
-  const shareBtn = document.getElementById("shorts-share");
+  const shareBtn = document.getElementById("clips-share");
   if (shareBtn) {
     shareBtn.addEventListener("click", async () => {
       flashMomentAction(shareBtn);
@@ -3412,7 +6752,7 @@ function wireShortsActions(v) {
     });
   }
 
-  const repostBtn = document.getElementById("shorts-repost");
+  const repostBtn = document.getElementById("clips-repost");
   if (repostBtn) {
     repostBtn.addEventListener("click", async () => {
       if (!state.token) {
@@ -3430,7 +6770,7 @@ function wireShortsActions(v) {
     });
   }
 
-  const saveBtn = document.getElementById("shorts-save");
+  const saveBtn = document.getElementById("clips-save");
   if (saveBtn) {
     saveBtn.addEventListener("click", async () => {
       if (!state.token) {
@@ -3450,84 +6790,100 @@ function wireShortsActions(v) {
   }
 }
 
-function burstShortsHeart() {
-  const item = document.querySelector(".shorts-item");
+function burstSwipeHeart(sw) {
+  const item = sw.rootEl.querySelector(".clips-item");
   if (!item) return;
   const heart = document.createElement("div");
-  heart.className = "shorts-heart-burst";
+  heart.className = "clips-heart-burst";
   heart.textContent = "❤️";
   item.appendChild(heart);
   setTimeout(() => heart.remove(), 900);
 }
 
-function drawShorts() {
-  const overlay = document.getElementById("shorts-overlay");
-  if (!overlay || !shortsState) return;
-  const { videos, index } = shortsState;
+// Renders the currently-indexed item of `sw` into sw.rootEl - a photo
+// <img> or a video <video>, plus the shared author/caption/action-rail
+// chrome. `sw.closable` controls whether the full-screen-only "X" close
+// button is included (see closeSwipeFeed() above).
+function drawSwipeItem(sw) {
+  const root = sw.rootEl;
+  if (!root) return;
+  const { videos, index } = sw;
   const v = videos[index];
   const isOwn = state.user && v.userId === state.user.id;
   const showFollow = v.isPage && state.token && !isOwn;
+  const isPhoto = v.mediaType !== "video";
 
-  overlay.innerHTML = `
-    <div class="shorts-item">
-      <video class="shorts-video" id="shorts-video" src="${v.mediaUrl}" autoplay loop playsinline></video>
-      <button class="shorts-close" id="shorts-close">&times;</button>
-      <div class="shorts-info">
-        <a class="shorts-author-link" href="#/profile/${v.userId}">
-          ${v.userPhoto ? `<img class="shorts-avatar" src="${v.userPhoto}" />` : `<div class="shorts-avatar-placeholder">${initials(v.userName)}</div>`}
-          <span class="shorts-author">${escapeHtml(v.userName)}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
+  root.innerHTML = `
+    <div class="clips-item">
+      ${
+        isPhoto
+          ? `<img class="clips-video clips-photo" id="clips-video" src="${v.mediaUrl}" />`
+          : `<video class="clips-video" id="clips-video" src="${v.mediaUrl}" autoplay loop playsinline></video>${renderMediaOverlayLayer(v.overlays)}`
+      }
+      ${sw.closable ? `<button class="clips-close" id="clips-close" aria-label="${I18N.t("common.close")}">&times;</button>` : ""}
+      <div class="clips-info">
+        <a class="clips-author-link" href="#/profile/${v.userId}">
+          ${v.userPhoto ? `<img class="clips-avatar" src="${v.userPhoto}" />` : `<div class="clips-avatar-placeholder">${initials(v.userName)}</div>`}
+          <span class="clips-author">${escapeHtml(v.userName)}${v.isPage ? ` <span class="page-badge-inline">${I18N.t("pages.badge")}</span>` : ""}</span>
         </a>
-        ${v.caption ? `<p class="shorts-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
-        ${showFollow ? `<button class="btn-follow-inline shorts-follow" id="shorts-follow">${I18N.t("subs.subscribe")}</button>` : ""}
+        ${v.caption ? `<p class="clips-caption">${linkifyHashtags(escapeHtml(v.caption))}</p>` : ""}
+        ${showFollow ? `<button class="btn-follow-inline clips-follow" id="clips-follow">${I18N.t("subs.subscribe")}</button>` : ""}
       </div>
-      <div class="shorts-actions-col">
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn like-btn ${v.liked ? "active" : ""}" id="shorts-like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
-          <span class="shorts-action-count" id="shorts-like-count">${v.likeCount || 0}</span>
+      <div class="clips-actions-col">
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn like-btn ${v.liked ? "active" : ""}" id="clips-like" title="${I18N.t("moments.actionLike") || "Like"}">${MOMENT_ICON_HEART}</button>
+          <span class="clips-action-count" id="clips-like-count">${v.likeCount || 0}</span>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn" id="shorts-message" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn" id="clips-message" title="${I18N.t("moments.actionMessage") || "Message"}">${MOMENT_ICON_MESSAGE}</button>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn" id="shorts-share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn" id="clips-share" title="${I18N.t("moments.actionShare") || "Share"}">${MOMENT_ICON_SHARE}</button>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn repost-btn" id="shorts-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn repost-btn" id="clips-repost" title="${I18N.t("moments.actionRepost") || "Repost"}">${MOMENT_ICON_REPOST}</button>
         </div>
-        <div class="shorts-action">
-          <button class="moment-viewer-action-btn save-btn ${v.saved ? "active" : ""}" id="shorts-save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
+        <div class="clips-action">
+          <button class="moment-viewer-action-btn save-btn ${v.saved ? "active" : ""}" id="clips-save" title="${I18N.t("moments.actionSave") || "Save"}">${MOMENT_ICON_SAVE}</button>
         </div>
       </div>
     </div>
   `;
 
-  document.getElementById("shorts-close").addEventListener("click", closeShortsPlayer);
-  document.getElementById("shorts-like").addEventListener("click", toggleShortsLike);
-  wireShortsActions(v);
+  const closeBtn = document.getElementById("clips-close");
+  if (closeBtn) closeBtn.addEventListener("click", () => closeSwipeFeed(sw));
+  const likeBtn = document.getElementById("clips-like");
+  if (likeBtn) likeBtn.addEventListener("click", () => toggleSwipeLike(sw));
+  wireSwipeActions(sw, v);
 
-  shortsState.watchStart = Date.now();
-  shortsState.currentDurationMs = 0;
+  sw.watchStart = Date.now();
+  sw.currentDurationMs = isPhoto ? SWIPE_PHOTO_DWELL_MS : 0;
 
-  const videoEl = document.getElementById("shorts-video");
-  if (videoEl) {
-    videoEl.muted = false;
-    videoEl.volume = 1;
-    videoEl.addEventListener("loadedmetadata", () => {
-      if (shortsState) shortsState.currentDurationMs = (videoEl.duration || 0) * 1000;
+  const mediaEl = document.getElementById("clips-video");
+  if (mediaEl && !isPhoto) {
+    mediaEl.muted = false;
+    mediaEl.volume = 1;
+    mediaEl.addEventListener("loadedmetadata", () => {
+      if (sw.videos[sw.index] === v) sw.currentDurationMs = (mediaEl.duration || 0) * 1000;
     });
+    // AI auto-clip (task #160): loop within the trim window if this Moment
+    // has one, same as everywhere else its video plays.
+    wireMomentTrimLoop(mediaEl, v);
+  }
+  if (mediaEl) {
     let lastTap = 0;
-    videoEl.addEventListener("click", () => {
+    mediaEl.addEventListener("click", () => {
       const now = Date.now();
       if (now - lastTap < 300) {
-        const cur = shortsState.videos[shortsState.index];
-        if (!cur.liked) toggleShortsLike();
-        burstShortsHeart();
+        const cur = sw.videos[sw.index];
+        if (!cur.liked) toggleSwipeLike(sw);
+        burstSwipeHeart(sw);
       }
       lastTap = now;
     });
   }
 
-  const followBtn = document.getElementById("shorts-follow");
+  const followBtn = document.getElementById("clips-follow");
   if (followBtn) {
     const applyStatus = (status) => {
       followBtn.dataset.status = status;
@@ -3556,17 +6912,119 @@ function drawShorts() {
   }
 }
 
-function stepShorts(dir) {
-  if (!shortsState) return;
-  const next = shortsState.index + dir;
-  if (next < 0 || next >= shortsState.videos.length) return;
-  reportShortsWatch();
-  shortsState.index = next;
-  drawShorts();
+function stepSwipeFeed(sw, dir) {
+  if (!sw) return;
+  const next = sw.index + dir;
+  if (next < 0 || next >= sw.videos.length) return;
+  reportSwipeWatch(sw);
+  sw.index = next;
+  drawSwipeItem(sw);
+}
+
+// ---- Vertical swipe navigation (TikTok/Reels style), shared by the
+// full-screen Clips overlay and the inline Home feed ----
+// The current item visibly follows the finger as you drag, then either
+// completes the transition to the next/previous item on release or snaps
+// back if the swipe was too short. This (plus the wheel handler) is the
+// only way to move between items - there are no up/down arrow buttons.
+function wireSwipeGestures(rootEl, sw) {
+  rootEl.addEventListener(
+    "wheel",
+    (e) => {
+      if (rootEl.dataset.wheelLock === "1") return;
+      rootEl.dataset.wheelLock = "1";
+      setTimeout(() => (rootEl.dataset.wheelLock = "0"), 500);
+      if (e.deltaY > 30) stepSwipeFeed(sw, 1);
+      else if (e.deltaY < -30) stepSwipeFeed(sw, -1);
+    },
+    { passive: true }
+  );
+
+  let touchStartY = null;
+  let touchStartX = null;
+  let dragging = false;
+  let lockedAxis = null; // "y" | "x" | null - decided a few px into the gesture
+
+  rootEl.addEventListener(
+    "touchstart",
+    (e) => {
+      if (e.touches.length !== 1) return;
+      touchStartY = e.touches[0].clientY;
+      touchStartX = e.touches[0].clientX;
+      dragging = true;
+      lockedAxis = null;
+      const item = rootEl.querySelector(".clips-item");
+      if (item) item.style.transition = "none";
+    },
+    { passive: true }
+  );
+
+  rootEl.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!dragging || touchStartY === null) return;
+      const dy = e.touches[0].clientY - touchStartY;
+      const dx = e.touches[0].clientX - touchStartX;
+      if (!lockedAxis) {
+        if (Math.abs(dy) < 6 && Math.abs(dx) < 6) return;
+        lockedAxis = Math.abs(dy) > Math.abs(dx) ? "y" : "x";
+      }
+      if (lockedAxis !== "y") return;
+      e.preventDefault();
+      const atFirst = sw.index === 0 && dy > 0;
+      const atLast = sw.index === sw.videos.length - 1 && dy < 0;
+      const damped = atFirst || atLast ? dy * 0.35 : dy;
+      const item = rootEl.querySelector(".clips-item");
+      if (item) item.style.transform = `translateY(${damped}px)`;
+    },
+    { passive: false }
+  );
+
+  rootEl.addEventListener(
+    "touchend",
+    (e) => {
+      if (!dragging || touchStartY === null) {
+        dragging = false;
+        return;
+      }
+      dragging = false;
+      const dy = e.changedTouches[0].clientY - touchStartY;
+      touchStartY = null;
+      touchStartX = null;
+      if (lockedAxis !== "y") return;
+      const item = rootEl.querySelector(".clips-item");
+      const THRESHOLD = 60;
+      if (dy < -THRESHOLD) {
+        stepSwipeFeed(sw, 1);
+      } else if (dy > THRESHOLD) {
+        stepSwipeFeed(sw, -1);
+      } else if (item) {
+        item.style.transition = "transform 0.2s ease";
+        item.style.transform = "translateY(0)";
+      }
+    },
+    { passive: true }
+  );
 }
 
 const MAX_ACTIVE_MOMENTS = 3;
-const MAX_MOMENT_VIDEO_SECONDS = 180;
+const MAX_MOMENT_VIDEO_SECONDS = 90; // matches Instagram Reels cap
+// Client-side mirrors of server.js's MAX_ACTIVE_MOMENTS (reused as-is for
+// Loops' active-count cap - see server.js) and MAX_LOOP_VIDEO_SECONDS, kept
+// in sync by hand the same way MAX_MOMENT_VIDEO_SECONDS above already is.
+const MAX_LOOP_VIDEO_SECONDS = 20; // matches Stories-style short clips
+// Long-form "Videos" hub (task #231) - client-side mirror of server.js's
+// MAX_LONG_VIDEO_SECONDS, kept in sync by hand same as the two above.
+const MAX_LONG_VIDEO_SECONDS = 1200;
+
+// Max video length for the current create-wizard target - used everywhere
+// the wizard needs to know its own cap (the hold-record ring, the
+// gallery-upload duration probe) instead of each call site re-deriving it.
+function wizardMaxVideoSeconds() {
+  if (createWizard && createWizard.target === "loop") return MAX_LOOP_VIDEO_SECONDS;
+  if (createWizard && createWizard.target === "video") return MAX_LONG_VIDEO_SECONDS;
+  return MAX_MOMENT_VIDEO_SECONDS;
+}
 
 function openMomentUploadModal() {
   if (!state.token) {
@@ -3605,17 +7063,11 @@ function openMomentUploadModal() {
   const videoInput = document.getElementById("moment-video-input");
   const msgEl = document.getElementById("moment-upload-msg");
 
-  // Block uploads up front if the user already has 3 active moments.
-  api("/api/moments/user/" + state.user.id)
-    .then((moments) => {
-      if (moments.length >= MAX_ACTIVE_MOMENTS) {
-        msgEl.textContent = I18N.t("moments.limitReached");
-        msgEl.className = "form-msg error";
-        photoInput.disabled = true;
-        videoInput.disabled = true;
-      }
-    })
-    .catch(() => {});
+  // No more upfront "already have 3 active moments" block - Moments are
+  // permanent now and the server no longer caps how many a user can post
+  // (see server.js POST /api/moments). MAX_ACTIVE_MOMENTS is kept defined
+  // below only because the upcoming "Loops" (24h stories) feature will
+  // likely want an equivalent small-active-items cap.
 
   function readAsDataUrl(file, type) {
     const reader = new FileReader();
@@ -3713,12 +7165,76 @@ const CREATE_WIZARD_FILTERS = [
 
 const CREATE_WIZARD_STICKERS = ["\u{1F600}", "\u{1F602}", "\u{1F60D}", "\u{1F525}", "\u{1F389}", "\u{1F4DA}", "❤️", "\u{1F44D}", "\u{1F60E}", "✨", "\u{1F973}", "\u{1F4D6}"];
 
-const WIZARD_HOLD_THRESHOLD_MS = 280;
-const WIZARD_RING_TARGET_MS = MAX_MOMENT_VIDEO_SECONDS * 1000;
+// Task #204 - text overlay preset colors (white/black first so there's
+// always a readable choice against any background) and the three-step
+// size scale shared by both text and sticker overlays (in the wizard editor
+// and again wherever a video with baked-in overlay metadata is played back).
+const WIZARD_TEXT_COLORS = ["#FFFFFF", "#000000", "#FFD84D", "#FF3B30", "#34C759", "#0A84FF"];
+const WIZARD_OVERLAY_SIZE_STEPS = ["sm", "md", "lg"];
+const WIZARD_OVERLAY_SIZE_SCALE = { sm: 0.7, md: 1, lg: 1.4 };
+
+// Task: post-capture "Moment editor" toolbar (Audio / Text / Voice / Captions
+// / Stickers). Caption presets are just a styling flavor of the same "text"
+// overlay type the wizard already renders/bakes/drags (see
+// renderWizardOverlays()/bakeWizardOverlays()) - they only add a `caption:
+// true` + `captionStyle` flag so they can be told apart from free-floating
+// text and removed as a group. No new asset types, no schema changes.
+const WIZARD_CAPTION_STYLES = ["classic", "bold", "neon", "minimal"];
+
+// Mood/keyword search for the royalty-free (Jamendo) audio library. Jamendo's
+// own tag vocabulary is English, so a short bilingual map turns common
+// Spanish mood words into a search term that actually matches real tracks -
+// purely a client-side query hint, not a licensing/legal claim of any kind.
+const WIZARD_MOOD_CHIPS = [
+  { key: "happy", es: "Felicidad", en: "Happy", q: "happy" },
+  { key: "sad", es: "Melancolía", en: "Melancholy", q: "melancholic sad" },
+  { key: "energetic", es: "Energía", en: "Energetic", q: "energetic" },
+  { key: "calm", es: "Calma", en: "Calm", q: "calm relax" },
+  { key: "stress", es: "Estrés", en: "Tense", q: "tense dramatic" },
+  { key: "action", es: "Acción", en: "Action", q: "action epic" },
+  { key: "romance", es: "Romance", en: "Romantic", q: "romantic love" },
+  { key: "party", es: "Fiesta", en: "Party", q: "party dance" },
+  { key: "motivation", es: "Motivación", en: "Motivational", q: "motivational uplifting" },
+  { key: "nostalgia", es: "Nostalgia", en: "Nostalgic", q: "nostalgic" },
+];
+
+// Task #203 - procedurally-generated (Web Audio API oscillators, not
+// licensed/recorded audio - see playWizardSoundPreset()) background sound
+// presets offered from the create-wizard's "Add sound" pill.
+const WIZARD_SOUND_PRESETS = ["none", "upbeat", "chill", "dramatic", "retro"];
+
+const WIZARD_HOLD_THRESHOLD_MS = 380;
+// Below this much accumulated hold time, a press is treated as an oversized
+// tap rather than an intentional video, and the shutter falls back to
+// taking a photo (see pauseHoldRecording()).
+const WIZARD_MIN_INTENTIONAL_HOLD_MS = 500;
+
+// Max hold-record duration for the current wizard session's target - a
+// function rather than a fixed constant (the old WIZARD_RING_TARGET_MS)
+// specifically so a Loop capture stops recording at MAX_LOOP_VIDEO_SECONDS
+// (and, since task #231, a "video" capture at MAX_LONG_VIDEO_SECONDS)
+// instead of letting the user hold for the full Moment length.
+function wizardRingTargetMs() {
+  return wizardMaxVideoSeconds() * 1000;
+}
 
 function createWizardFilterCss(id) {
   const f = CREATE_WIZARD_FILTERS.find((x) => x.id === id);
   return f ? f.css : "";
+}
+
+// Task #202 - the live camera <video> preview's filter combines the chosen
+// look (CREATE_WIZARD_FILTERS) with the manual brightness/exposure slider.
+// Photos bake this in at capture time (see takePhoto()'s ctx.filter); video
+// recording does NOT bake it in - MediaRecorder here records straight off
+// createWizard.stream (the raw camera MediaStream), and a CSS filter on the
+// <video> preview element never reaches captureStream()/track data, so for
+// video captures this only affects what the creator sees while framing the
+// shot, not the saved file. See wireWizardCaptureGesture()/beginHoldRecording().
+function wizardLiveFilterCss() {
+  const base = createWizardFilterCss(createWizard.filter);
+  const brightness = "brightness(" + (createWizard.brightness || 100) + "%)";
+  return base ? base + " " + brightness : brightness;
 }
 
 let createWizard = null;
@@ -3734,6 +7250,10 @@ function stopCreateWizardCamera() {
       createWizard.recorder.stop();
     } catch (e) {}
   }
+  // Safety net for task #203's sound-preset mixing graph - normally already
+  // torn down in finalizeWizardVideo()/the discarded-tiny-hold path below,
+  // but this covers any exit (e.g. closing the wizard mid-recording).
+  stopWizardSoundMix();
 }
 
 function closeCreateWizard() {
@@ -3743,21 +7263,73 @@ function closeCreateWizard() {
   createWizard = null;
 }
 
-function openCreateWizard() {
+// `target` distinguishes what the wizard's final publish step posts to:
+// "moment" (default - POST /api/moments), "loop" (POST /api/loops, see the
+// "Loop" option in the create dropdown), or "video" (task #231 - the
+// long-form Videos hub, still POST /api/moments but with target:"video" in
+// the body - see server.js). Every other step of the wizard (capture,
+// filters, caption) behaves identically across all three - only the
+// publish call, the video-length cap, and a couple of extra fields/steps
+// (title, link-to-product) branch on it - see the wizard-publish click
+// handler and the step-4 branch in drawCreateWizard().
+function openCreateWizard(target) {
   if (!state.token) {
     location.hash = "#/login";
     return;
   }
+  const resolvedTarget = target === "loop" ? "loop" : target === "video" ? "video" : "moment";
   createWizard = {
     step: 1, filter: "none", mediaType: null, rawDataUrl: null, recording: false,
     stream: null, recorder: null, chunks: [], durationSeconds: null,
     facingMode: "user", flashOn: false, timerMode: 0,
     recordAccumMs: 0, segmentStartTs: null, holdArmed: false, holdTimer: null, ringRaf: null,
-    overlays: [],
+    overlays: [], gridOn: false, target: resolvedTarget,
+    // Task #202 - live preview/capture exposure, 50-150%, default 100
+    // (no adjustment). Lives on createWizard so it survives multiple shots
+    // within one wizard session, and is reset back to 100 automatically
+    // every time openCreateWizard() rebuilds a fresh createWizard object.
+    brightness: 100,
+    // Task #203 - chosen background-sound preset id (see
+    // WIZARD_SOUND_PRESETS) and whether the mic track is kept alongside it
+    // when mixing into a recorded video. Reset the same way as brightness.
+    soundPreset: "none", soundKeepMic: true,
+    // Task #243 - real royalty-free/Creative-Commons track picked from the
+    // Jamendo library (mutually exclusive with soundPreset above; picking
+    // one clears the other). _jamendoBuffer is the pre-decoded AudioBuffer
+    // for the selected track, fetched/decoded at selection time (see
+    // wizardSelectJamendoTrack()) so there's zero delay when recording
+    // actually starts. Reset the same way as brightness/soundPreset.
+    jamendoTrack: null, _jamendoBuffer: null,
+    // AI auto-clip (task #160): the trim window the creator confirmed, if
+    // any - both null means "publish the full video". Set from a
+    // POST /api/ai/suggest-clip suggestion in step 3; see wireWizardAiClip().
+    clipStartSec: null, clipEndSec: null,
+    // Long-form Videos hub (task #231, target:"video" only) - title is
+    // required, linkedProductId is an optional pointer to one of the
+    // poster's own mkt_products rows chosen in the step-4 "link to a
+    // listing?" screen (see drawCreateWizardStep4()). myProducts caches
+    // that screen's GET /api/products?sellerId=<me> fetch across
+    // back/forward navigation within the wizard so it isn't re-fetched
+    // every time the user steps back and forward again.
+    titleDraft: "", captionDraft: "", hashtagsDraft: "",
+    linkedProductId: null, myProducts: null, finalMedia: null,
+    // Task: post-capture Moment editor overhaul (Audio/Text/Voice/Captions/
+    // Stickers toolbar, mood palette, song-segment picker, cover editor,
+    // location/AI-label/cross-post, and product tagging). All of this rides
+    // on top of the existing step machine (see createWizard.step above) via
+    // string sub-steps ("2b" customize, "3b" cover editor, "3c" tag products)
+    // rather than new integers, so back/forward through steps 1-4 keeps
+    // working exactly as before.
+    voiceoverDataUrl: null, voiceoverRecording: false,
+    songStartSec: 0,
+    coverImage: null, coverSource: "auto",
+    locationDraft: "", aiLabel: false, alsoPostLoop: false,
+    taggedProducts: [], productSearchResults: null, savedProductsCache: null, purchasedProductsCache: null,
   };
   const overlay = document.createElement("div");
   overlay.id = "create-wizard-overlay";
   document.body.appendChild(overlay);
+  guardOverlayForBack(closeCreateWizard);
   drawCreateWizard();
 }
 
@@ -3796,7 +7368,7 @@ function startWizardRing() {
   const tick = () => {
     if (!createWizard || !createWizard.recording) return;
     const elapsed = createWizard.recordAccumMs + (Date.now() - createWizard.segmentStartTs);
-    const frac = Math.min(1, elapsed / WIZARD_RING_TARGET_MS);
+    const frac = Math.min(1, elapsed / wizardRingTargetMs());
     if (circle) circle.style.strokeDashoffset = String(C * (1 - frac));
     if (timeLabel) timeLabel.textContent = wizardFormatTime(elapsed);
     if (frac >= 1) {
@@ -3814,6 +7386,13 @@ function updateWizardSideRailEnabled() {
     const el = document.getElementById("wizard-rail-" + a);
     if (el) el.disabled = locked;
   });
+  // Task #203 - the sound preset/mic choice feeds the audio graph built at
+  // the start of a recording (see buildWizardRecordingStream()); changing
+  // it mid-clip wouldn't affect audio already recorded, so lock it out
+  // while a hold-recording is in progress or accumulating to avoid a
+  // misleading "I changed the sound" UI state.
+  const soundPill = document.getElementById("wizard-fs-sound-pill");
+  if (soundPill) soundPill.disabled = locked;
 }
 
 function showWizardRecBadge(show) {
@@ -3833,6 +7412,38 @@ function updateWizardFlashSupport() {
   const caps = track && track.getCapabilities ? track.getCapabilities() : {};
   btn.style.display = caps && caps.torch ? "flex" : "none";
   if (!(caps && caps.torch)) createWizard.flashOn = false;
+}
+
+function wizardToggleGrid() {
+  createWizard.gridOn = !createWizard.gridOn;
+  const gridEl = document.getElementById("wizard-fs-grid");
+  if (gridEl) gridEl.classList.toggle("show", createWizard.gridOn);
+  const btn = document.getElementById("wizard-rail-grid");
+  if (btn) btn.classList.toggle("active", createWizard.gridOn);
+}
+
+// Task #202 - toggles the brightness/exposure slider panel over the live
+// camera preview. The slider itself lives in the step-1 markup (see
+// drawCreateWizard()) and is wired in wireWizardBrightnessPanel() below.
+function wizardToggleBrightnessPanel() {
+  const panel = document.getElementById("wizard-fs-brightness-panel");
+  if (!panel) return;
+  const show = panel.hidden;
+  panel.hidden = !show;
+  const btn = document.getElementById("wizard-rail-lighting");
+  if (btn) btn.classList.toggle("active", show);
+}
+
+function wireWizardBrightnessPanel() {
+  const slider = document.getElementById("wizard-fs-brightness-slider");
+  const valueEl = document.getElementById("wizard-fs-brightness-value");
+  if (!slider) return;
+  slider.addEventListener("input", () => {
+    createWizard.brightness = parseInt(slider.value, 10) || 100;
+    if (valueEl) valueEl.textContent = createWizard.brightness + "%";
+    const video = document.getElementById("wizard-fs-video");
+    if (video) video.style.filter = wizardLiveFilterCss();
+  });
 }
 
 function wizardToggleFlash() {
@@ -3872,11 +7483,2522 @@ function wizardToggleFilterStrip() {
   if (strip) strip.hidden = !strip.hidden;
 }
 
+// ---- Task #203: procedurally-generated sound presets (Web Audio API) ----
+// Every preset is built from plain oscillator/gain nodes at call time - no
+// audio files, no samples, no third-party/commercial music of any kind, so
+// there's no licensing/IP exposure. `destGain` is the GainNode the preset's
+// oscillators should feed (either a live speaker preview node, or the
+// GainNode inside the recording mix graph built by buildWizardRecordingStream()
+// below). Returns a stop() function that tears down every node/timer it
+// created; callers are responsible for calling it exactly once when the
+// preset should end.
+function playWizardSoundPreset(audioCtx, presetId, destGain) {
+  if (!presetId || presetId === "none") return () => {};
+  const stopFns = [];
+
+  function makeOsc(type, freq) {
+    const osc = audioCtx.createOscillator();
+    osc.type = type;
+    osc.frequency.value = freq;
+    const g = audioCtx.createGain();
+    g.gain.value = 0.0001;
+    osc.connect(g).connect(destGain);
+    osc.start();
+    stopFns.push(() => {
+      try { osc.stop(); } catch (e) {}
+      try { osc.disconnect(); } catch (e) {}
+      try { g.disconnect(); } catch (e) {}
+    });
+    return { osc, gain: g };
+  }
+
+  function pluckLoop(type, notes, stepMs, peakGain, decayMs) {
+    const { osc, gain } = makeOsc(type, notes[0]);
+    let step = 0;
+    const iv = setInterval(() => {
+      const t = audioCtx.currentTime;
+      const f = notes[step % notes.length];
+      osc.frequency.setValueAtTime(f, t);
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.setValueAtTime(peakGain, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + decayMs / 1000);
+      step++;
+    }, stepMs);
+    stopFns.push(() => clearInterval(iv));
+  }
+
+  if (presetId === "upbeat") {
+    // Bright square-wave arpeggio, quick tempo.
+    pluckLoop("square", [330, 392, 440, 392], 260, 0.22, 0.18);
+  } else if (presetId === "chill") {
+    // Slow sine pad with a gentle volume swell, no percussive beat.
+    const { osc, gain } = makeOsc("sine", 220);
+    const osc2 = audioCtx.createOscillator();
+    osc2.type = "sine";
+    osc2.frequency.value = 330;
+    const g2 = audioCtx.createGain();
+    g2.gain.value = 0.06;
+    osc2.connect(g2).connect(destGain);
+    osc2.start();
+    stopFns.push(() => {
+      try { osc2.stop(); } catch (e) {}
+      try { osc2.disconnect(); } catch (e) {}
+      try { g2.disconnect(); } catch (e) {}
+    });
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.12, audioCtx.currentTime + 1.5);
+    const iv = setInterval(() => {
+      const t = audioCtx.currentTime;
+      gain.gain.cancelScheduledValues(t);
+      gain.gain.setValueAtTime(gain.gain.value, t);
+      gain.gain.linearRampToValueAtTime(0.05, t + 2);
+      gain.gain.linearRampToValueAtTime(0.14, t + 4);
+    }, 4000);
+    stopFns.push(() => clearInterval(iv));
+  } else if (presetId === "dramatic") {
+    // Low sawtooth drone that slowly bends, tension-building.
+    const { osc, gain } = makeOsc("sawtooth", 80);
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 2);
+    const iv = setInterval(() => {
+      osc.frequency.linearRampToValueAtTime(55 + Math.random() * 45, audioCtx.currentTime + 1.4);
+    }, 1500);
+    stopFns.push(() => clearInterval(iv));
+  } else if (presetId === "retro") {
+    // Fast stepped square-wave arpeggio, 8-bit game vibe.
+    pluckLoop("square", [440, 523, 587, 659, 523], 150, 0.16, 0.12);
+  }
+
+  return () => stopFns.forEach((fn) => fn());
+}
+
+// Short (~1.2s) speaker preview of a preset, played through the device's own
+// output rather than mixed into any recording - used by the sound picker so
+// a creator can hear a preset before committing to it.
+function wizardPreviewSoundPreset(presetId) {
+  if (!presetId || presetId === "none") return;
+  const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtxClass) return;
+  try {
+    const ctx = new AudioCtxClass();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.3;
+    gain.connect(ctx.destination);
+    const stop = playWizardSoundPreset(ctx, presetId, gain);
+    setTimeout(() => {
+      stop();
+      ctx.close().catch(() => {});
+    }, 1200);
+  } catch (e) {}
+}
+
+// Shared by the topbar pill (both its initial render markup below and the
+// live update after a pick) and by wizardOpenSoundPicker() - a Jamendo track
+// takes priority over a generated preset since picking one always clears
+// the other (see wizardSelectJamendoTrack()).
+function wizardSoundPillLabel() {
+  if (createWizard.jamendoTrack) return escapeHtml(createWizard.jamendoTrack.name);
+  if (createWizard.soundPreset && createWizard.soundPreset !== "none") return I18N.t("camera.soundPicker." + createWizard.soundPreset);
+  return I18N.t("create.addSound");
+}
+
+function updateWizardSoundPillLabel() {
+  const pill = document.getElementById("wizard-fs-sound-pill");
+  if (!pill) return;
+  pill.innerHTML = "&#9835; " + wizardSoundPillLabel();
+}
+
+// Task #243 - short (~6s) speaker preview of a Jamendo track through the
+// device's own output, same idea as wizardPreviewSoundPreset() but for a
+// real audio file instead of a generated tone. Not mixed into any recording.
+let wizardJamendoPreviewAudio = null;
+function wizardPreviewJamendoTrack(track) {
+  if (wizardJamendoPreviewAudio) {
+    wizardJamendoPreviewAudio.pause();
+    wizardJamendoPreviewAudio = null;
+  }
+  if (!track || !track.audioUrl) return;
+  try {
+    const audio = new Audio(track.audioUrl);
+    audio.volume = 0.7;
+    audio.play().catch(() => {});
+    wizardJamendoPreviewAudio = audio;
+    setTimeout(() => {
+      if (wizardJamendoPreviewAudio === audio) {
+        audio.pause();
+        wizardJamendoPreviewAudio = null;
+      }
+    }, 6000);
+  } catch (e) {}
+}
+
+async function wizardSearchJamendo(q) {
+  try {
+    return await api("/api/music/search" + (q ? "?q=" + encodeURIComponent(q) : ""));
+  } catch (e) {
+    return { configured: false, tracks: [] };
+  }
+}
+
+// Picking a Jamendo track and picking a generated preset are mutually
+// exclusive (see the "none" reset below) - selecting one clears the other.
+// The track's audio is fetched + decoded right away into an AudioBuffer
+// (createWizard._jamendoBuffer) so buildWizardRecordingStream() has zero
+// delay mixing it in once the creator actually starts recording.
+async function wizardSelectJamendoTrack(track, panel) {
+  createWizard.jamendoTrack = track;
+  createWizard.soundPreset = "none";
+  createWizard._jamendoBuffer = null;
+  updateWizardSoundPillLabel();
+  if (panel) {
+    panel.querySelectorAll(".wizard-sound-preset-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === "none"));
+    panel.querySelectorAll(".wizard-jamendo-track-btn").forEach((b) => b.classList.toggle("active", b.dataset.trackId === String(track.id)));
+  }
+  wizardPreviewJamendoTrack(track);
+  try {
+    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtxClass) return;
+    const resp = await fetch(track.audioUrl);
+    const arrBuf = await resp.arrayBuffer();
+    const ctx = new AudioCtxClass();
+    const buffer = await ctx.decodeAudioData(arrBuf);
+    ctx.close().catch(() => {});
+    if (createWizard.jamendoTrack && createWizard.jamendoTrack.id === track.id) {
+      createWizard._jamendoBuffer = buffer;
+    }
+  } catch (e) {
+    // Non-fatal: if the pre-fetch/decode fails (offline, CORS hiccup, etc.)
+    // the creator can still record - buildWizardRecordingStream() simply
+    // won't have music to mix in, same as if none had been picked.
+  }
+}
+
+function wizardRenderJamendoResults(panel, tracks, configured) {
+  const listEl = panel.querySelector("#wizard-jamendo-results");
+  if (!listEl) return;
+  if (!configured) {
+    listEl.innerHTML = `<p class="wizard-jamendo-empty">${I18N.t("camera.soundPicker.jamendoNotConfigured")}</p>`;
+    return;
+  }
+  if (!tracks.length) {
+    listEl.innerHTML = `<p class="wizard-jamendo-empty">${I18N.t("camera.soundPicker.jamendoNoResults")}</p>`;
+    return;
+  }
+  listEl.innerHTML = tracks
+    .map(
+      (t) => `
+    <button type="button" class="wizard-jamendo-track-btn ${createWizard.jamendoTrack && createWizard.jamendoTrack.id === t.id ? "active" : ""}" data-track-id="${t.id}">
+      ${t.image ? `<img class="wizard-jamendo-track-art" src="${t.image}" />` : `<span class="wizard-jamendo-track-art wizard-jamendo-track-art-empty">&#9835;</span>`}
+      <span class="wizard-jamendo-track-info"><span class="wizard-jamendo-track-name">${escapeHtml(t.name)}</span><span class="wizard-jamendo-track-artist">${escapeHtml(t.artist)}</span></span>
+    </button>`
+    )
+    .join("");
+  listEl.querySelectorAll(".wizard-jamendo-track-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const track = tracks.find((t) => String(t.id) === btn.dataset.trackId);
+      if (track) wizardSelectJamendoTrack(track, panel);
+    });
+  });
+}
+
+// ---------------- Moment editor: Audio library (mood/keyword search) ----------------
+// Opened from the post-capture editor's "Audio" tool (step 2 toolbar) -
+// distinct from wizardOpenSoundPicker() above, which lives inside the
+// full-screen live-camera step and mixes a preset/track into a *live
+// recording*. This one lets you browse/search the same Jamendo catalog by
+// mood keyword on an already-captured or uploaded clip, then hands off to
+// the customize screen (color palette + song segment) via the "->" arrow.
+let wizardAudioLibraryState = { q: "", mood: "", tracks: [], loading: true, configured: true };
+
+function wizardCloseAudioLibrary() {
+  const panel = document.getElementById("wizard-audio-library-panel");
+  if (panel) panel.remove();
+}
+
+async function wizardAudioLibrarySearch() {
+  wizardAudioLibraryState.loading = true;
+  wizardDrawAudioLibrary();
+  const params = [];
+  if (wizardAudioLibraryState.q) params.push("q=" + encodeURIComponent(wizardAudioLibraryState.q));
+  params.push("limit=30");
+  try {
+    const data = await api("/api/music/search" + (params.length ? "?" + params.join("&") : ""));
+    wizardAudioLibraryState.tracks = data.tracks || [];
+    wizardAudioLibraryState.configured = data.configured !== false;
+  } catch (e) {
+    wizardAudioLibraryState.tracks = [];
+  }
+  wizardAudioLibraryState.loading = false;
+  wizardDrawAudioLibrary();
+}
+
+function wizardOpenAudioLibrary() {
+  wizardCloseAudioLibrary();
+  const host = document.querySelector(".wizard-box");
+  if (!host) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-audio-library-panel";
+  panel.id = "wizard-audio-library-panel";
+  host.appendChild(panel);
+  wizardAudioLibraryState = { q: "", mood: "", tracks: [], loading: true, configured: true };
+  wizardDrawAudioLibrary();
+  wizardAudioLibrarySearch();
+}
+
+function wizardAudioLibraryIsPlaying(track) {
+  return !!(track && wizardJamendoPreviewAudio && !wizardJamendoPreviewAudio.paused);
+}
+
+function wizardDrawAudioLibrary() {
+  const panel = document.getElementById("wizard-audio-library-panel");
+  if (!panel) return;
+  const { q, mood, tracks, loading, configured } = wizardAudioLibraryState;
+  const moodChips = WIZARD_MOOD_CHIPS.map(
+    (m) => `<button type="button" class="wizard-mood-chip ${mood === m.key ? "active" : ""}" data-mood="${m.key}">${I18N.lang === "es" ? m.es : m.en}</button>`
+  ).join("");
+  let bodyHtml;
+  if (!configured) {
+    bodyHtml = `<p class="wizard-jamendo-empty">${I18N.t("camera.soundPicker.jamendoNotConfigured")}</p>`;
+  } else if (loading) {
+    bodyHtml = `<p class="wizard-jamendo-empty">${I18N.t("common.loading")}</p>`;
+  } else if (!tracks.length) {
+    bodyHtml = `<p class="wizard-jamendo-empty">${I18N.t("camera.soundPicker.jamendoNoResults")}</p>`;
+  } else {
+    bodyHtml = `<div class="wizard-audio-library-grid">${tracks
+      .map(
+        (t) => `<button type="button" class="wizard-jamendo-track-btn ${createWizard.jamendoTrack && createWizard.jamendoTrack.id === t.id ? "active" : ""}" data-track-id="${t.id}">
+          ${t.image ? `<img class="wizard-jamendo-track-art" src="${t.image}" />` : `<span class="wizard-jamendo-track-art wizard-jamendo-track-art-empty">&#9835;</span>`}
+          <span class="wizard-jamendo-track-info"><span class="wizard-jamendo-track-name">${escapeHtml(t.name)}</span><span class="wizard-jamendo-track-artist">${escapeHtml(t.artist)}</span></span>
+        </button>`
+      )
+      .join("")}</div>`;
+  }
+  const selected = createWizard.jamendoTrack;
+  panel.innerHTML = `
+    <div class="wizard-audio-library-head">
+      <button type="button" class="wizard-audio-library-back" id="wizard-audio-library-close" aria-label="${I18N.t("create.back")}">&#8592; ${I18N.t("create.back")}</button>
+      <p class="wizard-audio-library-title">${I18N.t("create.audioLibraryTitle")}</p>
+      <span class="wizard-audio-library-head-spacer" aria-hidden="true"></span>
+    </div>
+    <form class="wizard-jamendo-search-row" id="wizard-audio-search-form">
+      <input type="text" id="wizard-audio-search-input" value="${escapeHtml(q)}" placeholder="${I18N.t("create.audioSearchByKeywords")}" />
+      <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+    </form>
+    <div class="wizard-mood-chip-row">${moodChips}</div>
+    <div class="wizard-audio-library-body">${bodyHtml}</div>
+    ${
+      selected
+        ? `<div class="wizard-audio-selected-bar">
+            <button type="button" class="wizard-audio-selected-play" id="wizard-audio-selected-play" aria-label="${I18N.t("music.play")}">${wizardAudioLibraryIsPlaying(selected) ? "&#9724;&#65039;" : "&#9654;&#65039;"}</button>
+            <span class="wizard-audio-selected-info">
+              <span class="wizard-audio-selected-name">${escapeHtml(selected.name)}</span>
+              <span class="wizard-audio-selected-artist">${escapeHtml(selected.artist)}</span>
+            </span>
+            <button type="button" class="wizard-audio-selected-next" id="wizard-audio-selected-next" aria-label="${I18N.t("create.next")}">&#8594;</button>
+          </div>`
+        : ""
+    }
+  `;
+  document.getElementById("wizard-audio-library-close").addEventListener("click", wizardCloseAudioLibrary);
+  document.getElementById("wizard-audio-search-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    wizardAudioLibraryState.q = document.getElementById("wizard-audio-search-input").value.trim();
+    wizardAudioLibraryState.mood = "";
+    wizardAudioLibrarySearch();
+  });
+  panel.querySelectorAll(".wizard-mood-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const chip = WIZARD_MOOD_CHIPS.find((m) => m.key === btn.dataset.mood);
+      if (!chip) return;
+      wizardAudioLibraryState.mood = chip.key;
+      wizardAudioLibraryState.q = chip.q;
+      wizardAudioLibrarySearch();
+    });
+  });
+  panel.querySelectorAll(".wizard-jamendo-track-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const track = tracks.find((t) => String(t.id) === btn.dataset.trackId);
+      if (!track) return;
+      createWizard.songStartSec = 0;
+      // Bug fix: wizardSelectJamendoTrack() sets createWizard.jamendoTrack
+      // synchronously before its first `await` (the network fetch that
+      // pre-decodes the track for live recording), but this screen was
+      // `await`-ing the WHOLE function - including that fetch+decode - before
+      // redrawing. On a slow connection that decode can take several
+      // seconds, so the "selected" bar with its Play/Next (->) button never
+      // appeared to show up: only the instant speaker preview (started
+      // inside wizardSelectJamendoTrack before the fetch) was audible.
+      // Not awaiting it here lets the redraw happen immediately - the
+      // fetch/decode still finishes in the background.
+      wizardSelectJamendoTrack(track, null);
+      wizardDrawAudioLibrary();
+    });
+  });
+  const playBtn = document.getElementById("wizard-audio-selected-play");
+  if (playBtn) {
+    playBtn.addEventListener("click", () => {
+      if (wizardAudioLibraryIsPlaying(selected)) {
+        if (wizardJamendoPreviewAudio) wizardJamendoPreviewAudio.pause();
+        wizardJamendoPreviewAudio = null;
+      } else {
+        wizardPreviewJamendoTrack(selected);
+      }
+      setTimeout(wizardDrawAudioLibrary, 80);
+    });
+  }
+  const nextBtn = document.getElementById("wizard-audio-selected-next");
+  if (nextBtn) {
+    nextBtn.addEventListener("click", () => {
+      wizardCloseAudioLibrary();
+      wizardOpenCustomizeStep();
+    });
+  }
+}
+
+// ---------------- Moment editor: Voice-over recorder ----------------
+// Records a short mic-only clip (MediaRecorder) that travels with the moment
+// as metadata, not baked into the video pixels - so it needs no server-side
+// re-encoding. Saved as a "voiceover" overlay item alongside text/stickers.
+let wizardVoiceRecorder = null;
+let wizardVoiceChunks = [];
+let wizardVoiceStream = null;
+
+function wizardCloseVoicePanel() {
+  const panel = document.getElementById("wizard-voice-panel");
+  if (panel) panel.remove();
+  if (wizardVoiceRecorder && wizardVoiceRecorder.state !== "inactive") {
+    try { wizardVoiceRecorder.stop(); } catch (e) {}
+  }
+  if (wizardVoiceStream) {
+    wizardVoiceStream.getTracks().forEach((t) => t.stop());
+    wizardVoiceStream = null;
+  }
+  wizardVoiceRecorder = null;
+}
+
+function wizardOpenVoicePanel() {
+  const existing = document.getElementById("wizard-voice-panel");
+  if (existing) { wizardCloseVoicePanel(); return; }
+  const host = document.querySelector(".wizard-box");
+  if (!host) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-voice-panel";
+  panel.id = "wizard-voice-panel";
+  host.appendChild(panel);
+  wizardDrawVoicePanel(false);
+}
+
+function wizardDrawVoicePanel(recording) {
+  const panel = document.getElementById("wizard-voice-panel");
+  if (!panel) return;
+  const hasClip = !!createWizard.voiceoverDataUrl;
+  panel.innerHTML = `
+    <p class="wizard-voice-title">${I18N.t("create.voiceoverTitle")}</p>
+    <p class="field-hint">${I18N.t("create.voiceoverHint")}</p>
+    ${hasClip ? `<audio controls src="${createWizard.voiceoverDataUrl}" class="wizard-voice-audio"></audio>` : ""}
+    <div class="wizard-voice-controls">
+      <button type="button" class="wizard-voice-record-btn ${recording ? "recording" : ""}" id="wizard-voice-record-btn">
+        ${recording ? I18N.t("create.voiceoverStop") : hasClip ? I18N.t("create.voiceoverReRecord") : I18N.t("create.voiceoverStart")}
+      </button>
+      ${hasClip && !recording ? `<button type="button" class="wizard-voice-remove-btn" id="wizard-voice-remove-btn">${I18N.t("create.voiceoverRemove")}</button>` : ""}
+    </div>
+    <button type="button" class="wizard-sound-picker-close" id="wizard-voice-close">&#8592; ${I18N.t("create.back")}</button>
+  `;
+  document.getElementById("wizard-voice-close").addEventListener("click", wizardCloseVoicePanel);
+  const removeBtn = document.getElementById("wizard-voice-remove-btn");
+  if (removeBtn) {
+    removeBtn.addEventListener("click", () => {
+      createWizard.voiceoverDataUrl = null;
+      wizardDrawVoicePanel(false);
+    });
+  }
+  document.getElementById("wizard-voice-record-btn").addEventListener("click", async () => {
+    if (recording) {
+      if (wizardVoiceRecorder && wizardVoiceRecorder.state !== "inactive") wizardVoiceRecorder.stop();
+      return;
+    }
+    try {
+      wizardVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      wizardShowToast(I18N.t("create.voiceoverMicError"));
+      return;
+    }
+    wizardVoiceChunks = [];
+    try {
+      wizardVoiceRecorder = new MediaRecorder(wizardVoiceStream);
+    } catch (e) {
+      wizardShowToast(I18N.t("create.voiceoverMicError"));
+      return;
+    }
+    wizardVoiceRecorder.ondataavailable = (e) => { if (e.data && e.data.size) wizardVoiceChunks.push(e.data); };
+    wizardVoiceRecorder.onstop = () => {
+      const blob = new Blob(wizardVoiceChunks, { type: "audio/webm" });
+      const reader = new FileReader();
+      reader.onload = () => {
+        createWizard.voiceoverDataUrl = reader.result;
+        wizardDrawVoicePanel(false);
+      };
+      reader.readAsDataURL(blob);
+      if (wizardVoiceStream) {
+        wizardVoiceStream.getTracks().forEach((t) => t.stop());
+        wizardVoiceStream = null;
+      }
+    };
+    wizardVoiceRecorder.start();
+    wizardDrawVoicePanel(true);
+    setTimeout(() => {
+      if (wizardVoiceRecorder && wizardVoiceRecorder.state !== "inactive") wizardVoiceRecorder.stop();
+    }, 60000);
+  });
+}
+
+// ---------------- Moment editor: Captions ----------------
+// A caption is a "text" overlay (same renderer/baker/drag as free-form text -
+// see renderWizardOverlays()) flagged caption:true with a captionStyle, so it
+// reads as an on-screen subtitle rather than a decorative label, and can be
+// bulk-removed separately from regular text.
+function wizardOpenCaptionsPanel() {
+  const existing = document.getElementById("wizard-captions-panel");
+  if (existing) { existing.remove(); return; }
+  const host = document.querySelector(".wizard-box");
+  if (!host) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-captions-panel";
+  panel.id = "wizard-captions-panel";
+  const hasCaptions = createWizard.overlays.some((o) => o.caption);
+  panel.innerHTML = `
+    <p class="wizard-voice-title">${I18N.t("create.captionsTitle")}</p>
+    <textarea id="wizard-captions-input" maxlength="80" rows="2" placeholder="${I18N.t("create.captionsPlaceholder")}"></textarea>
+    <div class="wizard-caption-style-row">
+      ${WIZARD_CAPTION_STYLES.map((s, i) => `<button type="button" class="wizard-caption-style-btn wizard-caption-style-${s} ${i === 0 ? "active" : ""}" data-style="${s}">${I18N.t("create.captionStyle_" + s)}</button>`).join("")}
+    </div>
+    <div class="action-row">
+      ${hasCaptions ? `<button type="button" class="btn btn-secondary" id="wizard-captions-remove-all">${I18N.t("create.captionsRemoveAll")}</button>` : `<button type="button" class="btn btn-secondary" id="wizard-captions-cancel">${I18N.t("common.cancel")}</button>`}
+      <button type="button" class="btn btn-primary" id="wizard-captions-add">${I18N.t("create.captionsAdd")}</button>
+    </div>
+  `;
+  host.appendChild(panel);
+  let chosenStyle = WIZARD_CAPTION_STYLES[0];
+  panel.querySelectorAll(".wizard-caption-style-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      chosenStyle = btn.dataset.style;
+      panel.querySelectorAll(".wizard-caption-style-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    });
+  });
+  const cancelBtn = document.getElementById("wizard-captions-cancel");
+  if (cancelBtn) cancelBtn.addEventListener("click", () => panel.remove());
+  const removeAllBtn = document.getElementById("wizard-captions-remove-all");
+  if (removeAllBtn) {
+    removeAllBtn.addEventListener("click", () => {
+      createWizard.overlays = createWizard.overlays.filter((o) => !o.caption);
+      renderWizardOverlays(true);
+      panel.remove();
+    });
+  }
+  document.getElementById("wizard-captions-add").addEventListener("click", () => {
+    const val = document.getElementById("wizard-captions-input").value.trim();
+    panel.remove();
+    if (!val) return;
+    createWizard.overlays.push({
+      id: "c" + Date.now(),
+      type: "text",
+      value: val.slice(0, 80),
+      color: chosenStyle === "bold" ? "#FFD84D" : chosenStyle === "neon" ? "#34C759" : "#FFFFFF",
+      size: "md", xPct: 50, yPct: 82,
+      caption: true, captionStyle: chosenStyle,
+    });
+    renderWizardOverlays(true);
+  });
+}
+
+// ---------------- Moment editor: Customize step ("2b") ----------------
+// Shown only when the creator picked audio and/or captions in step 2 - a
+// recap of those choices plus a mood color palette (reuses the same filter
+// system as CREATE_WIZARD_FILTERS/createWizardFilterRow) and, if a Jamendo
+// track is attached, a simple start-time picker for which ~15s window of the
+// song to feature (createWizard.songStartSec - read by the feed player and
+// by buildWizardRecordingStream() when the clip is actually re-recorded live).
+function wizardOpenCustomizeStep() {
+  createWizard.step = "2b";
+  drawCreateWizard();
+}
+
+function drawWizardCustomizeStep(overlay) {
+  const hasAudio = !!createWizard.jamendoTrack;
+  const hasCaptions = createWizard.overlays.some((o) => o.caption);
+  const maxStart = hasAudio ? Math.max(0, Math.floor((createWizard.jamendoTrack.durationSec || 30) - 15)) : 0;
+  overlay.className = "modal-overlay create-wizard-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box wizard-box">
+      <h2 class="section-heading">${I18N.t("create.customizeTitle")}</h2>
+      <div class="wizard-preview-wrap wizard-preview-small">
+        ${
+          createWizard.mediaType === "video"
+            ? `<video class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" muted></video>`
+            : `<img class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" />`
+        }
+      </div>
+      <div class="wizard-customize-chips">
+        ${hasAudio ? `<span class="wizard-customize-chip">&#9835; ${escapeHtml(createWizard.jamendoTrack.name)}</span>` : ""}
+        ${hasCaptions ? `<span class="wizard-customize-chip">${I18N.t("create.captionsTitle")}</span>` : ""}
+      </div>
+      <p class="field-hint" style="text-align:center;margin-top:10px;">${I18N.t("create.moodPaletteLabel")}</p>
+      ${createWizardFilterRow()}
+      ${
+        hasAudio
+          ? `<div class="wizard-song-trim">
+              <p class="field-hint">${I18N.t("create.songTrimLabel")}</p>
+              <input type="range" id="wizard-song-start" min="0" max="${maxStart}" step="1" value="${Math.min(createWizard.songStartSec || 0, maxStart)}" />
+              <div class="wizard-song-trim-row">
+                <span id="wizard-song-start-label">${wizardFormatTime((createWizard.songStartSec || 0) * 1000)} – ${wizardFormatTime(((createWizard.songStartSec || 0) + 15) * 1000)}</span>
+                <button type="button" class="wizard-song-trim-play" id="wizard-song-trim-play">&#9654;&#65039;</button>
+              </div>
+            </div>`
+          : ""
+      }
+      <div class="action-row" style="margin-top:14px;">
+        <button type="button" class="btn btn-secondary" id="wizard-captions-edit-btn">${I18N.t("create.captionsEdit")}</button>
+      </div>
+      <div class="action-row">
+        <button class="btn btn-secondary" id="wizard-customize-back">${I18N.t("create.back")}</button>
+        <button class="btn btn-primary" id="wizard-customize-next">${I18N.t("create.next")}</button>
+      </div>
+    </div>
+  `;
+  wireCreateWizardFilterRow(() => {
+    const media = overlay.querySelector(".wizard-preview-media");
+    if (media) media.style.filter = createWizardFilterCss(createWizard.filter);
+  });
+  document.getElementById("wizard-captions-edit-btn").addEventListener("click", wizardOpenCaptionsPanel);
+  const startSlider = document.getElementById("wizard-song-start");
+  if (startSlider) {
+    startSlider.addEventListener("input", () => {
+      createWizard.songStartSec = parseInt(startSlider.value, 10) || 0;
+      const label = document.getElementById("wizard-song-start-label");
+      if (label) label.textContent = wizardFormatTime(createWizard.songStartSec * 1000) + " – " + wizardFormatTime((createWizard.songStartSec + 15) * 1000);
+    });
+  }
+  const trimPlayBtn = document.getElementById("wizard-song-trim-play");
+  if (trimPlayBtn) {
+    trimPlayBtn.addEventListener("click", () => {
+      if (!createWizard.jamendoTrack) return;
+      try {
+        const audio = new Audio(createWizard.jamendoTrack.audioUrl);
+        audio.currentTime = createWizard.songStartSec || 0;
+        audio.volume = 0.7;
+        audio.play().catch(() => {});
+        setTimeout(() => audio.pause(), 6000);
+      } catch (e) {}
+    });
+  }
+  document.getElementById("wizard-customize-back").addEventListener("click", () => {
+    createWizard.step = 2;
+    drawCreateWizard();
+  });
+  document.getElementById("wizard-customize-next").addEventListener("click", () => {
+    createWizard.step = 3;
+    drawCreateWizard();
+  });
+}
+
+// ---------------- Moment editor: Cover editor ("3b", video only) ----------------
+// Lets the creator pick what shows as the video's cover/thumbnail: a frame
+// grabbed straight out of the clip (via a hidden <video>+<canvas>, entirely
+// client-side, no server round-trip), or an image from their own camera
+// roll. "Generate with AI" is left as an honest, clearly-labeled "coming
+// soon" - there is no image-generation provider wired into this app, and a
+// button that silently does nothing (or worse, fails) would be worse than
+// not having it.
+function drawWizardCoverEditor(overlay) {
+  overlay.className = "modal-overlay create-wizard-overlay";
+  const cover = createWizard.coverImage || createWizard.rawDataUrl;
+  overlay.innerHTML = `
+    <div class="modal-box wizard-box">
+      <div class="wizard-cover-editor-head">
+        <h2 class="section-heading">${I18N.t("create.editCover")}</h2>
+        <button type="button" class="btn btn-primary btn-ai-suggest-sm" id="wizard-cover-done">${I18N.t("create.done")}</button>
+      </div>
+      <p class="field-hint">${I18N.t("create.editCoverHint")}</p>
+      <div class="wizard-cover-preview-wrap"><img class="wizard-cover-preview" id="wizard-cover-preview" src="${cover}" /></div>
+      ${
+        createWizard.mediaType === "video"
+          ? `<div class="wizard-cover-scrub-row">
+               <input type="range" id="wizard-cover-scrub" min="0" max="100" step="1" value="0" />
+             </div>
+             <video id="wizard-cover-source-video" src="${createWizard.rawDataUrl}" style="display:none;" muted playsinline></video>
+             <canvas id="wizard-cover-canvas" style="display:none;"></canvas>`
+          : ""
+      }
+      <div class="wizard-cover-actions">
+        <label class="btn btn-secondary wizard-cover-upload-btn">
+          ${I18N.t("create.editCoverFromRoll")}
+          <input type="file" id="wizard-cover-file" accept="image/*" style="display:none;" />
+        </label>
+        <button type="button" class="btn btn-secondary" id="wizard-cover-ai">${I18N.t("create.editCoverAi")}</button>
+      </div>
+      <p class="field-hint" id="wizard-cover-ai-msg" style="display:none;">${I18N.t("create.editCoverAiComingSoon")}</p>
+    </div>
+  `;
+  document.getElementById("wizard-cover-done").addEventListener("click", () => {
+    createWizard.step = 3;
+    drawCreateWizard();
+  });
+  const scrub = document.getElementById("wizard-cover-scrub");
+  const sourceVideo = document.getElementById("wizard-cover-source-video");
+  const canvas = document.getElementById("wizard-cover-canvas");
+  const previewImg = document.getElementById("wizard-cover-preview");
+  if (scrub && sourceVideo && canvas) {
+    sourceVideo.addEventListener("loadedmetadata", () => {
+      canvas.width = sourceVideo.videoWidth || 360;
+      canvas.height = sourceVideo.videoHeight || 640;
+    });
+    let seeking = false;
+    scrub.addEventListener("input", () => {
+      const dur = sourceVideo.duration;
+      if (!dur || !Number.isFinite(dur)) return;
+      sourceVideo.currentTime = (parseInt(scrub.value, 10) / 100) * dur;
+      seeking = true;
+    });
+    sourceVideo.addEventListener("seeked", () => {
+      if (!seeking) return;
+      seeking = false;
+      try {
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(sourceVideo, 0, 0, canvas.width, canvas.height);
+        const frameUrl = canvas.toDataURL("image/jpeg", 0.85);
+        createWizard.coverImage = frameUrl;
+        createWizard.coverSource = "frame";
+        if (previewImg) previewImg.src = frameUrl;
+      } catch (e) {}
+    });
+  }
+  const fileInput = document.getElementById("wizard-cover-file");
+  if (fileInput) {
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        createWizard.coverImage = reader.result;
+        createWizard.coverSource = "roll";
+        if (previewImg) previewImg.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  document.getElementById("wizard-cover-ai").addEventListener("click", () => {
+    const msg = document.getElementById("wizard-cover-ai-msg");
+    if (msg) msg.style.display = "block";
+  });
+}
+
+// ---------------- Moment editor: Tag products ("3c") ----------------
+// Search the marketplace, or pick from the creator's own saved products
+// (GET /api/saved) or accepted-offer purchases (GET /api/offers/mine) - the
+// closest thing this app has to "order history" (there's no separate orders
+// table; an accepted offer is how a sale is recorded). "Connect" is an
+// honest placeholder for the Amazon/eBay integrations Carlos wants to add
+// later - no such integration exists yet, so it's clearly marked as coming
+// soon rather than a dead button pretending to work.
+async function wizardOpenTagProducts() {
+  createWizard.step = "3c";
+  drawCreateWizard();
+}
+
+async function wizardTagProductsSearch(tab, q) {
+  if (tab === "search") {
+    if (!q) return [];
+    try {
+      const data = await api("/api/products?q=" + encodeURIComponent(q));
+      return (data.products || data || []).slice(0, 20).map((p) => ({ id: p.id, title: p.title, price: p.price, photo: p.photos && p.photos[0] }));
+    } catch (e) {
+      return [];
+    }
+  }
+  if (tab === "saved") {
+    if (createWizard.savedProductsCache) return createWizard.savedProductsCache;
+    try {
+      const rows = await api("/api/saved", { auth: true });
+      const out = (rows || []).map((r) => ({ id: r.productId, title: r.productTitle, price: r.productPrice, photo: r.productPhoto }));
+      createWizard.savedProductsCache = out;
+      return out;
+    } catch (e) {
+      return [];
+    }
+  }
+  if (tab === "purchased") {
+    if (createWizard.purchasedProductsCache) return createWizard.purchasedProductsCache;
+    try {
+      const rows = await api("/api/offers/mine", { auth: true });
+      const out = (rows || [])
+        .filter((r) => r.status === "accepted")
+        .map((r) => ({ id: r.productId, title: r.productTitle, price: null, photo: null }));
+      createWizard.purchasedProductsCache = out;
+      return out;
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
+}
+
+function drawWizardTagProducts(overlay) {
+  overlay.className = "modal-overlay create-wizard-overlay";
+  const activeTab = createWizard._tagProductsTab || "search";
+  const q = createWizard._tagProductsQuery || "";
+  overlay.innerHTML = `
+    <div class="modal-box wizard-box">
+      <h2 class="section-heading">${I18N.t("create.tagProducts")}</h2>
+      <div class="wizard-tag-products-tabs">
+        <button type="button" class="tab-btn ${activeTab === "search" ? "active" : ""}" data-tab="search">${I18N.t("create.tagProductsSearch")}</button>
+        <button type="button" class="tab-btn ${activeTab === "saved" ? "active" : ""}" data-tab="saved">${I18N.t("profile.savedTab")}</button>
+        <button type="button" class="tab-btn ${activeTab === "purchased" ? "active" : ""}" data-tab="purchased">${I18N.t("create.tagProductsPurchased")}</button>
+      </div>
+      ${
+        activeTab === "search"
+          ? `<form class="wizard-jamendo-search-row" id="wizard-tag-search-form">
+               <input type="text" id="wizard-tag-search-input" value="${escapeHtml(q)}" placeholder="${I18N.t("create.tagProductsSearchPlaceholder")}" />
+               <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+             </form>`
+          : ""
+      }
+      <div id="wizard-tag-products-list"><p>${I18N.t("common.loading")}</p></div>
+      ${
+        createWizard.taggedProducts.length
+          ? `<div class="wizard-tag-products-chosen">
+               <p class="field-hint">${I18N.t("create.tagProductsChosen")}</p>
+               ${createWizard.taggedProducts
+                 .map((p) => `<span class="wizard-tag-product-chip" data-id="${p.id}">${escapeHtml(p.title)} <button type="button" data-remove="${p.id}">&times;</button></span>`)
+                 .join("")}
+             </div>`
+          : ""
+      }
+      <div class="wizard-connect-shops">
+        <p class="field-hint">${I18N.t("create.connectShopsHint")}</p>
+        <div class="wizard-connect-shops-row">
+          <button type="button" class="wizard-connect-shop-btn" disabled>Amazon <em>${I18N.t("create.comingSoon")}</em></button>
+          <button type="button" class="wizard-connect-shop-btn" disabled>eBay <em>${I18N.t("create.comingSoon")}</em></button>
+        </div>
+      </div>
+      <div class="action-row">
+        <button class="btn btn-secondary" id="wizard-tag-back">${I18N.t("create.back")}</button>
+        <button class="btn btn-primary" id="wizard-tag-done">${I18N.t("create.done")}</button>
+      </div>
+    </div>
+  `;
+  const listEl = document.getElementById("wizard-tag-products-list");
+  async function loadList() {
+    listEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    const items = await wizardTagProductsSearch(activeTab, q);
+    if (!items.length) {
+      listEl.innerHTML = `<p class="wizard-jamendo-empty">${activeTab === "search" && !q ? I18N.t("create.tagProductsSearchHint") : I18N.t("camera.soundPicker.jamendoNoResults")}</p>`;
+      return;
+    }
+    listEl.innerHTML = items
+      .map((p) => {
+        const already = createWizard.taggedProducts.some((t) => t.id === p.id);
+        return `<div class="wizard-tag-product-row" data-id="${p.id}">
+          ${p.photo ? `<img class="wizard-tag-product-photo" src="${p.photo}" />` : `<span class="wizard-tag-product-photo wizard-tag-product-photo-empty">&#128218;</span>`}
+          <span class="wizard-tag-product-info"><span class="wizard-tag-product-title">${escapeHtml(p.title || "")}</span>${p.price ? `<span class="wizard-tag-product-price">${fmtPrice(p.price)}</span>` : ""}</span>
+          <button type="button" class="wizard-tag-product-add-btn" data-add="${p.id}" ${already ? "disabled" : ""}>${already ? "✓" : "+"}</button>
+        </div>`;
+      })
+      .join("");
+    listEl.querySelectorAll("[data-add]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const item = items.find((p) => String(p.id) === btn.dataset.add);
+        if (!item || createWizard.taggedProducts.some((t) => t.id === item.id)) return;
+        createWizard.taggedProducts.push(item);
+        drawWizardTagProducts(overlay);
+      });
+    });
+  }
+  loadList();
+  document.querySelectorAll(".wizard-tag-products-tabs .tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard._tagProductsTab = btn.dataset.tab;
+      drawWizardTagProducts(overlay);
+    });
+  });
+  const searchForm = document.getElementById("wizard-tag-search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      createWizard._tagProductsQuery = document.getElementById("wizard-tag-search-input").value.trim();
+      drawWizardTagProducts(overlay);
+    });
+  }
+  overlay.querySelectorAll("[data-remove]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard.taggedProducts = createWizard.taggedProducts.filter((p) => p.id !== btn.dataset.remove);
+      drawWizardTagProducts(overlay);
+    });
+  });
+  document.getElementById("wizard-tag-back").addEventListener("click", () => {
+    createWizard.step = 3;
+    drawCreateWizard();
+  });
+  document.getElementById("wizard-tag-done").addEventListener("click", () => {
+    createWizard.step = 3;
+    drawCreateWizard();
+  });
+}
+
+// ---------------- Music Library ("#/music") ----------------
+// Standalone, browsable/searchable page over the same Jamendo catalog the
+// camera's sound picker uses (see wizardSearchJamendo() above) - so people
+// who aren't mid-recording can still see what royalty-free music the app
+// offers: real track names, artists, and genres, not just "some music".
+// Every track here is Creative-Commons licensed for reuse (see licenseUrl).
+const MUSIC_LIBRARY_GENRES = ["pop", "rock", "electronic", "hiphop", "jazz", "classical", "ambient", "folk", "cinematic", "lounge", "reggae", "metal"];
+let musicLibraryState = { q: "", genre: "", tracks: [], loading: true, configured: true, playingId: null };
+let musicLibraryPreviewAudio = null;
+
+function stopMusicLibraryPreview() {
+  if (musicLibraryPreviewAudio) {
+    musicLibraryPreviewAudio.pause();
+    musicLibraryPreviewAudio = null;
+  }
+  musicLibraryState.playingId = null;
+}
+
+async function renderMusicLibrary(query) {
+  musicLibraryState = { q: "", genre: (query && query.genre) || "", tracks: [], loading: true, configured: true, playingId: null };
+  drawMusicLibrary();
+  await musicLibrarySearch();
+}
+
+async function musicLibrarySearch() {
+  musicLibraryState.loading = true;
+  drawMusicLibrary();
+  const params = [];
+  if (musicLibraryState.q) params.push("q=" + encodeURIComponent(musicLibraryState.q));
+  if (musicLibraryState.genre) params.push("tag=" + encodeURIComponent(musicLibraryState.genre));
+  params.push("limit=48");
+  try {
+    const data = await api("/api/music/search" + (params.length ? "?" + params.join("&") : ""));
+    musicLibraryState.tracks = data.tracks || [];
+    musicLibraryState.configured = data.configured !== false;
+  } catch (e) {
+    musicLibraryState.tracks = [];
+  }
+  musicLibraryState.loading = false;
+  drawMusicLibrary();
+}
+
+function drawMusicLibrary() {
+  const { q, genre, tracks, loading, configured, playingId } = musicLibraryState;
+  const genreChips = MUSIC_LIBRARY_GENRES.map(
+    (g) => `<button type="button" class="music-genre-chip ${genre === g ? "active" : ""}" data-genre="${g}">${I18N.t("music.genre." + g)}</button>`
+  ).join("");
+
+  let bodyHtml;
+  if (!configured) {
+    bodyHtml = `<div class="empty-state">${I18N.t("camera.soundPicker.jamendoNotConfigured")}</div>`;
+  } else if (loading) {
+    bodyHtml = `<p>${I18N.t("common.loading")}</p>`;
+  } else if (!tracks.length) {
+    bodyHtml = `<div class="empty-state">${I18N.t("camera.soundPicker.jamendoNoResults")}</div>`;
+  } else {
+    bodyHtml = `<div class="music-grid">${tracks
+      .map(
+        (t) => `
+      <div class="music-card" data-track-id="${t.id}">
+        ${t.image ? `<img class="music-card-art" src="${t.image}" />` : `<span class="music-card-art music-card-art-empty">&#9835;</span>`}
+        <div class="music-card-info">
+          <p class="music-card-name">${escapeHtml(t.name)}</p>
+          <p class="music-card-artist">${escapeHtml(t.artist)}</p>
+          ${t.genres && t.genres.length ? `<p class="music-card-genres">${t.genres.map((g) => escapeHtml(g)).join(" · ")}</p>` : ""}
+        </div>
+        <button type="button" class="music-card-play-btn" data-track-id="${t.id}" aria-label="${I18N.t("music.play")}">${playingId === t.id ? "&#9724;&#65039;" : "&#9654;&#65039;"}</button>
+      </div>`
+      )
+      .join("")}</div>`;
+  }
+
+  viewEl.innerHTML = `
+    <div class="music-library-page">
+      <p class="music-library-eyebrow">${I18N.t("music.eyebrow")}</p>
+      <h2 class="music-library-title">${I18N.t("music.title")}</h2>
+      <p class="music-library-subtitle">${I18N.t("music.subtitle")}</p>
+      <form class="music-search-row" id="music-search-form">
+        <input type="text" id="music-search-input" value="${escapeHtml(q)}" placeholder="${I18N.t("camera.soundPicker.jamendoSearchPlaceholder")}" />
+        <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+      </form>
+      <div class="music-genre-row">
+        <button type="button" class="music-genre-chip ${!genre ? "active" : ""}" data-genre="">${I18N.t("music.allGenres")}</button>
+        ${genreChips}
+      </div>
+      ${bodyHtml}
+    </div>`;
+
+  const form = document.getElementById("music-search-form");
+  if (form) {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      musicLibraryState.q = document.getElementById("music-search-input").value.trim();
+      stopMusicLibraryPreview();
+      musicLibrarySearch();
+    });
+  }
+  document.querySelectorAll(".music-genre-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      musicLibraryState.genre = btn.dataset.genre;
+      stopMusicLibraryPreview();
+      musicLibrarySearch();
+    });
+  });
+  document.querySelectorAll(".music-card-play-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const track = musicLibraryState.tracks.find((t) => String(t.id) === btn.dataset.trackId);
+      if (!track) return;
+      if (musicLibraryState.playingId === track.id) {
+        stopMusicLibraryPreview();
+        drawMusicLibrary();
+        return;
+      }
+      stopMusicLibraryPreview();
+      try {
+        const audio = new Audio(track.audioUrl);
+        audio.volume = 0.7;
+        audio.addEventListener("ended", () => {
+          musicLibraryState.playingId = null;
+          drawMusicLibrary();
+        });
+        audio.play().catch(() => {});
+        musicLibraryPreviewAudio = audio;
+        musicLibraryState.playingId = track.id;
+      } catch (e) {}
+      drawMusicLibrary();
+    });
+  });
+}
+
+// ---------------- Audiobooks ("#/audiobooks", "#/audiobooks/:id",
+// "#/audiobooks/mine", "#/audiobooks/edit/:id") ----------------
+// Two ways a book lands here: an author narrates/owns their own book and
+// sells it (reviewed by our team first, same shape as "Publish a Book"
+// above, just for audio), or it's a free public-domain classic (LibriVox)
+// seeded on the server. Unlike "Publish a Book", this one is really live -
+// see AUDIOBOOKS_PROGRAM_ENABLED in server.js.
+
+function audiobookStatusBadge(status) {
+  const cls = { draft: "", needs_revision: "warn", rejected: "rejected", team_review: "pending", approved: "approved", published: "approved" }[status] || "";
+  return `<span class="publishbook-status publishbook-status-${cls || "draft"}">${I18N.t("audiobooks.status." + status)}</span>`;
+}
+
+// Holds the most recently recorded chapter narration (a Blob from
+// MediaRecorder) between "Stop" and the form's submit handler picking it up
+// - module-level rather than a draw()-local var so it survives fine either
+// way, but reset to null after every successful upload/every draw() so a
+// stale recording from a previous chapter can never get attached by mistake.
+let audiobookRecordedBlob = null;
+
+// Wires the record-narration-from-your-microphone panel on the "Add Chapter"
+// form (task: authors should be able to narrate straight from the platform
+// instead of only uploading a pre-made file). Real getUserMedia constraints
+// do the actual noise/echo cleanup - echoCancellation/noiseSuppression/
+// autoGainControl are genuine browser DSP (not a cosmetic label), which is
+// an honest bar for "professional-sounding" without us pretending to ship
+// custom studio-grade audio processing we don't have.
+function wireAudiobookRecorder() {
+  const tabBtns = document.querySelectorAll(".audiobook-source-tab");
+  const panels = document.querySelectorAll(".audiobook-source-panel");
+  tabBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      tabBtns.forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      panels.forEach((p) => { p.style.display = p.dataset.panel === btn.dataset.tab ? "block" : "none"; });
+    });
+  });
+
+  const startBtn = document.getElementById("audiobook-record-start");
+  const stopBtn = document.getElementById("audiobook-record-stop");
+  const againBtn = document.getElementById("audiobook-record-again");
+  const preview = document.getElementById("audiobook-record-preview");
+  const msgEl = document.getElementById("audiobook-record-msg");
+  const timeEl = document.getElementById("audiobook-recorder-time");
+  const meterFill = document.getElementById("audiobook-recorder-meter-fill");
+  if (!startBtn) return; // recorder markup not present (shouldn't happen, but don't throw if it changes later)
+
+  let mediaRecorder = null;
+  let mediaStream = null;
+  let chunks = [];
+  let timerHandle = null;
+  let seconds = 0;
+  let audioCtx = null;
+  let analyser = null;
+  let meterRafId = null;
+
+  function fmt(totalSeconds) {
+    const m = Math.floor(totalSeconds / 60);
+    const s = Math.floor(totalSeconds % 60);
+    return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+  }
+  function stopMeter() {
+    if (meterRafId) cancelAnimationFrame(meterRafId);
+    meterRafId = null;
+    if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+    analyser = null;
+    if (meterFill) meterFill.style.width = "0%";
+  }
+  function tickMeter() {
+    if (!analyser) return;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(data);
+    const avg = data.reduce((sum, v) => sum + v, 0) / data.length;
+    if (meterFill) meterFill.style.width = Math.min(100, (avg / 150) * 100) + "%";
+    meterRafId = requestAnimationFrame(tickMeter);
+  }
+  function stopStream() {
+    if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
+  }
+
+  startBtn.addEventListener("click", async () => {
+    msgEl.textContent = "";
+    audiobookRecordedBlob = null;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+      });
+    } catch (e) {
+      msgEl.textContent = I18N.t("audiobooks.micDenied");
+      return;
+    }
+    const mimeCandidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+    const mimeType = mimeCandidates.find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m));
+    chunks = [];
+    try {
+      mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType, audioBitsPerSecond: 128000 }) : new MediaRecorder(mediaStream);
+    } catch (e) {
+      mediaRecorder = new MediaRecorder(mediaStream);
+    }
+    mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      audiobookRecordedBlob = new Blob(chunks, { type: mediaRecorder.mimeType || "audio/webm" });
+      preview.src = URL.createObjectURL(audiobookRecordedBlob);
+      preview.style.display = "block";
+      stopStream();
+      stopMeter();
+    };
+    mediaRecorder.start();
+
+    seconds = 0;
+    timeEl.textContent = fmt(0);
+    timerHandle = setInterval(() => { seconds += 1; timeEl.textContent = fmt(seconds); }, 1000);
+
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(mediaStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      tickMeter();
+    } catch (e) { /* level meter is cosmetic - recording still works without it */ }
+
+    startBtn.style.display = "none";
+    stopBtn.style.display = "inline-block";
+    againBtn.style.display = "none";
+    preview.style.display = "none";
+  });
+
+  stopBtn.addEventListener("click", () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+    clearInterval(timerHandle);
+    stopBtn.style.display = "none";
+    againBtn.style.display = "inline-block";
+  });
+
+  againBtn.addEventListener("click", () => {
+    audiobookRecordedBlob = null;
+    preview.removeAttribute("src");
+    preview.style.display = "none";
+    againBtn.style.display = "none";
+    startBtn.style.display = "inline-block";
+    timeEl.textContent = "00:00";
+    msgEl.textContent = "";
+  });
+}
+
+function audiobookFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Probes an audio file's real playback length client-side (so the chapter
+// list can show accurate durations without any server-side audio decoding,
+// which this codebase has no facility for) - same "create a hidden media
+// element, wait for loadedmetadata, then discard it" pattern used for video
+// duration checks elsewhere (see the Moments/wizard upload code).
+function probeAudioDuration(file) {
+  return new Promise((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const probe = new Audio();
+    probe.preload = "metadata";
+    probe.onloadedmetadata = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(probe.duration && isFinite(probe.duration) ? probe.duration : 0);
+    };
+    probe.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(0);
+    };
+    probe.src = objectUrl;
+  });
+}
+
+function audiobookChapterPlayerHtml(chapter, index) {
+  return `<div class="voice-player audiobook-chapter-player" data-index="${index}">
+    <audio src="${chapter.audioUrl}" preload="metadata"></audio>
+    <button type="button" class="voice-player-btn" aria-label="${I18N.t("messages.play")}">▶</button>
+    <div class="voice-player-track"><div class="voice-player-fill"></div></div>
+    <span class="voice-player-time">0:00</span>
+  </div>`;
+}
+
+// Delegated play/pause + progress wiring shared by every audiobook page that
+// shows a chapter list, since .voice-player has no built-in global listener
+// (see wireVoicePlayers/the chat click handler it was originally built for).
+function wireAudiobookPlayerClicks(container) {
+  wireVoicePlayers(container);
+  container.addEventListener("click", (e) => {
+    const btn = e.target.closest(".voice-player-btn");
+    if (!btn) return;
+    const audio = btn.closest(".voice-player").querySelector("audio");
+    if (audio.paused) {
+      container.querySelectorAll(".voice-player audio").forEach((a) => {
+        if (a !== audio) a.pause();
+      });
+      audio.play().catch(() => {});
+    } else {
+      audio.pause();
+    }
+  });
+}
+
+function audiobookCoverCardHtml(a) {
+  const cover = a.coverImageUrl;
+  const priceLabel = a.price > 0 ? fmtPrice(a.price) : I18N.t("audiobooks.free");
+  return `<a href="#/audiobooks/${a.id}" class="podcast-episode-card">
+    <span class="podcast-episode-card-cover" style="${cover ? `background-image:url('${cover.replace(/'/g, "%27")}')` : ""}">${cover ? "" : "🎧"}</span>
+    <span class="podcast-episode-card-info">
+      <strong>${escapeHtml(a.title)}</strong>
+      <span class="podcast-episode-card-channel">${escapeHtml(a.authorName || "")}</span>
+      <span class="podcast-episode-card-stats">${escapeHtml(a.genre || "")} &middot; ${priceLabel}</span>
+    </span>
+  </a>`;
+}
+
+async function renderAudiobooksCatalog(query) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const params = new URLSearchParams();
+  if (query && query.q) params.set("q", query.q);
+  if (query && query.source) params.set("source", query.source);
+  let books;
+  try {
+    books = await api("/api/audiobooks" + (params.toString() ? "?" + params.toString() : ""));
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const activeSource = (query && query.source) || "all";
+  const tabs = [
+    { key: "all", label: I18N.t("audiobooks.tabAll") },
+    { key: "original", label: I18N.t("audiobooks.tabOriginal") },
+    { key: "public_domain", label: I18N.t("audiobooks.tabFree") },
+  ];
+  viewEl.innerHTML = `
+    <div class="publishbook-hero">
+      <p class="publishbook-hero-eyebrow">🎧</p>
+      <h2 class="publishbook-hero-title">${I18N.t("audiobooks.heading")}</h2>
+      <p class="publishbook-hero-subtitle">${I18N.t("audiobooks.subtitle")}</p>
+      <a class="btn btn-primary publishbook-hero-cta" href="#/audiobooks/mine">${I18N.t("audiobooks.uploadYours")}</a>
+    </div>
+    <div class="podcast-ep-source-tabs">
+      ${tabs
+        .map(
+          (t) =>
+            `<a href="#/audiobooks${t.key === "all" ? "" : "?source=" + t.key}" class="podcast-ep-source-tab${activeSource === t.key ? " active" : ""}">${t.label}</a>`
+        )
+        .join("")}
+    </div>
+    ${
+      books.length
+        ? `<div class="podcast-episode-grid">${books.map(audiobookCoverCardHtml).join("")}</div>`
+        : `<div class="empty-state">${I18N.t("audiobooks.emptyCatalog")}</div>`
+    }
+  `;
+}
+
+// ---- Persistent audiobook player (task: audio should keep playing while
+// browsing elsewhere on the site, with a small floating mini-player and a
+// real OS media notification/lock-screen control, like a real audiobook
+// app). The <audio> element and the mini-player bar are created once and
+// appended directly to <body> - OUTSIDE #view, which the router wipes and
+// rebuilds (innerHTML =) on every navigation - so playback survives moving
+// between pages, exactly the same trick #chatbot-widget already relies on
+// to stay put across routes. Boundary to be honest about: this keeps
+// playing across in-app navigation, tab-switching, screen-off, and the app
+// being backgrounded (the Media Session integration below is what puts
+// real play/pause/skip controls on the lock screen/notification shade
+// while that's happening) - but, like any web page or app, fully closing
+// the browser tab/app still stops it. There is no way around that from a
+// website without a native background-audio service.
+const AudiobookPlayer = (function () {
+  let audioEl = null, miniEl = null, coverImg, titleEl, chapterEl, fillEl, playPauseBtn;
+  let book = null;
+  let chapterIndex = 0;
+
+  function ensureDom() {
+    if (audioEl) return;
+    audioEl = document.createElement("audio");
+    audioEl.id = "audiobook-global-audio";
+    audioEl.preload = "none";
+    document.body.appendChild(audioEl);
+
+    miniEl = document.createElement("div");
+    miniEl.className = "audiobook-miniplayer";
+    miniEl.id = "audiobook-miniplayer";
+    miniEl.style.display = "none";
+    miniEl.innerHTML = `
+      <img class="audiobook-miniplayer-cover" id="audiobook-miniplayer-cover" alt="" />
+      <div class="audiobook-miniplayer-info">
+        <p class="audiobook-miniplayer-title" id="audiobook-miniplayer-title"></p>
+        <p class="audiobook-miniplayer-chapter" id="audiobook-miniplayer-chapter"></p>
+        <div class="audiobook-miniplayer-track"><div class="audiobook-miniplayer-fill" id="audiobook-miniplayer-fill"></div></div>
+      </div>
+      <button type="button" class="audiobook-miniplayer-btn" id="audiobook-miniplayer-prev" aria-label="Previous chapter">&#9198;</button>
+      <button type="button" class="audiobook-miniplayer-btn" id="audiobook-miniplayer-playpause" aria-label="Play or pause">&#10074;&#10074;</button>
+      <button type="button" class="audiobook-miniplayer-btn" id="audiobook-miniplayer-next" aria-label="Next chapter">&#9197;</button>
+      <button type="button" class="audiobook-miniplayer-btn audiobook-miniplayer-close" id="audiobook-miniplayer-close" aria-label="Close player">&times;</button>
+    `;
+    document.body.appendChild(miniEl);
+
+    coverImg = document.getElementById("audiobook-miniplayer-cover");
+    titleEl = document.getElementById("audiobook-miniplayer-title");
+    chapterEl = document.getElementById("audiobook-miniplayer-chapter");
+    fillEl = document.getElementById("audiobook-miniplayer-fill");
+    playPauseBtn = document.getElementById("audiobook-miniplayer-playpause");
+
+    playPauseBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePlayPause(); });
+    document.getElementById("audiobook-miniplayer-close").addEventListener("click", (e) => { e.stopPropagation(); stop(); });
+    document.getElementById("audiobook-miniplayer-prev").addEventListener("click", (e) => { e.stopPropagation(); skip(-1); });
+    document.getElementById("audiobook-miniplayer-next").addEventListener("click", (e) => { e.stopPropagation(); skip(1); });
+    // Tapping the cover/title area (not the buttons) jumps back to that
+    // audiobook's page, the way tapping a music app's mini-player does.
+    miniEl.addEventListener("click", () => { if (book) location.hash = "#/audiobooks/" + book.id; });
+
+    audioEl.addEventListener("timeupdate", updateProgress);
+    audioEl.addEventListener("play", () => { updatePlayIcon(true); if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing"; });
+    audioEl.addEventListener("pause", () => { updatePlayIcon(false); if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused"; });
+    audioEl.addEventListener("ended", () => skip(1));
+  }
+
+  function updateProgress() {
+    if (fillEl && audioEl.duration) fillEl.style.width = ((audioEl.currentTime / audioEl.duration) * 100) + "%";
+    if ("mediaSession" in navigator && navigator.mediaSession.setPositionState && audioEl.duration) {
+      try { navigator.mediaSession.setPositionState({ duration: audioEl.duration, playbackRate: audioEl.playbackRate || 1, position: audioEl.currentTime }); } catch (e) {}
+    }
+  }
+
+  function updatePlayIcon(isPlaying) {
+    if (playPauseBtn) playPauseBtn.innerHTML = isPlaying ? "&#10074;&#10074;" : "&#9654;";
+    refreshListenButtons();
+  }
+
+  // Every "Play"/"Pause" button rendered on an audiobook detail page reads
+  // its label from whichever chapter is actually loaded in the ONE shared
+  // player, so the right button stays in sync even if the mini-player was
+  // started from a different page.
+  function refreshListenButtons() {
+    document.querySelectorAll(".audiobook-listen-btn").forEach((btn) => {
+      const isThis = !!(book && btn.dataset.bookId === book.id && Number(btn.dataset.index) === chapterIndex);
+      btn.textContent = isThis && audioEl && !audioEl.paused ? I18N.t("audiobooks.pauseChapter") : I18N.t("audiobooks.playChapter");
+      btn.classList.toggle("active", isThis);
+    });
+  }
+
+  function setMediaSession() {
+    if (!("mediaSession" in navigator) || !book) return;
+    const chapter = book.chapters[chapterIndex];
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: chapter ? chapter.title : book.title,
+        artist: book.authorName || "HieloIce",
+        album: book.title,
+        artwork: book.coverImageUrl ? [{ src: book.coverImageUrl, sizes: "512x512", type: "image/jpeg" }] : [],
+      });
+    } catch (e) {}
+    navigator.mediaSession.setActionHandler("play", () => resume());
+    navigator.mediaSession.setActionHandler("pause", () => pause());
+    navigator.mediaSession.setActionHandler("previoustrack", () => skip(-1));
+    navigator.mediaSession.setActionHandler("nexttrack", () => skip(1));
+    navigator.mediaSession.setActionHandler("seekbackward", (d) => { audioEl.currentTime = Math.max(0, audioEl.currentTime - (d.seekOffset || 10)); });
+    navigator.mediaSession.setActionHandler("seekforward", (d) => { audioEl.currentTime = Math.min(audioEl.duration || 1e9, audioEl.currentTime + (d.seekOffset || 10)); });
+  }
+
+  function playBook(bookObj, index) {
+    ensureDom();
+    if (!bookObj || !Array.isArray(bookObj.chapters) || !bookObj.chapters[index]) return;
+    const sameTrack = book && book.id === bookObj.id && chapterIndex === index;
+    book = bookObj;
+    chapterIndex = index;
+    if (!sameTrack) audioEl.src = bookObj.chapters[index].audioUrl;
+    audioEl.play().catch(() => {});
+    titleEl.textContent = bookObj.title || "";
+    chapterEl.textContent = bookObj.chapters[index].title || "";
+    coverImg.src = bookObj.coverImageUrl || "icon.png";
+    miniEl.style.display = "flex";
+    setMediaSession();
+    refreshListenButtons();
+  }
+
+  function togglePlayPause() { if (audioEl) { audioEl.paused ? resume() : pause(); } }
+  function pause() { if (audioEl) audioEl.pause(); }
+  function resume() { if (audioEl) audioEl.play().catch(() => {}); }
+  function stop() {
+    if (!audioEl) return;
+    audioEl.pause();
+    audioEl.removeAttribute("src");
+    book = null;
+    if (miniEl) miniEl.style.display = "none";
+    if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
+    refreshListenButtons();
+  }
+  function skip(direction) {
+    if (!book) return;
+    const next = chapterIndex + direction;
+    if (next < 0 || next >= book.chapters.length) { if (direction > 0) stop(); return; }
+    playBook(book, next);
+  }
+  function isPlaying(bookId, index) { return !!(book && book.id === bookId && index === chapterIndex && audioEl && !audioEl.paused); }
+
+  return { playBook, togglePlayPause, pause, resume, stop, skip, isPlaying, refreshListenButtons };
+})();
+
+async function renderAudiobookDetail(id) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let a;
+  try {
+    a = await api("/api/audiobooks/" + encodeURIComponent(id), { auth: !!state.token });
+  } catch (e) {
+    viewEl.innerHTML = `<div class="empty-state">${I18N.t("audiobooks.notFound")}</div>`;
+    return;
+  }
+  const hasChapters = Array.isArray(a.chapters) && a.chapters.length > 0;
+  const priceLabel = a.price > 0 ? fmtPrice(a.price) : I18N.t("audiobooks.free");
+
+  function chaptersSectionHtml() {
+    if (hasChapters) {
+      return `<div id="audiobook-chapters">${a.chapters
+        .map(
+          (c, i) => `<div class="publishbook-chapter">
+            <p class="publishbook-chapter-title" style="font-weight:600;">${i + 1}. ${escapeHtml(c.title)}</p>
+            <button type="button" class="btn btn-outline audiobook-listen-btn" data-book-id="${a.id}" data-index="${i}">${I18N.t("audiobooks.playChapter")}</button>
+          </div>`
+        )
+        .join("")}</div>`;
+    }
+    return `
+      <div id="audiobook-chapters" class="empty-state">🔒 ${I18N.t("audiobooks.chaptersLocked")}</div>
+      <button type="button" class="btn btn-primary" id="audiobook-acquire-btn">${a.price > 0 ? I18N.t("audiobooks.buyFor") + " " + fmtPrice(a.price) : I18N.t("audiobooks.getFree")}</button>
+      <p class="form-msg" id="audiobook-acquire-msg"></p>
+    `;
+  }
+
+  viewEl.innerHTML = `
+    <a href="#/audiobooks" class="back-link">&larr; ${I18N.t("audiobooks.backToCatalog")}</a>
+    <div class="publishbook-detail-header">
+      ${audiobookStatusBadge(a.status)}
+      ${a.source === "public_domain" ? `<span class="publishbook-status publishbook-status-approved">${I18N.t("audiobooks.publicDomainBadge")}</span>` : ""}
+    </div>
+    ${a.coverImageUrl ? `<img src="${a.coverImageUrl}" alt="" style="max-width:220px;border-radius:8px;margin-bottom:12px;" />` : ""}
+    <h2 class="section-heading">${escapeHtml(a.title)}</h2>
+    <p class="groups-subtitle">${escapeHtml(a.authorName || "")} &middot; ${escapeHtml(a.genre || "")} &middot; ${priceLabel}</p>
+    ${a.synopsis ? `<p class="group-detail-desc">${escapeHtml(a.synopsis)}</p>` : ""}
+    ${a.isOwner ? `<a class="btn btn-outline" href="#/audiobooks/edit/${a.id}">${I18N.t("audiobooks.editMine")}</a>` : ""}
+    <h3 class="publishbook-chapters-heading">${I18N.t("audiobooks.chaptersHeading")}</h3>
+    ${chaptersSectionHtml()}
+  `;
+  document.querySelectorAll(".audiobook-listen-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.index);
+      if (AudiobookPlayer.isPlaying(a.id, idx)) AudiobookPlayer.pause();
+      else AudiobookPlayer.playBook(a, idx);
+    });
+  });
+  AudiobookPlayer.refreshListenButtons();
+
+  const acquireBtn = document.getElementById("audiobook-acquire-btn");
+  if (acquireBtn) {
+    acquireBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      acquireBtn.disabled = true;
+      const msgEl = document.getElementById("audiobook-acquire-msg");
+      try {
+        const result = await api("/api/audiobooks/" + encodeURIComponent(id) + "/acquire", { method: "POST", auth: true });
+        if (result.checkoutUrl) {
+          window.location.href = result.checkoutUrl;
+          return;
+        }
+        renderAudiobookDetail(id); // granted or alreadyOwned - reload to unlock chapters
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+        acquireBtn.disabled = false;
+      }
+    });
+  }
+}
+
+async function renderAudiobooksMine() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let books;
+  try {
+    books = await api("/api/audiobooks/mine", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const listHtml = books.length
+    ? `<div class="publishbook-grid">${books
+        .map(
+          (a) => `<div class="card publishbook-card publishbook-card-mine">
+        <a class="publishbook-card-link" href="#/audiobooks/edit/${a.id}">
+          <p class="publishbook-card-genre">${escapeHtml(a.genre || I18N.t("publishBook.genreUnset"))}</p>
+          <h3>${escapeHtml(a.title || I18N.t("audiobooks.untitled"))}</h3>
+          ${audiobookStatusBadge(a.status)}
+        </a>
+        <button type="button" class="btn btn-danger-outline publishbook-card-delete" data-audiobook-id="${a.id}">${I18N.t("audiobooks.deleteMine")}</button>
+      </div>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("audiobooks.emptyMine")}</div>`;
+
+  viewEl.innerHTML = `
+    <div class="publishbook-hero">
+      <p class="publishbook-hero-eyebrow">${I18N.t("audiobooks.eyebrow")}</p>
+      <h2 class="publishbook-hero-title">${I18N.t("audiobooks.myHeading")}</h2>
+      <p class="publishbook-hero-subtitle">${I18N.t("audiobooks.mySubtitle")}</p>
+      <button type="button" class="btn btn-primary publishbook-hero-cta" id="audiobook-new-btn">${I18N.t("audiobooks.newAudiobook")}</button>
+    </div>
+    <form id="audiobook-new-form" class="stacked-form publishbook-new-form" style="display:none;">
+      <label>${I18N.t("audiobooks.titleLabel")}<input type="text" name="title" required maxlength="200" /></label>
+      <button type="submit" class="btn btn-primary">${I18N.t("audiobooks.createSubmit")}</button>
+      <p class="form-msg" id="audiobook-new-msg"></p>
+    </form>
+    ${books.length ? `<h3 class="publishbook-chapters-heading">${I18N.t("audiobooks.yourAudiobooks")}</h3>` : ""}
+    <div style="margin-top:8px;">${listHtml}</div>
+  `;
+
+  const newBtn = document.getElementById("audiobook-new-btn");
+  const newForm = document.getElementById("audiobook-new-form");
+  newBtn.addEventListener("click", () => {
+    newForm.style.display = "block";
+    newForm.scrollIntoView({ behavior: "smooth", block: "center" });
+    newForm.querySelector('[name="title"]').focus();
+  });
+  document.querySelectorAll(".publishbook-card-delete").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("audiobooks.confirmDelete"))) return;
+      const id = btn.dataset.audiobookId;
+      btn.disabled = true;
+      try {
+        await api("/api/audiobooks/" + id, { method: "DELETE", auth: true });
+        renderAudiobooksMine();
+      } catch (err) {
+        btn.disabled = false;
+        alert(err.message || I18N.t("audiobooks.deleteFailed"));
+      }
+    });
+  });
+  newForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const msgEl = document.getElementById("audiobook-new-msg");
+    try {
+      const created = await api("/api/audiobooks", { method: "POST", auth: true, body: { title: fd.get("title") } });
+      location.hash = "#/audiobooks/edit/" + created.id;
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+    }
+  });
+}
+
+async function renderAudiobookEditor(id) {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let a;
+  try {
+    a = await api("/api/audiobooks/" + encodeURIComponent(id), { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const editable = ["draft", "needs_revision", "rejected"].includes(a.status);
+  const chapters = Array.isArray(a.chapters) ? a.chapters : [];
+
+  if (!editable) {
+    viewEl.innerHTML = `
+      <a href="#/audiobooks/mine" class="back-link">&larr; ${I18N.t("audiobooks.backToList")}</a>
+      <div class="publishbook-detail-header">${audiobookStatusBadge(a.status)}</div>
+      <h2 class="section-heading">${escapeHtml(a.title)}</h2>
+      ${a.status === "approved" ? `<div id="audiobook-publish-wrap"><button type="button" class="btn btn-primary" id="audiobook-publish-btn">&#128640; ${I18N.t("audiobooks.publishNow")}</button></div>` : ""}
+      <h3 class="publishbook-chapters-heading">${I18N.t("audiobooks.chaptersHeading")}</h3>
+      <div id="audiobook-chapters">${chapters.map((c, i) => `<div class="publishbook-chapter"><p style="font-weight:600;">${i + 1}. ${escapeHtml(c.title)}</p>${audiobookChapterPlayerHtml(c, i)}</div>`).join("")}</div>
+    `;
+    wireAudiobookPlayerClicks(document.getElementById("audiobook-chapters"));
+    const publishBtn = document.getElementById("audiobook-publish-btn");
+    if (publishBtn) {
+      publishBtn.addEventListener("click", async () => {
+        publishBtn.disabled = true;
+        try {
+          const result = await api("/api/audiobooks/" + encodeURIComponent(id) + "/publish", { method: "POST", auth: true });
+          if (result.comingSoon) {
+            document.getElementById("audiobook-publish-wrap").innerHTML = `<p class="form-msg">${I18N.t("audiobooks.publishComingSoon")}</p>`;
+          } else {
+            location.hash = "#/audiobooks/" + id;
+          }
+        } catch (err) {
+          showAppToast(err.message);
+          publishBtn.disabled = false;
+        }
+      });
+    }
+    return;
+  }
+
+  async function refresh() {
+    a = await api("/api/audiobooks/" + encodeURIComponent(id), { auth: true });
+    draw();
+  }
+
+  function draw() {
+    viewEl.innerHTML = `
+      <a href="#/audiobooks/mine" class="back-link">&larr; ${I18N.t("audiobooks.backToList")}</a>
+      <div class="publishbook-detail-header">${audiobookStatusBadge(a.status)}</div>
+      ${a.status === "rejected" && a.rejectionNotes ? `<p class="form-msg error">${escapeHtml(a.rejectionNotes)}</p>` : ""}
+      <form id="audiobook-edit-form" class="stacked-form">
+        <label>${I18N.t("audiobooks.titleLabel")}<input type="text" name="title" required maxlength="200" value="${escapeHtml(a.title || "")}" /></label>
+        <label>${I18N.t("audiobooks.genreLabel")}<input type="text" name="genre" maxlength="60" value="${escapeHtml(a.genre || "")}" placeholder="${I18N.t("publishBook.genrePlaceholder")}" /></label>
+        <label>${I18N.t("audiobooks.synopsisLabel")}<textarea name="synopsis" maxlength="2000" placeholder="${I18N.t("publishBook.synopsisPlaceholder")}">${escapeHtml(a.synopsis || "")}</textarea></label>
+        <label>${I18N.t("audiobooks.priceLabel")}<input type="number" name="price" min="0" max="500" step="0.01" value="${a.price || 0}" /></label>
+        <p class="field-hint">${I18N.t("audiobooks.priceHint")}</p>
+        <label>${I18N.t("audiobooks.coverLabel")} (${I18N.t("common.optional")})<input type="file" name="coverImage" accept="image/*" /></label>
+        <button type="submit" class="btn btn-primary">${I18N.t("common.save")}</button>
+        <p class="form-msg" id="audiobook-edit-msg"></p>
+      </form>
+
+      <h3 class="publishbook-chapters-heading">${I18N.t("audiobooks.chaptersHeading")}</h3>
+      <div id="audiobook-chapters">${chapters
+        .map(
+          (c, i) => `<div class="publishbook-chapter">
+            <p style="font-weight:600;">${i + 1}. ${escapeHtml(c.title)}</p>
+            ${audiobookChapterPlayerHtml(c, i)}
+            <button type="button" class="btn btn-outline audiobook-delete-chapter-btn" data-index="${i}">${I18N.t("audiobooks.deleteChapter")}</button>
+          </div>`
+        )
+        .join("")}</div>
+
+      <form id="audiobook-add-chapter-form" class="stacked-form">
+        <label>${I18N.t("audiobooks.chapterTitleLabel")}<input type="text" name="chapterTitle" maxlength="150" placeholder="${I18N.t("publishBook.chapterTitlePlaceholder")} ${chapters.length + 1}" /></label>
+        <div class="audiobook-source-tabs" role="tablist">
+          <button type="button" class="audiobook-source-tab active" data-tab="upload">&#128193; ${I18N.t("audiobooks.uploadFileTab")}</button>
+          <button type="button" class="audiobook-source-tab" data-tab="record">&#127908; ${I18N.t("audiobooks.recordTab")}</button>
+        </div>
+        <div class="audiobook-source-panel" data-panel="upload">
+          <label>${I18N.t("audiobooks.chapterAudioLabel")}<input type="file" name="chapterAudio" accept="audio/*" /></label>
+        </div>
+        <div class="audiobook-source-panel" data-panel="record" style="display:none;">
+          <div class="audiobook-recorder" id="audiobook-recorder">
+            <div class="audiobook-recorder-meter"><div class="audiobook-recorder-meter-fill" id="audiobook-recorder-meter-fill"></div></div>
+            <p class="audiobook-recorder-time" id="audiobook-recorder-time">00:00</p>
+            <div class="audiobook-recorder-controls">
+              <button type="button" class="btn btn-primary" id="audiobook-record-start">&#127908; ${I18N.t("audiobooks.recordStart")}</button>
+              <button type="button" class="btn btn-outline" id="audiobook-record-stop" style="display:none;">&#9209; ${I18N.t("audiobooks.recordStop")}</button>
+              <button type="button" class="btn btn-outline" id="audiobook-record-again" style="display:none;">&#8635; ${I18N.t("audiobooks.recordAgain")}</button>
+            </div>
+            <audio id="audiobook-record-preview" controls style="display:none;"></audio>
+            <p class="field-hint">${I18N.t("audiobooks.recordHint")}</p>
+            <p class="form-msg error" id="audiobook-record-msg"></p>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-outline" id="audiobook-add-chapter-btn">${I18N.t("audiobooks.addChapter")}</button>
+        <p class="form-msg" id="audiobook-add-chapter-msg"></p>
+      </form>
+
+      <button type="button" class="btn btn-primary" id="audiobook-submit-btn" style="margin-top:16px;" ${chapters.length === 0 ? "disabled" : ""}>${I18N.t("audiobooks.submitForReview")}</button>
+      <p class="form-msg" id="audiobook-submit-msg"></p>
+    `;
+    wireAudiobookPlayerClicks(document.getElementById("audiobook-chapters"));
+
+    document.getElementById("audiobook-edit-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("audiobook-edit-msg");
+      const body = { title: fd.get("title"), genre: fd.get("genre"), synopsis: fd.get("synopsis"), price: fd.get("price") };
+      const coverFile = fd.get("coverImage");
+      if (coverFile && coverFile.size > 0) body.coverImage = await audiobookFileToDataUrl(coverFile);
+      try {
+        a = await api("/api/audiobooks/" + encodeURIComponent(id), { method: "PATCH", auth: true, body });
+        msgEl.textContent = I18N.t("audiobooks.saved");
+        msgEl.className = "form-msg";
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+
+    document.querySelectorAll(".audiobook-delete-chapter-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api("/api/audiobooks/" + encodeURIComponent(id) + "/chapters/" + btn.dataset.index, { method: "DELETE", auth: true });
+          await refresh();
+        } catch (err) {
+          showAppToast(err.message);
+          btn.disabled = false;
+        }
+      });
+    });
+
+    wireAudiobookRecorder();
+
+    document.getElementById("audiobook-add-chapter-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("audiobook-add-chapter-msg");
+      const activeTabBtn = document.querySelector(".audiobook-source-tab.active");
+      const activeTab = activeTabBtn ? activeTabBtn.dataset.tab : "upload";
+      let source = null;
+      if (activeTab === "record") {
+        source = audiobookRecordedBlob;
+        if (!source) {
+          msgEl.textContent = I18N.t("audiobooks.recordingRequired");
+          msgEl.className = "form-msg error";
+          return;
+        }
+      } else {
+        const file = fd.get("chapterAudio");
+        if (!file || !file.size) {
+          msgEl.textContent = I18N.t("audiobooks.chapterAudioRequired");
+          msgEl.className = "form-msg error";
+          return;
+        }
+        source = file;
+      }
+      const addBtn = document.getElementById("audiobook-add-chapter-btn");
+      addBtn.disabled = true;
+      msgEl.textContent = I18N.t("audiobooks.uploading");
+      msgEl.className = "form-msg";
+      try {
+        const [durationSeconds, media] = await Promise.all([probeAudioDuration(source), audiobookFileToDataUrl(source)]);
+        await api("/api/audiobooks/" + encodeURIComponent(id) + "/chapters", {
+          method: "POST",
+          auth: true,
+          body: { title: fd.get("chapterTitle"), media, durationSeconds },
+        });
+        audiobookRecordedBlob = null;
+        await refresh();
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+        addBtn.disabled = false;
+      }
+    });
+
+    document.getElementById("audiobook-submit-btn").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try {
+        await api("/api/audiobooks/" + encodeURIComponent(id) + "/submit", { method: "POST", auth: true });
+        location.hash = "#/audiobooks/mine";
+      } catch (err) {
+        document.getElementById("audiobook-submit-msg").textContent = err.message;
+        document.getElementById("audiobook-submit-msg").className = "form-msg error";
+        e.target.disabled = false;
+      }
+    });
+  }
+
+  draw();
+}
+
+// ---------------- Podcasts ("#/podcasts", "#/podcast/:id", "#/podcast-episode/:id") ----------------
+// Free for every creator - a growth/reach feature (get people creating AND
+// listening), not paid hosting. Modeled loosely on the two platforms that
+// actually dominate podcast listening today (a dedicated library/channel
+// structure like Spotify's, plus reusing existing video content as episodes
+// the way YouTube creators do) but built with HieloIce's own black+gold
+// visual language - no copied icons, logos, or layouts from either. Real
+// creator monetization (tips/memberships/ad revenue share) is intentionally
+// out of scope for now (needs its own payment-processor decision, task #58)
+// - this only builds the free, real, audience-facing half: channels,
+// episodes, follows, views, likes, and a browsable library.
+const PODCAST_CATEGORIES = ["books", "business", "comedy", "education", "truecrime", "music", "tech", "lifestyle", "sports", "news", "storytelling"];
+
+let podcastLibraryState = { tab: "foryou", sort: "trending", episodes: [], channels: [], q: "", category: "", loading: true, myChannel: undefined };
+
+async function renderPodcastLibrary(query) {
+  podcastLibraryState = {
+    tab: (query && query.tab) || "foryou",
+    sort: "trending",
+    episodes: [],
+    channels: [],
+    q: "",
+    category: "",
+    loading: true,
+    myChannel: undefined,
+  };
+  drawPodcastLibrary();
+  const tasks = [podcastLibraryLoadFeed()];
+  if (state.user) tasks.push(podcastLibraryLoadMyChannel());
+  else podcastLibraryState.myChannel = null;
+  await Promise.all(tasks);
+}
+
+async function podcastLibraryLoadMyChannel() {
+  try {
+    const data = await api("/api/podcasts/mine", { auth: true });
+    podcastLibraryState.myChannel = data.channel;
+  } catch (e) {
+    podcastLibraryState.myChannel = null;
+  }
+  drawPodcastLibrary();
+}
+
+async function podcastLibraryLoadFeed() {
+  podcastLibraryState.loading = true;
+  drawPodcastLibrary();
+  try {
+    podcastLibraryState.episodes = await api("/api/podcast-episodes/feed?sort=" + podcastLibraryState.sort);
+  } catch (e) {
+    podcastLibraryState.episodes = [];
+  }
+  podcastLibraryState.loading = false;
+  drawPodcastLibrary();
+}
+
+async function podcastLibraryLoadChannels() {
+  podcastLibraryState.loading = true;
+  drawPodcastLibrary();
+  const params = [];
+  if (podcastLibraryState.q) params.push("q=" + encodeURIComponent(podcastLibraryState.q));
+  if (podcastLibraryState.category) params.push("category=" + encodeURIComponent(podcastLibraryState.category));
+  try {
+    podcastLibraryState.channels = await api("/api/podcasts" + (params.length ? "?" + params.join("&") : ""));
+  } catch (e) {
+    podcastLibraryState.channels = [];
+  }
+  podcastLibraryState.loading = false;
+  drawPodcastLibrary();
+}
+
+function podcastMediaIcon(type) {
+  return type === "video" ? "🎬" : "🎧";
+}
+
+function drawPodcastLibrary() {
+  const s = podcastLibraryState;
+  const myChannelCard =
+    s.myChannel === undefined
+      ? ""
+      : s.myChannel
+      ? `<a href="#/podcast/${s.myChannel.id}" class="podcast-my-channel-card">
+          <span class="podcast-my-channel-icon">🎙️</span>
+          <span class="podcast-my-channel-text">
+            <strong>${escapeHtml(s.myChannel.name)}</strong>
+            <span>${s.myChannel.followerCount} ${I18N.t("podcast.followers")} · ${s.myChannel.episodeCount} ${I18N.t("podcast.episodes")}</span>
+          </span>
+          <span class="podcast-my-channel-cta">${I18N.t("podcast.manage")} &rarr;</span>
+        </a>`
+      : `<div class="podcast-my-channel-card podcast-my-channel-card-empty">
+          <span class="podcast-my-channel-icon">🎙️</span>
+          <span class="podcast-my-channel-text">
+            <strong>${I18N.t("podcast.startYourOwn")}</strong>
+            <span>${I18N.t("podcast.startYourOwnHint")}</span>
+          </span>
+          <button type="button" class="btn btn-gold" id="podcast-create-btn">${I18N.t("podcast.createBtn")}</button>
+        </div>`;
+
+  const tabsHtml = `
+    <div class="podcast-tabs">
+      <button type="button" class="podcast-tab-btn ${s.tab === "foryou" ? "active" : ""}" data-tab="foryou">${I18N.t("podcast.tabForYou")}</button>
+      <button type="button" class="podcast-tab-btn ${s.tab === "browse" ? "active" : ""}" data-tab="browse">${I18N.t("podcast.tabBrowse")}</button>
+    </div>`;
+
+  let bodyHtml;
+  if (s.tab === "foryou") {
+    const sortRow = `
+      <div class="podcast-sort-row">
+        <button type="button" class="podcast-sort-btn ${s.sort === "trending" ? "active" : ""}" data-sort="trending">${I18N.t("podcast.sortTrending")}</button>
+        <button type="button" class="podcast-sort-btn ${s.sort === "new" ? "active" : ""}" data-sort="new">${I18N.t("podcast.sortNew")}</button>
+      </div>`;
+    let listHtml;
+    if (s.loading) listHtml = `<p>${I18N.t("common.loading")}</p>`;
+    else if (!s.episodes.length) listHtml = `<div class="empty-state">${I18N.t("podcast.noEpisodesYet")}</div>`;
+    else
+      listHtml = `<div class="podcast-episode-grid">${s.episodes
+        .map((e) => {
+          const cover = e.coverImage || (e.channel && e.channel.coverImage) || "";
+          return `
+        <a href="#/podcast-episode/${e.id}" class="podcast-episode-card">
+          <span class="podcast-episode-card-cover" style="${cover ? `background-image:url('${cover}')` : ""}">${cover ? "" : podcastMediaIcon(e.mediaType)}</span>
+          <span class="podcast-episode-card-info">
+            <strong>${escapeHtml(e.title)}</strong>
+            <span class="podcast-episode-card-channel">${escapeHtml((e.channel && e.channel.name) || "")}</span>
+            <span class="podcast-episode-card-stats">${podcastMediaIcon(e.mediaType)} ${e.viewCount} · &#9825; ${e.likeCount}</span>
+          </span>
+        </a>`;
+        })
+        .join("")}</div>`;
+    bodyHtml = sortRow + listHtml;
+  } else {
+    const catChips = PODCAST_CATEGORIES.map(
+      (c) => `<button type="button" class="podcast-cat-chip ${s.category === c ? "active" : ""}" data-cat="${c}">${I18N.t("podcast.category." + c)}</button>`
+    ).join("");
+    let listHtml;
+    if (s.loading) listHtml = `<p>${I18N.t("common.loading")}</p>`;
+    else if (!s.channels.length) listHtml = `<div class="empty-state">${I18N.t("podcast.noChannelsYet")}</div>`;
+    else
+      listHtml = `<div class="podcast-channel-grid">${s.channels
+        .map(
+          (c) => `
+        <a href="#/podcast/${c.id}" class="podcast-channel-card">
+          <span class="podcast-channel-card-cover" style="${c.coverImage ? `background-image:url('${c.coverImage}')` : ""}">${c.coverImage ? "" : "🎙️"}</span>
+          <strong>${escapeHtml(c.name)}</strong>
+          <span class="podcast-channel-card-owner">${escapeHtml(c.ownerName || "")}</span>
+          <span class="podcast-channel-card-stats">${c.followerCount} ${I18N.t("podcast.followers")} · ${c.episodeCount} ${I18N.t("podcast.episodes")}</span>
+        </a>`
+        )
+        .join("")}</div>`;
+    bodyHtml = `
+      <form class="podcast-search-row" id="podcast-search-form">
+        <input type="text" id="podcast-search-input" value="${escapeHtml(s.q)}" placeholder="${I18N.t("podcast.searchPlaceholder")}" />
+        <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+      </form>
+      <div class="podcast-cat-row">
+        <button type="button" class="podcast-cat-chip ${!s.category ? "active" : ""}" data-cat="">${I18N.t("podcast.allCategories")}</button>
+        ${catChips}
+      </div>
+      ${listHtml}`;
+  }
+
+  viewEl.innerHTML = `
+    <div class="podcast-library-page">
+      <p class="podcast-eyebrow">🎙️ ${I18N.t("podcast.eyebrow")}</p>
+      <h2 class="podcast-title">${I18N.t("podcast.libraryTitle")}</h2>
+      <p class="podcast-subtitle">${I18N.t("podcast.librarySubtitle")}</p>
+      ${myChannelCard}
+      ${tabsHtml}
+      ${bodyHtml}
+    </div>`;
+
+  const createBtn = document.getElementById("podcast-create-btn");
+  if (createBtn) createBtn.addEventListener("click", () => openCreatePodcastForm());
+
+  document.querySelectorAll(".podcast-tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      podcastLibraryState.tab = btn.dataset.tab;
+      if (podcastLibraryState.tab === "browse" && !podcastLibraryState.channels.length) {
+        podcastLibraryLoadChannels();
+      } else {
+        drawPodcastLibrary();
+      }
+    });
+  });
+  document.querySelectorAll(".podcast-sort-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      podcastLibraryState.sort = btn.dataset.sort;
+      podcastLibraryLoadFeed();
+    });
+  });
+  document.querySelectorAll(".podcast-cat-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      podcastLibraryState.category = btn.dataset.cat;
+      podcastLibraryLoadChannels();
+    });
+  });
+  const searchForm = document.getElementById("podcast-search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      podcastLibraryState.q = document.getElementById("podcast-search-input").value.trim();
+      podcastLibraryLoadChannels();
+    });
+  }
+}
+
+function podcastFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function closePodcastModal() {
+  const existing = document.getElementById("podcast-modal-backdrop");
+  if (existing) existing.remove();
+}
+
+function openCreatePodcastForm() {
+  if (!state.user) {
+    location.hash = "#/login";
+    return;
+  }
+  closePodcastModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "podcast-modal-backdrop";
+  backdrop.id = "podcast-modal-backdrop";
+  const catOptions = PODCAST_CATEGORIES.map((c) => `<option value="${c}">${I18N.t("podcast.category." + c)}</option>`).join("");
+  backdrop.innerHTML = `
+    <div class="podcast-modal">
+      <div class="podcast-modal-head">
+        <p>${I18N.t("podcast.createTitle")}</p>
+        <button type="button" class="podcast-modal-close" id="podcast-modal-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      <form id="podcast-create-form">
+        <label>${I18N.t("podcast.nameLabel")}</label>
+        <input type="text" id="podcast-form-name" maxlength="80" required />
+        <label>${I18N.t("podcast.descriptionLabel")}</label>
+        <textarea id="podcast-form-description" maxlength="500" rows="3"></textarea>
+        <label>${I18N.t("podcast.categoryLabel")}</label>
+        <select id="podcast-form-category">${catOptions}</select>
+        <label>${I18N.t("podcast.coverLabel")}</label>
+        <input type="file" id="podcast-form-cover" accept="image/*" />
+        <p class="field-hint">${I18N.t("podcast.freeHint")}</p>
+        <button type="submit" class="btn btn-gold" id="podcast-form-submit">${I18N.t("podcast.createBtn")}</button>
+      </form>
+    </div>`;
+  document.body.appendChild(backdrop);
+  document.getElementById("podcast-modal-close").addEventListener("click", closePodcastModal);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePodcastModal();
+  });
+  document.getElementById("podcast-create-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("podcast-form-name").value.trim();
+    if (!name) return;
+    const submitBtn = document.getElementById("podcast-form-submit");
+    submitBtn.disabled = true;
+    try {
+      const coverFile = document.getElementById("podcast-form-cover").files[0];
+      let coverImage = null;
+      if (coverFile) coverImage = await podcastFileToDataUrl(coverFile);
+      const channel = await api("/api/podcasts", {
+        method: "POST",
+        auth: true,
+        body: {
+          name,
+          description: document.getElementById("podcast-form-description").value.trim(),
+          category: document.getElementById("podcast-form-category").value,
+          coverImage,
+        },
+      });
+      closePodcastModal();
+      location.hash = "#/podcast/" + channel.id;
+    } catch (err) {
+      showAppToast(err.message || I18N.t("common.error"));
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+function openEditPodcastForm(channel) {
+  closePodcastModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "podcast-modal-backdrop";
+  backdrop.id = "podcast-modal-backdrop";
+  const catOptions = PODCAST_CATEGORIES.map(
+    (c) => `<option value="${c}" ${channel.category === c ? "selected" : ""}>${I18N.t("podcast.category." + c)}</option>`
+  ).join("");
+  backdrop.innerHTML = `
+    <div class="podcast-modal">
+      <div class="podcast-modal-head">
+        <p>${I18N.t("podcast.editChannel")}</p>
+        <button type="button" class="podcast-modal-close" id="podcast-modal-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      <form id="podcast-edit-form">
+        <label>${I18N.t("podcast.nameLabel")}</label>
+        <input type="text" id="podcast-form-name" maxlength="80" required value="${escapeHtml(channel.name)}" />
+        <label>${I18N.t("podcast.descriptionLabel")}</label>
+        <textarea id="podcast-form-description" maxlength="500" rows="3">${escapeHtml(channel.description || "")}</textarea>
+        <label>${I18N.t("podcast.categoryLabel")}</label>
+        <select id="podcast-form-category">${catOptions}</select>
+        <label>${I18N.t("podcast.coverLabel")}</label>
+        <input type="file" id="podcast-form-cover" accept="image/*" />
+        <button type="submit" class="btn btn-gold" id="podcast-form-submit">${I18N.t("common.save")}</button>
+      </form>
+    </div>`;
+  document.body.appendChild(backdrop);
+  document.getElementById("podcast-modal-close").addEventListener("click", closePodcastModal);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePodcastModal();
+  });
+  document.getElementById("podcast-edit-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const submitBtn = document.getElementById("podcast-form-submit");
+    submitBtn.disabled = true;
+    try {
+      const payload = {
+        name: document.getElementById("podcast-form-name").value.trim(),
+        description: document.getElementById("podcast-form-description").value.trim(),
+        category: document.getElementById("podcast-form-category").value,
+      };
+      const coverFile = document.getElementById("podcast-form-cover").files[0];
+      if (coverFile) payload.coverImage = await podcastFileToDataUrl(coverFile);
+      await api("/api/podcasts/" + channel.id, { method: "PUT", auth: true, body: payload });
+      closePodcastModal();
+      renderPodcastChannel(channel.id);
+    } catch (err) {
+      showAppToast(err.message || I18N.t("common.error"));
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+async function openNewEpisodeComposer(channelId) {
+  closePodcastModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "podcast-modal-backdrop";
+  backdrop.id = "podcast-modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="podcast-modal">
+      <div class="podcast-modal-head">
+        <p>${I18N.t("podcast.newEpisodeTitle")}</p>
+        <button type="button" class="podcast-modal-close" id="podcast-modal-close" aria-label="${I18N.t("common.close")}">&times;</button>
+      </div>
+      <form id="podcast-episode-form">
+        <label>${I18N.t("podcast.episodeTitleLabel")}</label>
+        <input type="text" id="podcast-ep-title" maxlength="120" required />
+        <label>${I18N.t("podcast.descriptionLabel")}</label>
+        <textarea id="podcast-ep-description" maxlength="1000" rows="3"></textarea>
+        <div class="podcast-ep-source-tabs">
+          <button type="button" class="podcast-ep-source-tab active" data-source="upload">${I18N.t("podcast.uploadFile")}</button>
+          <button type="button" class="podcast-ep-source-tab" data-source="reuse">${I18N.t("podcast.reuseExisting")}</button>
+        </div>
+        <div id="podcast-ep-source-upload">
+          <label>${I18N.t("podcast.audioOrVideoFile")}</label>
+          <input type="file" id="podcast-ep-file" accept="audio/*,video/*" />
+        </div>
+        <div id="podcast-ep-source-reuse" style="display:none;">
+          <label>${I18N.t("podcast.pickExisting")}</label>
+          <div id="podcast-ep-existing-list"><p>${I18N.t("common.loading")}</p></div>
+        </div>
+        <label>${I18N.t("podcast.coverLabel")} (${I18N.t("common.optional")})</label>
+        <input type="file" id="podcast-ep-cover" accept="image/*" />
+        <button type="submit" class="btn btn-gold" id="podcast-ep-submit">${I18N.t("podcast.publishEpisode")}</button>
+      </form>
+    </div>`;
+  document.body.appendChild(backdrop);
+  document.getElementById("podcast-modal-close").addEventListener("click", closePodcastModal);
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) closePodcastModal();
+  });
+
+  let sourceMode = "upload";
+  let selectedExistingId = null;
+  const uploadDiv = document.getElementById("podcast-ep-source-upload");
+  const reuseDiv = document.getElementById("podcast-ep-source-reuse");
+  document.querySelectorAll(".podcast-ep-source-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      sourceMode = btn.dataset.source;
+      document.querySelectorAll(".podcast-ep-source-tab").forEach((b) => b.classList.toggle("active", b === btn));
+      uploadDiv.style.display = sourceMode === "upload" ? "" : "none";
+      reuseDiv.style.display = sourceMode === "reuse" ? "" : "none";
+    });
+  });
+
+  api("/api/users/me/media", { auth: true })
+    .then((items) => {
+      const listEl = document.getElementById("podcast-ep-existing-list");
+      if (!listEl) return;
+      if (!items.length) {
+        listEl.innerHTML = `<p class="field-hint">${I18N.t("podcast.noExistingMedia")}</p>`;
+        return;
+      }
+      listEl.innerHTML = items
+        .map(
+          (it) => `<button type="button" class="podcast-ep-existing-item" data-id="${it.id}">
+            ${it.mediaType === "video" ? "🎬" : "🎧"} ${escapeHtml(it.label || it.source)} <span class="field-hint">${fmtDate(it.createdAt)}</span>
+          </button>`
+        )
+        .join("");
+      listEl.querySelectorAll(".podcast-ep-existing-item").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          selectedExistingId = btn.dataset.id;
+          listEl.querySelectorAll(".podcast-ep-existing-item").forEach((b) => b.classList.toggle("active", b === btn));
+        });
+      });
+    })
+    .catch(() => {
+      const listEl = document.getElementById("podcast-ep-existing-list");
+      if (listEl) listEl.innerHTML = `<p class="field-hint">${I18N.t("podcast.noExistingMedia")}</p>`;
+    });
+
+  document.getElementById("podcast-episode-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = document.getElementById("podcast-ep-title").value.trim();
+    if (!title) return;
+    const submitBtn = document.getElementById("podcast-ep-submit");
+    submitBtn.disabled = true;
+    try {
+      const payload = {
+        title,
+        description: document.getElementById("podcast-ep-description").value.trim(),
+      };
+      const coverFile = document.getElementById("podcast-ep-cover").files[0];
+      if (coverFile) payload.coverImage = await podcastFileToDataUrl(coverFile);
+
+      if (sourceMode === "reuse") {
+        if (!selectedExistingId) {
+          showAppToast(I18N.t("podcast.pickExistingRequired"));
+          submitBtn.disabled = false;
+          return;
+        }
+        payload.sourceMomentId = selectedExistingId;
+      } else {
+        const file = document.getElementById("podcast-ep-file").files[0];
+        if (!file) {
+          showAppToast(I18N.t("podcast.fileRequired"));
+          submitBtn.disabled = false;
+          return;
+        }
+        payload.mediaType = file.type.startsWith("video/") ? "video" : "audio";
+        payload.media = await podcastFileToDataUrl(file);
+      }
+
+      await api("/api/podcasts/" + channelId + "/episodes", { method: "POST", auth: true, body: payload });
+      closePodcastModal();
+      renderPodcastChannel(channelId);
+    } catch (err) {
+      showAppToast(err.message || I18N.t("common.error"));
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+let podcastChannelState = { channel: null, episodes: [], loading: true };
+
+async function renderPodcastChannel(channelId) {
+  podcastChannelState = { channel: null, episodes: [], loading: true };
+  drawPodcastChannel();
+  try {
+    const [channel, episodes] = await Promise.all([
+      api("/api/podcasts/" + channelId, { auth: true }),
+      api("/api/podcasts/" + channelId + "/episodes"),
+    ]);
+    podcastChannelState.channel = channel;
+    podcastChannelState.episodes = episodes;
+  } catch (e) {
+    podcastChannelState.channel = null;
+  }
+  podcastChannelState.loading = false;
+  drawPodcastChannel();
+}
+
+function drawPodcastChannel() {
+  const { channel, episodes, loading } = podcastChannelState;
+  if (loading) {
+    viewEl.innerHTML = `<div class="podcast-channel-page"><p>${I18N.t("common.loading")}</p></div>`;
+    return;
+  }
+  if (!channel) {
+    viewEl.innerHTML = `<div class="podcast-channel-page"><div class="empty-state">${I18N.t("podcast.notFound")}</div></div>`;
+    return;
+  }
+  const episodesHtml = episodes.length
+    ? episodes
+        .map(
+          (e) => `
+      <a href="#/podcast-episode/${e.id}" class="podcast-episode-row">
+        <span class="podcast-episode-row-icon">${podcastMediaIcon(e.mediaType)}</span>
+        <span class="podcast-episode-row-info">
+          <strong>${escapeHtml(e.title)}</strong>
+          <span>${fmtDate(e.createdAt)} · ${e.viewCount} ${I18N.t("podcast.views")} · &#9825; ${e.likeCount}</span>
+        </span>
+      </a>`
+        )
+        .join("")
+    : `<div class="empty-state">${I18N.t("podcast.noEpisodesYet")}</div>`;
+
+  viewEl.innerHTML = `
+    <div class="podcast-channel-page">
+      <a href="#/podcasts" class="back-link">&larr; ${I18N.t("podcast.libraryTitle")}</a>
+      <div class="podcast-channel-header" style="${channel.coverImage ? `background-image:url('${channel.coverImage}')` : ""}">
+        <div class="podcast-channel-header-overlay">
+          <span class="podcast-channel-header-icon">${channel.coverImage ? "" : "🎙️"}</span>
+          <h2>${escapeHtml(channel.name)}</h2>
+          <p class="podcast-channel-owner">${escapeHtml(channel.ownerName || "")}${channel.category ? " · " + I18N.t("podcast.category." + channel.category) : ""}</p>
+          <p class="podcast-channel-stats">${channel.followerCount} ${I18N.t("podcast.followers")} · ${channel.episodeCount} ${I18N.t("podcast.episodes")}</p>
+          <div class="podcast-channel-actions">
+            ${
+              channel.isMine
+                ? `<button type="button" class="btn btn-gold" id="podcast-add-episode-btn">+ ${I18N.t("podcast.addEpisode")}</button>
+                   <button type="button" class="btn btn-secondary" id="podcast-edit-channel-btn">${I18N.t("podcast.editChannel")}</button>`
+                : `<button type="button" class="btn ${channel.isFollowing ? "btn-secondary" : "btn-gold"}" id="podcast-follow-btn">${
+                    channel.isFollowing ? I18N.t("podcast.following") : I18N.t("podcast.follow")
+                  }</button>`
+            }
+          </div>
+        </div>
+      </div>
+      ${channel.description ? `<p class="podcast-channel-description">${escapeHtml(channel.description)}</p>` : ""}
+      <div class="podcast-episode-list">${episodesHtml}</div>
+    </div>`;
+
+  const followBtn = document.getElementById("podcast-follow-btn");
+  if (followBtn) {
+    followBtn.addEventListener("click", async () => {
+      if (!state.user) {
+        location.hash = "#/login";
+        return;
+      }
+      followBtn.disabled = true;
+      try {
+        const res = await api("/api/podcasts/" + channel.id + "/follow", { method: "POST", auth: true });
+        channel.isFollowing = res.following;
+        channel.followerCount += res.following ? 1 : -1;
+        drawPodcastChannel();
+      } catch (e) {
+        showAppToast(e.message || I18N.t("common.error"));
+      }
+    });
+  }
+  const addEpisodeBtn = document.getElementById("podcast-add-episode-btn");
+  if (addEpisodeBtn) addEpisodeBtn.addEventListener("click", () => openNewEpisodeComposer(channel.id));
+  const editBtn = document.getElementById("podcast-edit-channel-btn");
+  if (editBtn) editBtn.addEventListener("click", () => openEditPodcastForm(channel));
+}
+
+async function renderPodcastEpisode(episodeId) {
+  viewEl.innerHTML = `<div class="podcast-episode-page"><p>${I18N.t("common.loading")}</p></div>`;
+  let episode;
+  try {
+    episode = await api("/api/podcast-episodes/" + episodeId, { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<div class="podcast-episode-page"><div class="empty-state">${I18N.t("podcast.notFound")}</div></div>`;
+    return;
+  }
+  drawPodcastEpisode(episode);
+  api("/api/podcast-episodes/" + episodeId + "/view", { method: "POST", auth: !!state.user }).catch(() => {});
+}
+
+function drawPodcastEpisode(episode) {
+  const channel = episode.channel;
+  const cover = episode.coverImage || (channel && channel.coverImage) || "";
+  const playerHtml =
+    episode.mediaType === "video"
+      ? `<video class="podcast-player-media" src="${episode.mediaUrl}" controls playsinline></video>`
+      : `<audio class="podcast-player-media podcast-player-audio" src="${episode.mediaUrl}" controls></audio>`;
+  viewEl.innerHTML = `
+    <div class="podcast-episode-page">
+      <a href="#/podcast/${channel ? channel.id : ""}" class="back-link">&larr; ${channel ? escapeHtml(channel.name) : I18N.t("podcast.libraryTitle")}</a>
+      <div class="podcast-player-cover" style="${cover ? `background-image:url('${cover}')` : ""}">${cover ? "" : podcastMediaIcon(episode.mediaType)}</div>
+      <h2 class="podcast-player-title">${escapeHtml(episode.title)}</h2>
+      <p class="podcast-player-channel">${channel ? escapeHtml(channel.name) : ""} · ${fmtDate(episode.createdAt)}</p>
+      ${playerHtml}
+      <div class="podcast-player-actions">
+        <button type="button" class="podcast-like-btn ${episode.likedByMe ? "active" : ""}" id="podcast-like-btn">&#9825; <span id="podcast-like-count">${episode.likeCount}</span></button>
+        <span class="podcast-view-count">${I18N.t("podcast.viewsIcon")} ${episode.viewCount}</span>
+      </div>
+      ${episode.description ? `<p class="podcast-player-description">${escapeHtml(episode.description)}</p>` : ""}
+    </div>`;
+
+  const likeBtn = document.getElementById("podcast-like-btn");
+  if (likeBtn) {
+    likeBtn.addEventListener("click", async () => {
+      if (!state.user) {
+        location.hash = "#/login";
+        return;
+      }
+      likeBtn.disabled = true;
+      try {
+        const res = await api("/api/podcast-episodes/" + episode.id + "/like", { method: "POST", auth: true });
+        episode.likedByMe = res.liked;
+        episode.likeCount += res.liked ? 1 : -1;
+        likeBtn.classList.toggle("active", episode.likedByMe);
+        document.getElementById("podcast-like-count").textContent = episode.likeCount;
+      } catch (e) {
+        showAppToast(e.message || I18N.t("common.error"));
+      }
+      likeBtn.disabled = false;
+    });
+  }
+}
+
+function wizardOpenSoundPicker() {
+  const existing = document.getElementById("wizard-sound-picker");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const wrap = document.getElementById("wizard-fs-video-wrap");
+  if (!wrap) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-sound-picker";
+  panel.id = "wizard-sound-picker";
+  panel.innerHTML = `
+    <p class="wizard-sound-picker-title">${I18N.t("camera.soundPicker.title")}</p>
+    <div class="wizard-sound-picker-list">
+      ${WIZARD_SOUND_PRESETS.map(
+        (p) => `<button type="button" class="wizard-sound-preset-btn ${createWizard.soundPreset === p && !createWizard.jamendoTrack ? "active" : ""}" data-preset="${p}">${I18N.t("camera.soundPicker." + p)}</button>`
+      ).join("")}
+    </div>
+    <p class="wizard-jamendo-title">&#127925; ${I18N.t("camera.soundPicker.jamendoTitle")}</p>
+    <a href="#/music" target="_blank" rel="noopener" class="wizard-jamendo-browse-link">${I18N.t("music.title")} &rarr;</a>
+    <form class="wizard-jamendo-search-row" id="wizard-jamendo-search-form">
+      <input type="text" id="wizard-jamendo-search-input" placeholder="${I18N.t("camera.soundPicker.jamendoSearchPlaceholder")}" />
+      <button type="submit">${I18N.t("camera.soundPicker.jamendoSearchBtn")}</button>
+    </form>
+    <div class="wizard-jamendo-results" id="wizard-jamendo-results"><p class="wizard-jamendo-empty">${I18N.t("common.loading")}</p></div>
+    <label class="wizard-sound-mic-toggle">
+      <input type="checkbox" id="wizard-sound-keep-mic" ${createWizard.soundKeepMic ? "checked" : ""} />
+      ${I18N.t("camera.soundPicker.keepMic")}
+    </label>
+    <button type="button" class="wizard-sound-picker-close" id="wizard-sound-picker-close">${I18N.t("common.close")}</button>
+  `;
+  wrap.appendChild(panel);
+  panel.querySelectorAll(".wizard-sound-preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      createWizard.soundPreset = btn.dataset.preset;
+      createWizard.jamendoTrack = null;
+      createWizard._jamendoBuffer = null;
+      if (wizardJamendoPreviewAudio) {
+        wizardJamendoPreviewAudio.pause();
+        wizardJamendoPreviewAudio = null;
+      }
+      panel.querySelectorAll(".wizard-sound-preset-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === createWizard.soundPreset));
+      panel.querySelectorAll(".wizard-jamendo-track-btn").forEach((b) => b.classList.remove("active"));
+      updateWizardSoundPillLabel();
+      wizardPreviewSoundPreset(createWizard.soundPreset);
+    });
+  });
+  const micToggle = document.getElementById("wizard-sound-keep-mic");
+  if (micToggle) {
+    micToggle.addEventListener("change", (e) => {
+      createWizard.soundKeepMic = !!e.target.checked;
+    });
+  }
+  const closeBtn = document.getElementById("wizard-sound-picker-close");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => {
+      if (wizardJamendoPreviewAudio) {
+        wizardJamendoPreviewAudio.pause();
+        wizardJamendoPreviewAudio = null;
+      }
+      panel.remove();
+    });
+  }
+  wizardSearchJamendo("").then((data) => wizardRenderJamendoResults(panel, data.tracks || [], data.configured));
+  const searchForm = document.getElementById("wizard-jamendo-search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const q = document.getElementById("wizard-jamendo-search-input").value.trim();
+      const listEl = panel.querySelector("#wizard-jamendo-results");
+      if (listEl) listEl.innerHTML = `<p class="wizard-jamendo-empty">${I18N.t("common.loading")}</p>`;
+      const data = await wizardSearchJamendo(q);
+      wizardRenderJamendoResults(panel, data.tracks || [], data.configured);
+    });
+  }
+}
+
+// Builds the MediaStream actually handed to `new MediaRecorder(...)` when a
+// hold-recording starts. When no sound preset is selected this is just
+// createWizard.stream unchanged (the mic audio track that was already part
+// of the getUserMedia() stream - see startWizardCameraStream()). When a
+// preset IS selected, it creates an AudioContext, routes the mic (if
+// "keep my voice" is on) and the generated preset both through their own
+// GainNode into one MediaStreamAudioDestinationNode, and returns a new
+// MediaStream combining the camera's video track(s) with that mixed audio
+// track - so the generated sound is genuinely encoded into the saved
+// recording, not just played live for vibe. See beginHoldRecording()/
+// pauseHoldRecording() for how it's paused/resumed/torn down.
+function buildWizardRecordingStream() {
+  const camStream = createWizard.stream;
+  if (!camStream) return camStream;
+  const usingJamendo = createWizard.jamendoTrack && createWizard._jamendoBuffer;
+  const usingPreset = createWizard.soundPreset && createWizard.soundPreset !== "none";
+  if (!usingJamendo && !usingPreset) return camStream;
+  const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtxClass) return camStream;
+  try {
+    const audioCtx = new AudioCtxClass();
+    const dest = audioCtx.createMediaStreamDestination();
+    const micTracks = camStream.getAudioTracks();
+    if (createWizard.soundKeepMic && micTracks.length) {
+      const micSource = audioCtx.createMediaStreamSource(new MediaStream(micTracks));
+      const micGain = audioCtx.createGain();
+      micGain.gain.value = 1;
+      micSource.connect(micGain).connect(dest);
+    }
+    const musicGain = audioCtx.createGain();
+    musicGain.gain.value = 0.35;
+    musicGain.connect(dest);
+    let stopMusic;
+    if (usingJamendo) {
+      // Task #243 - real royalty-free/CC track from Jamendo, pre-decoded by
+      // wizardSelectJamendoTrack(). Looped for the length of the recording;
+      // the source node is created fresh here (a decoded AudioBuffer can be
+      // reused, but a given AudioBufferSourceNode can only be started once).
+      const source = audioCtx.createBufferSource();
+      source.buffer = createWizard._jamendoBuffer;
+      source.loop = true;
+      source.connect(musicGain);
+      source.start();
+      stopMusic = () => {
+        try { source.stop(); } catch (e) {}
+        try { source.disconnect(); } catch (e) {}
+      };
+    } else {
+      stopMusic = playWizardSoundPreset(audioCtx, createWizard.soundPreset, musicGain);
+    }
+    createWizard._soundAudioCtx = audioCtx;
+    createWizard._soundStopFn = stopMusic;
+    createWizard._soundMusicGain = musicGain;
+    return new MediaStream([...camStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+  } catch (e) {
+    return camStream;
+  }
+}
+
+function stopWizardSoundMix() {
+  if (!createWizard) return;
+  if (createWizard._soundStopFn) {
+    try { createWizard._soundStopFn(); } catch (e) {}
+    createWizard._soundStopFn = null;
+  }
+  if (createWizard._soundAudioCtx) {
+    try { createWizard._soundAudioCtx.close().catch(() => {}); } catch (e) {}
+    createWizard._soundAudioCtx = null;
+  }
+  createWizard._soundMusicGain = null;
+}
+
 // Right-hand options rail: layout inspired by mainstream camera apps but
 // built from our own generic Unicode glyphs (not copied icon assets).
 // Tier 1 items show by default; tier 2 items reveal via the "more" toggle,
 // matching the collapsed/expanded pattern of similar camera UIs.
 const CREATE_WIZARD_RAIL_ITEMS = [
+  { action: "grid", tier: 1, icon: "#" },
   { action: "flip", tier: 1, icon: "&#8635;" },
   { action: "timer", tier: 1, icon: "&#9201;" },
   { action: "duration", tier: 1, icon: "&#9203;" },
@@ -3890,11 +10012,21 @@ const CREATE_WIZARD_RAIL_ITEMS = [
   { action: "flash", tier: 2, icon: "&#9889;" },
 ];
 
+// Task #202 - the "lighting" rail item (already present as an unwired
+// tier-2 placeholder) is repurposed as the brightness/exposure toggle
+// rather than adding a brand-new rail button, so it inherits the exact
+// same rail styling/placement/tap-to-reveal-label behavior as every other
+// item (grid, flip, timer, ...) for free. Its label/tooltip uses the
+// dedicated camera.brightnessToggle i18n key instead of the generic
+// create.rail_lighting one.
+const WIZARD_RAIL_LABEL_KEY_OVERRIDE = { lighting: "camera.brightnessToggle" };
+
 function wizardRailItemsHtml() {
   const items = CREATE_WIZARD_RAIL_ITEMS.map((it) => {
     const hiddenStyle = it.action === "flash" ? ' style="display:none;"' : "";
-    return `<button class="wizard-fs-rail-item" data-tier="${it.tier}" data-action="${it.action}" id="wizard-rail-${it.action}"${hiddenStyle}>
-      <span class="rail-label">${I18N.t("create.rail_" + it.action)}</span>
+    const labelKey = WIZARD_RAIL_LABEL_KEY_OVERRIDE[it.action] || ("create.rail_" + it.action);
+    return `<button class="wizard-fs-rail-item" data-tier="${it.tier}" data-action="${it.action}" id="wizard-rail-${it.action}" title="${I18N.t(labelKey)}"${hiddenStyle}>
+      <span class="rail-label">${I18N.t(labelKey)}</span>
       <span class="rail-icon">${it.icon}</span>
     </button>`;
   }).join("");
@@ -3908,10 +10040,21 @@ function wizardRailItemsHtml() {
 function wireWizardRail() {
   document.querySelectorAll(".wizard-fs-rail-item[data-action]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      // Show this item's label briefly on tap, then hide it again -
+      // labels stay off by default so the rail reads as clean icons only.
+      document.querySelectorAll(".wizard-fs-rail-item.show-label").forEach((other) => {
+        if (other !== btn) other.classList.remove("show-label");
+      });
+      btn.classList.add("show-label");
+      clearTimeout(btn._railLabelTimer);
+      btn._railLabelTimer = setTimeout(() => btn.classList.remove("show-label"), 1600);
+
       const action = btn.dataset.action;
-      if (action === "flip") wizardFlipCamera();
+      if (action === "grid") wizardToggleGrid();
+      else if (action === "flip") wizardFlipCamera();
       else if (action === "timer") wizardCycleTimer();
       else if (action === "flash") wizardToggleFlash();
+      else if (action === "lighting") wizardToggleBrightnessPanel();
       else if (action === "effects" || action === "filters") wizardToggleFilterStrip();
       else if (action === "duration") wizardShowToast(I18N.t("create.durationHint"));
       else wizardShowToast(I18N.t("create.comingSoon"));
@@ -3959,18 +10102,36 @@ function startWizardCameraStream() {
     if (fallback) fallback.style.display = "flex";
     return;
   }
+  const onStream = (stream) => {
+    createWizard.stream = stream;
+    video.srcObject = stream;
+    video.style.display = "";
+    if (fallback) fallback.style.display = "none";
+    updateWizardFlashSupport();
+  };
   navigator.mediaDevices
     .getUserMedia({ video: { facingMode: createWizard.facingMode }, audio: true })
-    .then((stream) => {
-      createWizard.stream = stream;
-      video.srcObject = stream;
-      video.style.display = "";
-      if (fallback) fallback.style.display = "none";
-      updateWizardFlashSupport();
-    })
-    .catch(() => {
-      video.style.display = "none";
-      if (fallback) fallback.style.display = "flex";
+    .then(onStream)
+    .catch((err) => {
+      // Bugfix: requesting video+audio together fails outright on some
+      // devices/browsers when the microphone is unavailable or its
+      // permission was denied separately from the camera's - which used to
+      // leave the whole capture screen with no live stream at all (video
+      // stays hidden, fallback message shown) even though the camera itself
+      // was fine, making the shutter button look completely dead since
+      // takePhoto()/beginHoldRecording() both bail out early on
+      // `!video.srcObject`. Retry camera-only before giving up, so a
+      // mic-permission problem degrades to "photo/video without your own
+      // voice" instead of "capture screen doesn't work at all".
+      console.error("getUserMedia(video+audio) failed, retrying video-only:", err);
+      navigator.mediaDevices
+        .getUserMedia({ video: { facingMode: createWizard.facingMode } })
+        .then(onStream)
+        .catch((err2) => {
+          console.error("getUserMedia(video-only) also failed:", err2);
+          video.style.display = "none";
+          if (fallback) fallback.style.display = "flex";
+        });
     });
 }
 
@@ -3991,6 +10152,10 @@ function finalizeWizardRecording() {
 }
 
 function finalizeWizardVideo() {
+  // Task #203 - tear down the sound-preset audio graph (if any) now that
+  // MediaRecorder has flushed its last chunk; leaving the AudioContext/
+  // oscillators running past this point would just waste battery/CPU.
+  stopWizardSoundMix();
   const blob = new Blob(createWizard.chunks, { type: "video/webm" });
   createWizard.durationSeconds = createWizard.recordAccumMs / 1000;
   const reader = new FileReader();
@@ -4012,8 +10177,15 @@ function wireWizardCaptureGesture() {
   const beginHoldRecording = () => {
     if (!createWizard.stream) return;
     if (!createWizard.recorder) {
+      // Task #203 - if a sound preset is selected, this returns a MediaStream
+      // whose audio track is the generated preset (optionally mixed with
+      // the mic) instead of the camera's raw audio track, so the recorded
+      // file actually carries the sound - not just the live preview. With
+      // no preset selected it's createWizard.stream unchanged (identical to
+      // pre-#203 behavior).
+      const recordingStream = buildWizardRecordingStream();
       try {
-        createWizard.recorder = new MediaRecorder(createWizard.stream);
+        createWizard.recorder = new MediaRecorder(recordingStream);
       } catch (e) {
         alert(I18N.t("create.cameraUnavailable"));
         return;
@@ -4026,6 +10198,9 @@ function wireWizardCaptureGesture() {
       createWizard.recorder.start(250);
     } else if (createWizard.recorder.state === "paused") {
       createWizard.recorder.resume();
+      // Resuming a multi-clip hold - bring the sound preset's volume back
+      // up from the 0 it was set to when the previous segment paused.
+      if (createWizard._soundMusicGain) createWizard._soundMusicGain.gain.value = 0.35;
     }
     createWizard.recording = true;
     createWizard.segmentStartTs = Date.now();
@@ -4043,13 +10218,41 @@ function wireWizardCaptureGesture() {
     if (createWizard.recorder && createWizard.recorder.state === "recording") {
       createWizard.recorder.pause();
     }
+    // Task #203 - mute (not tear down) the sound preset between hold
+    // segments of the same multi-clip recording; it's brought back up in
+    // beginHoldRecording()'s resume branch above.
+    if (createWizard._soundMusicGain) createWizard._soundMusicGain.gain.value = 0;
     btn.classList.remove("recording");
     showWizardRecBadge(false);
     stopWizardRing();
+    // A real-world tap-and-release routinely takes a bit longer than the
+    // hold threshold below, which was silently starting (and then pausing)
+    // a throwaway fraction-of-a-second video instead of taking the photo
+    // the person actually meant to take - and left recordAccumMs > 0, which
+    // made every following tap on the shutter do nothing at all (this was
+    // the "press the red button and no photo is taken" bug). If the hold
+    // never grew into an intentional clip, discard it and shoot a photo.
+    if (createWizard.recordAccumMs < WIZARD_MIN_INTENTIONAL_HOLD_MS) {
+      if (createWizard.recorder && createWizard.recorder.state !== "inactive") {
+        createWizard.recorder.onstop = null;
+        createWizard.recorder.stop();
+      }
+      // Task #203 - onstop is nulled out above so finalizeWizardVideo() (and
+      // its stopWizardSoundMix() call) never runs for this discarded clip;
+      // tear the sound graph down explicitly instead.
+      stopWizardSoundMix();
+      createWizard.recorder = null;
+      createWizard.chunks = [];
+      createWizard.recordAccumMs = 0;
+      const doneBtnReset = document.getElementById("wizard-fs-done-btn");
+      if (doneBtnReset) doneBtnReset.setAttribute("disabled", "disabled");
+      takePhoto();
+      return;
+    }
     const doneBtn = document.getElementById("wizard-fs-done-btn");
     if (doneBtn) doneBtn.removeAttribute("disabled");
     updateWizardHint(I18N.t("create.addMoreOrDone"));
-    if (createWizard.recordAccumMs >= WIZARD_RING_TARGET_MS) {
+    if (createWizard.recordAccumMs >= wizardRingTargetMs()) {
       finalizeWizardRecording();
     }
   };
@@ -4064,6 +10267,13 @@ function wireWizardCaptureGesture() {
       ctx.translate(canvas.width, 0);
       ctx.scale(-1, 1);
     }
+    // Task #202 - bake the manual exposure/brightness adjustment into the
+    // still right away (canvas 2D .filter works the same as CSS filter).
+    // The style filter (CREATE_WIZARD_FILTERS) stays un-baked here and is
+    // applied later at publish time via bakeImageFilter() instead, same as
+    // before this task - brightness is captured immediately since, unlike
+    // the style filter, there's no later step where it can be re-chosen.
+    ctx.filter = "brightness(" + (createWizard.brightness || 100) + "%)";
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     createWizard.rawDataUrl = canvas.toDataURL("image/jpeg", 0.92);
     createWizard.mediaType = "image";
@@ -4089,7 +10299,13 @@ function wireWizardCaptureGesture() {
     btn.classList.add("pressed");
     createWizard.holdArmed = true;
     createWizard.holdTimer = setTimeout(() => {
-      if (createWizard.holdArmed) runCaptureFlow(true);
+      if (!createWizard.holdArmed) return;
+      try {
+        runCaptureFlow(true);
+      } catch (err) {
+        console.error("Camera shutter hold-start failed:", err);
+        wizardShowToast(I18N.t("create.cameraUnavailable"));
+      }
     }, WIZARD_HOLD_THRESHOLD_MS);
   });
 
@@ -4101,10 +10317,21 @@ function wireWizardCaptureGesture() {
       clearTimeout(createWizard.holdTimer);
       createWizard.holdTimer = null;
     }
-    if (createWizard.recording) {
-      pauseHoldRecording();
-    } else if (createWizard.recordAccumMs === 0) {
-      runCaptureFlow(false);
+    // Defensive: a thrown error inside pauseHoldRecording()/runCaptureFlow()
+    // (e.g. from the newer brightness/sound-mixing code added in tasks
+    // #202/#203) must never leave the shutter permanently unresponsive -
+    // this codebase has a documented history of exactly that failure mode
+    // ("every following tap on the shutter does nothing at all"). Catch and
+    // log instead of letting it propagate silently.
+    try {
+      if (createWizard.recording) {
+        pauseHoldRecording();
+      } else if (createWizard.recordAccumMs === 0) {
+        runCaptureFlow(false);
+      }
+    } catch (err) {
+      console.error("Camera shutter release handler failed:", err);
+      wizardShowToast(I18N.t("create.cameraUnavailable"));
     }
   };
   btn.addEventListener("pointerup", release);
@@ -4116,6 +10343,13 @@ function wizardHandleMediaFile(file) {
   if (!file) return;
   const isVideo = file.type.startsWith("video/");
   if (!isVideo) {
+    // The Videos hub (task #231) is video-only - a photo picked from the
+    // gallery button while target:"video" is active isn't a valid upload
+    // for it (server.js's POST /api/moments rejects it too).
+    if (createWizard.target === "video") {
+      alert(I18N.t("videos.mustBeVideo"));
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       createWizard.rawDataUrl = reader.result;
@@ -4132,8 +10366,8 @@ function wizardHandleMediaFile(file) {
   const objectUrl = URL.createObjectURL(file);
   probe.onloadedmetadata = () => {
     URL.revokeObjectURL(objectUrl);
-    if (probe.duration && probe.duration > MAX_MOMENT_VIDEO_SECONDS) {
-      alert(I18N.t("moments.videoTooLong"));
+    if (probe.duration && probe.duration > wizardMaxVideoSeconds()) {
+      alert(I18N.t(createWizard.target === "video" ? "videos.videoTooLong" : "moments.videoTooLong"));
       return;
     }
     createWizard.durationSeconds = probe.duration || null;
@@ -4150,24 +10384,65 @@ function wizardHandleMediaFile(file) {
   probe.src = objectUrl;
 }
 
+// Task #204 - cycles an overlay's size through WIZARD_OVERLAY_SIZE_STEPS
+// (sm -> md -> lg -> sm...), used by the small resize button rendered on
+// each overlay in the editor (see renderWizardOverlays() below).
+function wizardCycleOverlaySize(ov) {
+  const idx = WIZARD_OVERLAY_SIZE_STEPS.indexOf(ov.size || "md");
+  ov.size = WIZARD_OVERLAY_SIZE_STEPS[(idx + 1) % WIZARD_OVERLAY_SIZE_STEPS.length];
+}
+
 function renderWizardOverlays(interactive) {
   const wrap = document.getElementById("wizard-preview-wrap");
   if (!wrap) return;
   wrap.querySelectorAll(".wizard-overlay-item").forEach((el) => el.remove());
   createWizard.overlays.forEach((ov) => {
     const el = document.createElement("div");
-    el.className = "wizard-overlay-item " + ov.type;
+    el.className = "wizard-overlay-item " + ov.type + " size-" + (ov.size || "md") + (ov.caption ? " wizard-overlay-caption wizard-overlay-caption-" + (ov.captionStyle || "classic") : "");
     el.style.left = ov.xPct + "%";
     el.style.top = ov.yPct + "%";
-    el.textContent = ov.value;
-    if (ov.type === "text") el.style.color = ov.color;
-    if (interactive) wireWizardOverlayDrag(el, wrap, ov);
+    const contentSpan = document.createElement("span");
+    contentSpan.className = "wizard-overlay-content";
+    contentSpan.textContent = ov.value;
+    if (ov.type === "text") contentSpan.style.color = ov.color;
+    el.appendChild(contentSpan);
+    if (interactive) {
+      // Small always-visible resize-cycle and remove (×) controls on every
+      // overlay, per task #204 - both stop propagation so tapping them
+      // doesn't also start a drag (see wireWizardOverlayDrag() below).
+      const resizeBtn = document.createElement("button");
+      resizeBtn.type = "button";
+      resizeBtn.className = "wizard-overlay-resize";
+      resizeBtn.title = I18N.t("create.overlayResize");
+      resizeBtn.textContent = (ov.size || "md").toUpperCase();
+      resizeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        wizardCycleOverlaySize(ov);
+        renderWizardOverlays(true);
+      });
+      el.appendChild(resizeBtn);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "wizard-overlay-remove";
+      removeBtn.title = I18N.t("create.removeOverlay");
+      removeBtn.innerHTML = "&times;";
+      removeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        createWizard.overlays = createWizard.overlays.filter((o) => o.id !== ov.id);
+        renderWizardOverlays(true);
+      });
+      el.appendChild(removeBtn);
+
+      wireWizardOverlayDrag(el, wrap, ov);
+    }
     wrap.appendChild(el);
   });
 }
 
 function wireWizardOverlayDrag(el, wrap, ov) {
   el.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".wizard-overlay-resize") || e.target.closest(".wizard-overlay-remove")) return;
     e.preventDefault();
     el.classList.add("dragging");
     try { el.setPointerCapture(e.pointerId); } catch (err) {}
@@ -4207,10 +10482,67 @@ function drawWizardStickerPicker() {
   toolbar.insertAdjacentElement("afterend", picker);
   picker.querySelectorAll("button").forEach((btn) => {
     btn.addEventListener("click", () => {
-      createWizard.overlays.push({ id: "s" + Date.now(), type: "sticker", value: btn.dataset.emoji, xPct: 50, yPct: 50 });
+      createWizard.overlays.push({ id: "s" + Date.now(), type: "sticker", value: btn.dataset.emoji, size: "md", xPct: 50, yPct: 50 });
       renderWizardOverlays(true);
       picker.remove();
     });
+  });
+}
+
+// Task #204 - replaces the old bare prompt() text-add flow with a small
+// composer offering a size toggle (sm/md/lg, shared with stickers - see
+// WIZARD_OVERLAY_SIZE_STEPS) and 6 preset colors (WIZARD_TEXT_COLORS,
+// white/black first for guaranteed contrast against any background). No
+// font-family picker - out of scope per task #204's MVP note.
+function drawWizardTextComposer() {
+  const existing = document.getElementById("wizard-text-composer");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const toolbar = document.querySelector(".wizard-edit-toolbar");
+  if (!toolbar) return;
+  const panel = document.createElement("div");
+  panel.className = "wizard-text-composer";
+  panel.id = "wizard-text-composer";
+  panel.innerHTML = `
+    <textarea id="wizard-text-input" maxlength="60" rows="2" placeholder="${I18N.t("create.addTextPrompt")}"></textarea>
+    <div class="wizard-text-size-row">
+      ${WIZARD_OVERLAY_SIZE_STEPS.map((s) => `<button type="button" class="wizard-text-size-btn ${s === "md" ? "active" : ""}" data-size="${s}">${I18N.t("create.textSize_" + s)}</button>`).join("")}
+    </div>
+    <div class="wizard-text-color-row">
+      ${WIZARD_TEXT_COLORS.map(
+        (c, i) => `<button type="button" class="wizard-text-color-swatch ${i === 0 ? "active" : ""}" data-color="${c}" style="background:${c};" aria-label="${c}"></button>`
+      ).join("")}
+    </div>
+    <div class="action-row">
+      <button type="button" class="btn btn-secondary" id="wizard-text-cancel">${I18N.t("common.cancel")}</button>
+      <button type="button" class="btn btn-primary" id="wizard-text-confirm">${I18N.t("create.addText")}</button>
+    </div>
+  `;
+  toolbar.insertAdjacentElement("afterend", panel);
+
+  let chosenSize = "md";
+  let chosenColor = WIZARD_TEXT_COLORS[0];
+  panel.querySelectorAll(".wizard-text-size-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      chosenSize = btn.dataset.size;
+      panel.querySelectorAll(".wizard-text-size-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    });
+  });
+  panel.querySelectorAll(".wizard-text-color-swatch").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      chosenColor = btn.dataset.color;
+      panel.querySelectorAll(".wizard-text-color-swatch").forEach((b) => b.classList.toggle("active", b === btn));
+    });
+  });
+  document.getElementById("wizard-text-cancel").addEventListener("click", () => panel.remove());
+  document.getElementById("wizard-text-confirm").addEventListener("click", () => {
+    const val = document.getElementById("wizard-text-input").value.trim();
+    panel.remove();
+    if (!val) return;
+    createWizard.overlays.push({ id: "t" + Date.now(), type: "text", value: val.slice(0, 60), color: chosenColor, size: chosenSize, xPct: 50, yPct: 35 });
+    renderWizardOverlays(true);
   });
 }
 
@@ -4223,16 +10555,22 @@ function drawCreateWizard() {
     const ringC = 2 * Math.PI * 30;
     overlay.innerHTML = `
       <div class="wizard-fs-video-wrap ${createWizard.facingMode === "user" ? "mirrored" : ""}" id="wizard-fs-video-wrap">
-        <video id="wizard-fs-video" autoplay playsinline muted style="filter:${createWizardFilterCss(createWizard.filter)};"></video>
+        <video id="wizard-fs-video" autoplay playsinline muted style="filter:${wizardLiveFilterCss()};"></video>
         <div class="wizard-fs-fallback" id="wizard-fs-fallback" style="display:none;">
           <p>${I18N.t("create.cameraUnavailable")}</p>
         </div>
+        <div class="wizard-fs-grid ${createWizard.gridOn ? "show" : ""}" id="wizard-fs-grid" aria-hidden="true"></div>
         <div class="wizard-fs-topbar">
           <button class="wizard-fs-icon-btn" id="wizard-fs-close" aria-label="${I18N.t("common.cancel")}">&times;</button>
-          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${I18N.t("create.addSound")}</button>
+          <button class="wizard-fs-sound-pill" id="wizard-fs-sound-pill">&#9835; ${wizardSoundPillLabel()}</button>
           <button class="wizard-fs-icon-btn" id="wizard-fs-effects-btn" title="${I18N.t("create.rail_effects")}">&#10024;</button>
         </div>
         <div class="wizard-fs-rec-badge" id="wizard-fs-rec-badge" style="display:none;"><span class="wizard-fs-rec-dot"></span><span id="wizard-fs-rec-time">0:00</span></div>
+        <div class="wizard-fs-brightness-panel" id="wizard-fs-brightness-panel" hidden>
+          <span class="wizard-fs-brightness-icon" aria-hidden="true">&#9788;</span>
+          <input type="range" id="wizard-fs-brightness-slider" min="50" max="150" step="5" value="${createWizard.brightness}" aria-label="${I18N.t("camera.brightnessToggle")}" />
+          <span class="wizard-fs-brightness-value" id="wizard-fs-brightness-value">${createWizard.brightness}%</span>
+        </div>
         <div class="wizard-fs-rail" id="wizard-fs-rail">${wizardRailItemsHtml()}</div>
       </div>
       <div class="wizard-fs-bottom">
@@ -4264,12 +10602,12 @@ function drawCreateWizard() {
         createWizard.filter = btn.dataset.filter;
         document.querySelectorAll(".wizard-fs-filter-item").forEach((b) => b.classList.toggle("active", b.dataset.filter === createWizard.filter));
         const v = document.getElementById("wizard-fs-video");
-        if (v) v.style.filter = createWizardFilterCss(createWizard.filter);
+        if (v) v.style.filter = wizardLiveFilterCss();
       });
     });
 
-    document.getElementById("wizard-fs-close").addEventListener("click", closeCreateWizard);
-    document.getElementById("wizard-fs-sound-pill").addEventListener("click", () => wizardShowToast(I18N.t("create.comingSoon")));
+    document.getElementById("wizard-fs-close").addEventListener("click", () => closeOverlayViaBack(closeCreateWizard));
+    document.getElementById("wizard-fs-sound-pill").addEventListener("click", wizardOpenSoundPicker);
     document.getElementById("wizard-fs-effects-btn").addEventListener("click", wizardToggleFilterStrip);
     document.getElementById("wizard-fs-gallery-btn").addEventListener("click", () => document.getElementById("wizard-file-media").click());
     document.getElementById("wizard-file-media").addEventListener("change", (e) => wizardHandleMediaFile(e.target.files[0]));
@@ -4277,7 +10615,13 @@ function drawCreateWizard() {
       if (createWizard.recordAccumMs > 0) finalizeWizardRecording();
     });
     wireWizardRail();
+    wireWizardBrightnessPanel();
     wireWizardCaptureGesture();
+    return;
+  }
+
+  if (createWizard.step === "2b") {
+    drawWizardCustomizeStep(overlay);
     return;
   }
 
@@ -4285,9 +10629,12 @@ function drawCreateWizard() {
     overlay.className = "modal-overlay create-wizard-overlay";
     overlay.innerHTML = `
       <div class="modal-box wizard-box">
-        <h2 class="section-heading">${I18N.t("create.step2Title")}</h2>
+        <h2 class="section-heading">${I18N.t(createWizard.target === "loop" ? "create.step2TitleLoop" : createWizard.target === "video" ? "create.step2TitleVideo" : "create.step2Title")}</h2>
         <div class="wizard-edit-toolbar">
+          <button class="wizard-edit-tool-btn ${createWizard.jamendoTrack ? "active" : ""}" id="wizard-add-audio-btn" title="${I18N.t("create.tool_audio")}">&#9835;</button>
           <button class="wizard-edit-tool-btn" id="wizard-add-text-btn" title="${I18N.t("create.addText")}">Aa</button>
+          <button class="wizard-edit-tool-btn ${createWizard.voiceoverDataUrl ? "active" : ""}" id="wizard-add-voice-btn" title="${I18N.t("create.tool_voice")}">&#127908;</button>
+          <button class="wizard-edit-tool-btn ${createWizard.overlays.some((o) => o.caption) ? "active" : ""}" id="wizard-add-captions-btn" title="${I18N.t("create.tool_captions")}">CC</button>
           <button class="wizard-edit-tool-btn" id="wizard-add-sticker-btn" title="${I18N.t("create.addSticker")}">&#128512;</button>
         </div>
         <div class="wizard-preview-wrap" id="wizard-preview-wrap">
@@ -4309,7 +10656,7 @@ function drawCreateWizard() {
     renderWizardOverlays(true);
     document.getElementById("wizard-cancel2").addEventListener("click", (e) => {
       e.preventDefault();
-      closeCreateWizard();
+      closeOverlayViaBack(closeCreateWizard);
     });
     wireCreateWizardFilterRow(() => {
       const img = document.getElementById("wizard-preview-img");
@@ -4317,12 +10664,10 @@ function drawCreateWizard() {
       if (img) img.style.filter = createWizardFilterCss(createWizard.filter);
       else if (vid) vid.style.filter = createWizardFilterCss(createWizard.filter);
     });
-    document.getElementById("wizard-add-text-btn").addEventListener("click", () => {
-      const val = prompt(I18N.t("create.addTextPrompt"));
-      if (!val) return;
-      createWizard.overlays.push({ id: "t" + Date.now(), type: "text", value: val.slice(0, 60), color: "#FFD84D", xPct: 50, yPct: 35 });
-      renderWizardOverlays(true);
-    });
+    document.getElementById("wizard-add-audio-btn").addEventListener("click", wizardOpenAudioLibrary);
+    document.getElementById("wizard-add-text-btn").addEventListener("click", drawWizardTextComposer);
+    document.getElementById("wizard-add-voice-btn").addEventListener("click", wizardOpenVoicePanel);
+    document.getElementById("wizard-add-captions-btn").addEventListener("click", wizardOpenCaptionsPanel);
     document.getElementById("wizard-add-sticker-btn").addEventListener("click", drawWizardStickerPicker);
     document.getElementById("wizard-back").addEventListener("click", () => {
       createWizard.step = 1;
@@ -4332,19 +10677,52 @@ function drawCreateWizard() {
       createWizard.recordAccumMs = 0;
       createWizard.recorder = null;
       createWizard.chunks = [];
+      // The AI-suggested trim window (if any) belongs to the clip that's
+      // about to be discarded - clear it so a fresh capture never inherits
+      // a stale window.
+      createWizard.clipStartSec = null;
+      createWizard.clipEndSec = null;
       drawCreateWizard();
     });
     document.getElementById("wizard-next").addEventListener("click", () => {
-      createWizard.step = 3;
+      // Task: only detour through the customize screen (mood palette + song
+      // segment) when there's actually something to customize - a picked
+      // Jamendo track or at least one caption. Otherwise go straight to
+      // step 3 like before, so the common "no music, no captions" path isn't
+      // slowed down by an extra empty screen.
+      const hasAudio = !!createWizard.jamendoTrack;
+      const hasCaptions = createWizard.overlays.some((o) => o.caption);
+      createWizard.step = hasAudio || hasCaptions ? "2b" : 3;
       drawCreateWizard();
     });
     return;
   }
 
-  // step 3: caption + hashtags + publish
+  if (createWizard.step === "3b") {
+    drawWizardCoverEditor(overlay);
+    return;
+  }
+
+  if (createWizard.step === "3c") {
+    drawWizardTagProducts(overlay);
+    return;
+  }
+
+  // step 3: title (video only) + caption + hashtags + next/publish
+  if (createWizard.step === 3) {
+  const isVideoStep3 = createWizard.target === "video";
+  const coverThumb = createWizard.coverImage || createWizard.rawDataUrl;
   overlay.innerHTML = `
     <div class="modal-box wizard-box">
       <h2 class="section-heading">${I18N.t("create.step3Title")}</h2>
+      ${
+        createWizard.mediaType === "video"
+          ? `<div class="wizard-cover-row" id="wizard-edit-cover-btn">
+               <img class="wizard-cover-thumb" src="${coverThumb}" />
+               <span class="wizard-cover-edit-label">${I18N.t("create.editCover")}</span>
+             </div>`
+          : ""
+      }
       <div class="wizard-preview-wrap wizard-preview-small">
         ${
           createWizard.mediaType === "video"
@@ -4352,18 +10730,65 @@ function drawCreateWizard() {
             : `<img class="wizard-preview-media" src="${createWizard.rawDataUrl}" style="filter:${createWizardFilterCss(createWizard.filter)};" />`
         }
       </div>
+      ${
+        createWizard.mediaType === "video" && createWizard.durationSeconds > 20
+          ? `<div class="form-group" id="wizard-clip-group">
+               <button type="button" class="btn btn-ai-suggest btn-ai-suggest-sm" id="wizard-ai-clip">&#9986;&#65039; ${I18N.t("create.aiSuggestClip")}</button>
+               <p class="field-hint" id="wizard-ai-clip-hint"></p>
+               <div id="wizard-clip-result" style="display:none;">
+                 <p class="field-hint">${I18N.t("create.aiClipSuggested")} <span id="wizard-clip-range"></span></p>
+                 <p class="field-hint" id="wizard-clip-reason"></p>
+                 <a href="#" id="wizard-clip-reset">${I18N.t("create.aiClipUseFullVideo")}</a>
+               </div>
+             </div>`
+          : ""
+      }
+      ${
+        isVideoStep3
+          ? `<div class="form-group">
+               <label>${I18N.t("create.videoTitleLabel")}</label>
+               <input type="text" id="wizard-video-title" maxlength="120" placeholder="${I18N.t("create.videoTitlePlaceholder")}" value="${escapeHtml(createWizard.titleDraft || "")}" />
+             </div>`
+          : ""
+      }
       <div class="form-group">
         <label>${I18N.t("create.captionLabel")}</label>
-        <textarea id="wizard-caption" rows="2" maxlength="130" placeholder="${I18N.t("create.captionPlaceholder")}"></textarea>
-        <p class="field-hint"><span id="wizard-caption-count">0</span>/130</p>
+        <textarea id="wizard-caption" rows="2" maxlength="130" placeholder="${I18N.t("create.captionPlaceholder")}">${escapeHtml(createWizard.captionDraft || "")}</textarea>
+        <p class="field-hint"><span id="wizard-caption-count">${(createWizard.captionDraft || "").length}</span>/130</p>
+        ${
+          createWizard.mediaType === "image"
+            ? `<button type="button" class="btn btn-ai-suggest btn-ai-suggest-sm" id="wizard-ai-suggest">&#10024; ${I18N.t("create.aiSuggestCaption")}</button>
+               <p class="field-hint" id="wizard-ai-hint"></p>
+               <div class="ai-caption-preview" id="wizard-ai-preview" style="display:none;"></div>`
+            : ""
+        }
       </div>
       <div class="form-group">
         <label>${I18N.t("create.hashtagsLabel")}</label>
-        <input type="text" id="wizard-hashtags" placeholder="${I18N.t("create.hashtagsPlaceholder")}" />
+        <input type="text" id="wizard-hashtags" placeholder="${I18N.t("create.hashtagsPlaceholder")}" value="${escapeHtml(createWizard.hashtagsDraft || "")}" />
       </div>
+      <div class="form-group">
+        <label>${I18N.t("create.locationLabel")}</label>
+        <input type="text" id="wizard-location" placeholder="${I18N.t("create.locationPlaceholder")}" value="${escapeHtml(createWizard.locationDraft || "")}" />
+      </div>
+      <label class="wizard-checkbox-row">
+        <input type="checkbox" id="wizard-ai-label" ${createWizard.aiLabel ? "checked" : ""} />
+        ${I18N.t("create.aiLabelToggle")}
+      </label>
+      ${
+        createWizard.target !== "loop"
+          ? `<label class="wizard-checkbox-row">
+               <input type="checkbox" id="wizard-also-loop" ${createWizard.alsoPostLoop ? "checked" : ""} />
+               ${I18N.t("create.alsoPostLoop")}
+             </label>`
+          : ""
+      }
+      <button type="button" class="wizard-tag-products-btn" id="wizard-open-tag-products">
+        &#127991;&#65039; ${I18N.t("create.tagProducts")}${createWizard.taggedProducts.length ? ` (${createWizard.taggedProducts.length})` : ""}
+      </button>
       <div class="action-row">
         <button class="btn btn-secondary" id="wizard-back2">${I18N.t("create.back")}</button>
-        <button class="btn btn-primary" id="wizard-publish">${I18N.t("create.publish")}</button>
+        <button class="btn btn-primary" id="wizard-publish">${I18N.t(isVideoStep3 ? "create.next" : "create.publish")}</button>
       </div>
       <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel3">${I18N.t("common.cancel")}</a></p>
       <p class="form-msg" id="wizard-publish-msg"></p>
@@ -4371,7 +10796,7 @@ function drawCreateWizard() {
   `;
   document.getElementById("wizard-cancel3").addEventListener("click", (e) => {
     e.preventDefault();
-    closeCreateWizard();
+    closeOverlayViaBack(closeCreateWizard);
   });
 
   const captionEl = document.getElementById("wizard-caption");
@@ -4379,6 +10804,112 @@ function drawCreateWizard() {
   captionEl.addEventListener("input", () => {
     countEl.textContent = String(captionEl.value.length);
   });
+
+  // Reading every field back into createWizard.*Draft before navigating away
+  // to the cover editor ("3b") or tag-products ("3c") sub-screens - both
+  // replace this step's whole markup, so whatever wasn't saved would
+  // otherwise be lost when the creator comes back to step 3.
+  function wizardPersistStep3Drafts() {
+    createWizard.captionDraft = captionEl.value;
+    const hashtagsInput = document.getElementById("wizard-hashtags");
+    if (hashtagsInput) createWizard.hashtagsDraft = hashtagsInput.value;
+    const locationInput = document.getElementById("wizard-location");
+    if (locationInput) createWizard.locationDraft = locationInput.value;
+    const aiLabelInput = document.getElementById("wizard-ai-label");
+    if (aiLabelInput) createWizard.aiLabel = aiLabelInput.checked;
+    const loopInput = document.getElementById("wizard-also-loop");
+    if (loopInput) createWizard.alsoPostLoop = loopInput.checked;
+    if (isVideoStep3) {
+      const titleInput = document.getElementById("wizard-video-title");
+      if (titleInput) createWizard.titleDraft = titleInput.value;
+    }
+  }
+
+  const editCoverBtn = document.getElementById("wizard-edit-cover-btn");
+  if (editCoverBtn) {
+    editCoverBtn.addEventListener("click", () => {
+      wizardPersistStep3Drafts();
+      createWizard.step = "3b";
+      drawCreateWizard();
+    });
+  }
+  document.getElementById("wizard-open-tag-products").addEventListener("click", () => {
+    wizardPersistStep3Drafts();
+    createWizard.step = "3c";
+    drawCreateWizard();
+  });
+
+  // AI-suggest is only offered for photo captures: the wizard never
+  // generates a poster/thumbnail frame for video, and sending video data to
+  // an image-analysis endpoint would just fail - so the button itself is
+  // omitted from the markup above when mediaType isn't "image" rather than
+  // shown disabled.
+  const wizardAiBtn = document.getElementById("wizard-ai-suggest");
+  if (wizardAiBtn) {
+    const aiHintEl = document.getElementById("wizard-ai-hint");
+    const aiPreviewEl = document.getElementById("wizard-ai-preview");
+    const aiBtnLabel = wizardAiBtn.innerHTML;
+    wizardAiBtn.addEventListener("click", async () => {
+      if (!createWizard.rawDataUrl) return;
+      wizardAiBtn.disabled = true;
+      wizardAiBtn.textContent = I18N.t("create.aiThinking");
+      aiHintEl.textContent = "";
+      aiHintEl.className = "field-hint";
+      aiPreviewEl.style.display = "none";
+      try {
+        const data = await api("/api/ai/suggest-caption", {
+          method: "POST",
+          auth: true,
+          body: {
+            image: createWizard.rawDataUrl,
+            locale: I18N.lang,
+            context: createWizard.target === "loop" ? "Loop capture" : "Moment capture",
+          },
+        });
+        const hashtagsStr = Array.isArray(data.hashtags) ? data.hashtags.map((h) => "#" + h).join(" ") : "";
+        const hashtagsInput = document.getElementById("wizard-hashtags");
+        if (!captionEl.value.trim()) {
+          // Field is empty - safe to fill directly, nothing to overwrite.
+          captionEl.value = data.caption || "";
+          countEl.textContent = String(captionEl.value.length);
+          if (hashtagsStr && hashtagsInput && !hashtagsInput.value.trim()) hashtagsInput.value = hashtagsStr;
+        } else {
+          // User already typed something - never clobber it. Show the
+          // suggestion as a dismissible preview they can tap to apply.
+          aiPreviewEl.style.display = "block";
+          aiPreviewEl.innerHTML = `
+            <p class="ai-caption-preview-text">${escapeHtml(data.caption || "")}${hashtagsStr ? " " + escapeHtml(hashtagsStr) : ""}</p>
+            <div class="ai-caption-preview-actions">
+              <a href="#" id="wizard-ai-apply">${I18N.t("create.aiApplySuggestion")}</a>
+              <a href="#" id="wizard-ai-dismiss">${I18N.t("create.aiDismissSuggestion")}</a>
+            </div>
+          `;
+          document.getElementById("wizard-ai-apply").addEventListener("click", (e) => {
+            e.preventDefault();
+            captionEl.value = data.caption || "";
+            countEl.textContent = String(captionEl.value.length);
+            if (hashtagsStr && hashtagsInput) hashtagsInput.value = hashtagsStr;
+            aiPreviewEl.style.display = "none";
+          });
+          document.getElementById("wizard-ai-dismiss").addEventListener("click", (e) => {
+            e.preventDefault();
+            aiPreviewEl.style.display = "none";
+          });
+        }
+      } catch (err) {
+        aiHintEl.textContent = err.message || I18N.t("create.aiError");
+        aiHintEl.className = "field-hint error";
+      } finally {
+        wizardAiBtn.disabled = false;
+        wizardAiBtn.innerHTML = aiBtnLabel;
+      }
+    });
+  }
+
+  // AI auto-clip (task #160) - only offered for videos over ~20s (the
+  // button itself is omitted from the markup above otherwise). Mirrors the
+  // caption assistant's loading-state/error-handling pattern above.
+  wireWizardAiClip(overlay);
 
   document.getElementById("wizard-back2").addEventListener("click", () => {
     createWizard.step = 2;
@@ -4388,8 +10919,20 @@ function drawCreateWizard() {
   document.getElementById("wizard-publish").addEventListener("click", async () => {
     const publishBtn = document.getElementById("wizard-publish");
     const msgEl = document.getElementById("wizard-publish-msg");
+    const isLoop = createWizard.target === "loop";
+    const isVideoTarget = createWizard.target === "video";
+    let videoTitleVal = "";
+    if (isVideoTarget) {
+      const titleInput = document.getElementById("wizard-video-title");
+      videoTitleVal = titleInput ? titleInput.value.trim() : "";
+      if (!videoTitleVal) {
+        msgEl.textContent = I18N.t("videos.titleRequired");
+        msgEl.className = "form-msg error";
+        return;
+      }
+    }
     publishBtn.disabled = true;
-    msgEl.textContent = I18N.t("moments.uploading");
+    msgEl.textContent = isVideoTarget ? "" : I18N.t(isLoop ? "loops.uploading" : "moments.uploading");
     msgEl.className = "form-msg";
     try {
       let finalMedia = createWizard.rawDataUrl;
@@ -4401,29 +10944,114 @@ function drawCreateWizard() {
           finalMedia = await bakeWizardOverlays(finalMedia, createWizard.overlays);
         }
       }
-      const hashtagsRaw = document.getElementById("wizard-hashtags").value.trim();
+      wizardPersistStep3Drafts();
+      const hashtagsRaw = createWizard.hashtagsDraft.trim();
       const hashtags = hashtagsRaw
         .split(/[\s,]+/)
         .filter(Boolean)
         .map((h) => (h.startsWith("#") ? h : "#" + h))
         .join(" ");
-      const captionText = captionEl.value.trim();
-      const fullCaption = hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText;
+      const captionText = createWizard.captionDraft.trim();
+      // Task #243 - a Jamendo track always came from a real Creative-Commons
+      // license, and most CC licenses require attribution. Rather than make
+      // the creator remember to credit it, we append the credit line
+      // automatically so it's never missed.
+      const musicCredit = createWizard.jamendoTrack
+        ? "\n\u{1F3B5} " + createWizard.jamendoTrack.name + " — " + createWizard.jamendoTrack.artist + " (Jamendo, CC)"
+        : "";
+      const locationLine = createWizard.locationDraft.trim() ? "\n\u{1F4CD} " + createWizard.locationDraft.trim() : "";
+      const aiLabelLine = createWizard.aiLabel ? "\n\u{2728} " + I18N.t("create.aiLabelCredit") : "";
+      const fullCaption = (hashtags ? (captionText ? captionText + "\n" + hashtags : hashtags) : captionText) + musicCredit + locationLine + aiLabelLine;
+      createWizard.captionDraft = captionText;
+      createWizard.hashtagsDraft = hashtagsRaw;
 
-      await api("/api/moments", {
-        method: "POST",
-        auth: true,
-        body: {
-          mediaType: createWizard.mediaType,
-          media: finalMedia,
-          caption: fullCaption,
-          durationSeconds: createWizard.durationSeconds,
-        },
-      });
-      msgEl.textContent = I18N.t("moments.posted");
+      // Voice-over and tagged products both ride along as overlay metadata
+      // (see wizardOpenVoicePanel()/wizardOpenTagProducts()) - only videos
+      // send overlay metadata at all (see the `overlays:` line below), so
+      // they're spliced in here rather than kept as permanent entries in
+      // createWizard.overlays (which also drives the draggable on-screen
+      // overlay editor and shouldn't show a "voiceover" or "product" pin as
+      // a draggable text/sticker).
+      let overlaysToSend = createWizard.overlays.filter((o) => o.type === "text" || o.type === "sticker");
+      if (createWizard.voiceoverDataUrl) {
+        overlaysToSend = overlaysToSend.concat([{ id: "voice1", type: "voiceover", value: createWizard.voiceoverDataUrl }]);
+      }
+      if (createWizard.taggedProducts.length) {
+        overlaysToSend = overlaysToSend.concat(
+          createWizard.taggedProducts.map((p) => ({ id: "prod-" + p.id, type: "product", productId: p.id, value: p.title }))
+        );
+      }
+
+      // Videos hub (task #231) - title + caption/hashtags are ready, but
+      // publishing waits for one more optional step: "link to one of your
+      // listings?" (see the createWizard.step === 4 branch below, after
+      // this function). The actual POST /api/moments call happens there.
+      if (isVideoTarget) {
+        createWizard.titleDraft = videoTitleVal;
+        createWizard.finalMedia = finalMedia;
+        createWizard.captionText = fullCaption;
+        createWizard.step = 4;
+        publishBtn.disabled = false;
+        drawCreateWizard();
+        return;
+      }
+
+      if (isLoop) {
+        // server.js's mkt_loops schema uses "photo"/"video" for media_type
+        // (not "image"/"video" like Moments) - see POST /api/loops - so the
+        // wizard's internal "image" value needs translating at the door.
+        await api("/api/loops", {
+          method: "POST",
+          auth: true,
+          body: {
+            mediaType: createWizard.mediaType === "video" ? "video" : "photo",
+            media: finalMedia,
+            caption: fullCaption,
+            durationSeconds: createWizard.durationSeconds,
+          },
+        });
+      } else {
+        await api("/api/moments", {
+          method: "POST",
+          auth: true,
+          body: {
+            mediaType: createWizard.mediaType,
+            media: finalMedia,
+            caption: fullCaption,
+            durationSeconds: createWizard.durationSeconds,
+            // AI auto-clip (task #160) - null/null (the default) means
+            // "publish the full video"; see POST /api/moments in server.js.
+            trimStartSec: createWizard.clipStartSec,
+            trimEndSec: createWizard.clipEndSec,
+            // Task #204 - only videos send overlay metadata; photo overlays
+            // are already baked into `finalMedia`'s pixels above and would
+            // just be drawn twice if sent again here.
+            overlays: createWizard.mediaType === "video" ? overlaysToSend : undefined,
+          },
+        });
+        // "Also post to Loops" cross-post - fires a second, independent
+        // publish to the 24h Loops feed with the same finished media/caption.
+        // Best-effort: if it fails, the Moment above already succeeded, so we
+        // only warn rather than block/rollback anything.
+        if (createWizard.alsoPostLoop && createWizard.target === "moment") {
+          try {
+            await api("/api/loops", {
+              method: "POST",
+              auth: true,
+              body: {
+                mediaType: createWizard.mediaType === "video" ? "video" : "photo",
+                media: finalMedia,
+                caption: fullCaption,
+                durationSeconds: createWizard.durationSeconds,
+              },
+            });
+          } catch (e) {}
+        }
+      }
+      msgEl.textContent = I18N.t(isLoop ? "loops.posted" : "moments.posted");
       msgEl.className = "form-msg ok";
       setTimeout(() => {
-        closeCreateWizard();
+        closeOverlayViaBack(closeCreateWizard);
         router();
       }, 700);
     } catch (e) {
@@ -4431,6 +11059,298 @@ function drawCreateWizard() {
       msgEl.className = "form-msg error";
       publishBtn.disabled = false;
     }
+  });
+  return;
+  }
+
+  // step 4 (Videos hub only, task #231): optional "link to one of your
+  // listings?" screen shown after caption/title, before the actual publish
+  // call. General-purpose across any product category, not book-specific -
+  // reuses the same "my listings" endpoint the profile page's own-listings
+  // tab already calls (GET /api/products?sellerId=<me>). Linking is never
+  // required - "Skip" is the default selection and stays selected unless
+  // the creator explicitly taps a listing.
+  if (createWizard.step === 4) {
+    overlay.className = "modal-overlay create-wizard-overlay";
+    overlay.innerHTML = `
+      <div class="modal-box wizard-box">
+        <h2 class="section-heading">${I18N.t("create.videoLinkProductTitle")}</h2>
+        <p class="field-hint">${I18N.t("create.videoLinkProductHint")}</p>
+        <div id="wizard-link-product-list"><p>${I18N.t("common.loading")}</p></div>
+        <div class="action-row">
+          <button class="btn btn-secondary" id="wizard-back3">${I18N.t("create.back")}</button>
+          <button class="btn btn-primary" id="wizard-publish-video">${I18N.t("create.publish")}</button>
+        </div>
+        <p style="text-align:center;margin-top:8px;"><a href="#" id="wizard-cancel4">${I18N.t("common.cancel")}</a></p>
+        <p class="form-msg" id="wizard-publish-msg"></p>
+      </div>
+    `;
+    document.getElementById("wizard-cancel4").addEventListener("click", (e) => {
+      e.preventDefault();
+      closeOverlayViaBack(closeCreateWizard);
+    });
+    document.getElementById("wizard-back3").addEventListener("click", () => {
+      createWizard.step = 3;
+      drawCreateWizard();
+    });
+
+    const listEl = document.getElementById("wizard-link-product-list");
+    function renderLinkProductChoices() {
+      const products = createWizard.myProducts || [];
+      const skipRow = `
+        <label class="wizard-link-product-row">
+          <input type="radio" name="wizard-link-product" value="" ${createWizard.linkedProductId ? "" : "checked"} />
+          <span>${I18N.t("create.videoSkipLink")}</span>
+        </label>`;
+      const productRows = products
+        .map(
+          (p) => `
+        <label class="wizard-link-product-row">
+          <input type="radio" name="wizard-link-product" value="${p.id}" ${createWizard.linkedProductId === p.id ? "checked" : ""} />
+          ${p.photos && p.photos[0] ? `<img class="wizard-link-product-thumb" src="${p.photos[0]}" />` : `<span class="wizard-link-product-thumb wizard-link-product-thumb-empty">\u{1F4E6}</span>`}
+          <span class="wizard-link-product-info"><span class="wizard-link-product-title">${escapeHtml(p.title)}</span><span class="wizard-link-product-price">${fmtPrice(p.price)}</span></span>
+        </label>`
+        )
+        .join("");
+      listEl.innerHTML = skipRow + (productRows || `<p class="field-hint">${I18N.t("create.videoNoListings")}</p>`);
+      listEl.querySelectorAll('input[name="wizard-link-product"]').forEach((input) => {
+        input.addEventListener("change", () => {
+          createWizard.linkedProductId = input.value || null;
+        });
+      });
+    }
+
+    if (createWizard.myProducts) {
+      renderLinkProductChoices();
+    } else if (state.user) {
+      api("/api/products?sellerId=" + encodeURIComponent(state.user.id))
+        .then((products) => {
+          createWizard.myProducts = (products || []).filter((p) => p.status !== "sold");
+          renderLinkProductChoices();
+        })
+        .catch(() => {
+          createWizard.myProducts = [];
+          renderLinkProductChoices();
+        });
+    } else {
+      createWizard.myProducts = [];
+      renderLinkProductChoices();
+    }
+
+    document.getElementById("wizard-publish-video").addEventListener("click", async () => {
+      const publishBtn = document.getElementById("wizard-publish-video");
+      const msgEl = document.getElementById("wizard-publish-msg");
+      publishBtn.disabled = true;
+      msgEl.textContent = I18N.t("moments.uploading");
+      msgEl.className = "form-msg";
+      try {
+        await api("/api/moments", {
+          method: "POST",
+          auth: true,
+          body: {
+            target: "video",
+            mediaType: "video",
+            media: createWizard.finalMedia,
+            title: createWizard.titleDraft,
+            caption: createWizard.captionText,
+            durationSeconds: createWizard.durationSeconds,
+            linkedProductId: createWizard.linkedProductId || undefined,
+            // AI auto-clip (task #160) - null/null (the default) means
+            // "publish the full video"; see POST /api/moments in server.js.
+            trimStartSec: createWizard.clipStartSec,
+            trimEndSec: createWizard.clipEndSec,
+            // Task #204 - long-form Videos-hub uploads are always video, so
+            // overlay metadata (if any) always goes along.
+            overlays: createWizard.overlays,
+          },
+        });
+        msgEl.textContent = I18N.t("videos.posted");
+        msgEl.className = "form-msg ok";
+        setTimeout(() => {
+          closeOverlayViaBack(closeCreateWizard);
+          router();
+        }, 700);
+      } catch (e) {
+        msgEl.textContent = e.message;
+        msgEl.className = "form-msg error";
+        publishBtn.disabled = false;
+      }
+    });
+    return;
+  }
+}
+
+// ---- AI auto-clip (task #160): wizard step-3 wiring ------------------------
+// Wires the "#wizard-ai-clip" button (present only for video captures over
+// ~20s - see the markup in drawCreateWizard() above). Mirrors the caption
+// assistant's loading-state/error pattern: sample a handful of small frames
+// from the raw video client-side, send them to POST /api/ai/suggest-clip,
+// then preview the suggested window by looping the step-3 preview video
+// between startSec/endSec. The chosen window (or none, if the user resets to
+// "use full video") is stored on createWizard.clipStartSec/clipEndSec and
+// sent along with the publish call.
+function wireWizardAiClip(overlay) {
+  const btn = document.getElementById("wizard-ai-clip");
+  if (!btn) return;
+  const hintEl = document.getElementById("wizard-ai-clip-hint");
+  const resultEl = document.getElementById("wizard-clip-result");
+  const rangeEl = document.getElementById("wizard-clip-range");
+  const reasonEl = document.getElementById("wizard-clip-reason");
+  const resetLink = document.getElementById("wizard-clip-reset");
+  const btnLabel = btn.innerHTML;
+  const previewVideoEl = overlay.querySelector(".wizard-preview-media");
+
+  function stopPreviewLoop() {
+    if (previewVideoEl) previewVideoEl.ontimeupdate = null;
+  }
+
+  function playPreviewLoop() {
+    if (!previewVideoEl || createWizard.clipStartSec == null || createWizard.clipEndSec == null) return;
+    const start = createWizard.clipStartSec;
+    const end = createWizard.clipEndSec;
+    try {
+      previewVideoEl.currentTime = start;
+    } catch (e) {}
+    previewVideoEl.play().catch(() => {});
+    previewVideoEl.ontimeupdate = () => {
+      if (previewVideoEl.currentTime >= end) {
+        try {
+          previewVideoEl.currentTime = start;
+        } catch (e) {}
+      }
+    };
+  }
+
+  function showResult() {
+    rangeEl.textContent = I18N.t("create.aiClipRange")
+      .replace("{start}", formatClipTime(createWizard.clipStartSec))
+      .replace("{end}", formatClipTime(createWizard.clipEndSec));
+    resultEl.style.display = "block";
+  }
+
+  if (resetLink) {
+    resetLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      createWizard.clipStartSec = null;
+      createWizard.clipEndSec = null;
+      stopPreviewLoop();
+      resultEl.style.display = "none";
+    });
+  }
+
+  // Re-show the suggestion (and resume the preview loop) if the user comes
+  // back to step 3 after already running auto-clip once.
+  if (createWizard.clipStartSec != null && createWizard.clipEndSec != null) {
+    showResult();
+    reasonEl.textContent = "";
+    playPreviewLoop();
+  }
+
+  btn.addEventListener("click", async () => {
+    if (!createWizard.rawDataUrl || !createWizard.durationSeconds) return;
+    btn.disabled = true;
+    btn.textContent = I18N.t("create.aiClipThinking");
+    hintEl.textContent = "";
+    hintEl.className = "field-hint";
+    resultEl.style.display = "none";
+    stopPreviewLoop();
+    try {
+      const frames = await sampleVideoFrames(createWizard.rawDataUrl, createWizard.durationSeconds);
+      const data = await api("/api/ai/suggest-clip", {
+        method: "POST",
+        auth: true,
+        body: { durationSec: createWizard.durationSeconds, frames },
+      });
+      createWizard.clipStartSec = data.startSec;
+      createWizard.clipEndSec = data.endSec;
+      showResult();
+      reasonEl.textContent = data.reason || "";
+      playPreviewLoop();
+    } catch (err) {
+      hintEl.textContent = (err && err.message) || I18N.t("create.aiClipError");
+      hintEl.className = "field-hint error";
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = btnLabel;
+    }
+  });
+}
+
+// Samples ~7 small frames evenly across a video (from its raw data URL) for
+// the AI auto-clip request above - an offscreen, unattached-from-layout
+// <video> is seeked to each timestamp (awaiting the "seeked" event, since
+// currentTime writes are asynchronous) and drawn to a small canvas, kept at
+// ~320px wide so the request stays light.
+function sampleVideoFrames(dataUrl, durationSec, count) {
+  count = count || 7;
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.style.position = "fixed";
+    video.style.left = "-9999px";
+    video.style.top = "0";
+    video.style.width = "1px";
+    video.style.height = "1px";
+    document.body.appendChild(video);
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+
+    function cleanup() {
+      try {
+        video.pause();
+      } catch (e) {}
+      video.removeAttribute("src");
+      video.load();
+      video.remove();
+    }
+
+    video.addEventListener("error", () => {
+      cleanup();
+      reject(new Error("Could not read video"));
+    });
+    video.addEventListener("loadedmetadata", async () => {
+      try {
+        const dur = durationSec && durationSec > 0 ? durationSec : video.duration || 0;
+        if (!dur) throw new Error("Could not read video duration");
+        const w = 320;
+        const ratio = video.videoWidth && video.videoHeight ? video.videoHeight / video.videoWidth : 16 / 9;
+        canvas.width = w;
+        canvas.height = Math.max(1, Math.round(w * ratio));
+        const frames = [];
+        for (let i = 0; i < count; i++) {
+          const t = Math.min(dur - 0.05, Math.max(0, (dur * (i + 0.5)) / count));
+          await seekVideoTo(video, t);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          frames.push({ t, image: canvas.toDataURL("image/jpeg", 0.6) });
+        }
+        cleanup();
+        resolve(frames);
+      } catch (e) {
+        cleanup();
+        reject(e);
+      }
+    });
+    video.src = dataUrl;
+  });
+}
+
+function seekVideoTo(video, t) {
+  return new Promise((resolve, reject) => {
+    const onSeeked = () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+      resolve();
+    };
+    const onError = () => {
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+      reject(new Error("Could not seek video"));
+    };
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("error", onError);
+    video.currentTime = t;
   });
 }
 
@@ -4469,10 +11389,14 @@ function bakeWizardOverlays(dataUrl, overlays) {
       overlays.forEach((ov) => {
         const x = (ov.xPct / 100) * canvas.width;
         const y = (ov.yPct / 100) * canvas.height;
+        // Task #204 - the sm/md/lg size picked in the editor scales the same
+        // base font sizes used here (WIZARD_OVERLAY_SIZE_SCALE), so what got
+        // dragged into place is what ends up baked into the JPEG.
+        const scale = WIZARD_OVERLAY_SIZE_SCALE[ov.size] || 1;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         if (ov.type === "text") {
-          const fontSize = Math.round(canvas.width * 0.06);
+          const fontSize = Math.round(canvas.width * 0.06 * scale);
           ctx.font = `800 ${fontSize}px sans-serif`;
           ctx.fillStyle = ov.color || "#FFD84D";
           ctx.shadowColor = "rgba(0,0,0,0.5)";
@@ -4480,7 +11404,7 @@ function bakeWizardOverlays(dataUrl, overlays) {
           ctx.fillText(ov.value, x, y);
           ctx.shadowBlur = 0;
         } else {
-          const fontSize = Math.round(canvas.width * 0.12);
+          const fontSize = Math.round(canvas.width * 0.12 * scale);
           ctx.font = `${fontSize}px sans-serif`;
           ctx.fillText(ov.value, x, y);
         }
@@ -4500,6 +11424,97 @@ function linkifyHashtags(escapedText) {
 }
 
 // ---------------- Profile ----------------
+
+// Task #58/#127 - shows whether the logged-in seller can already receive
+// real payouts, and drives them into Stripe's own hosted onboarding form
+// when they're not set up yet. Fetched separately (not part of the main
+// profile payload) so a slow/failed Stripe status check never blocks or
+// breaks the rest of the profile page.
+async function loadPaymentsStatusCard() {
+  const el = document.getElementById("profile-payments-status");
+  if (!el) return;
+  let status;
+  try {
+    status = await api("/api/payments/connect/status", { auth: true });
+  } catch (e) {
+    el.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (status.payoutsEnabled) {
+    el.innerHTML = `<p class="form-msg ok">✅ ${I18N.t("orders.paymentsReady")}</p>${stripeInlineBadgeHtml()}`;
+    return;
+  }
+  el.innerHTML = `
+    <p class="form-msg">${status.connected ? I18N.t("orders.paymentsAlmostReady") : I18N.t("orders.paymentsNotSetUp")}</p>
+    <button class="btn btn-gold" id="btn-setup-payments">${I18N.t("orders.setUpPayments")}</button>
+    ${stripeInlineBadgeHtml()}
+  `;
+  document.getElementById("btn-setup-payments").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      const data = await api("/api/payments/connect/onboard", { method: "POST", auth: true, body: {} });
+      window.location.href = data.url;
+    } catch (err) {
+      el.innerHTML = `<p class="form-msg error">${escapeHtml(err.message)}</p>`;
+    }
+  });
+}
+
+// Task #313 phase 2 - a seller's real ship-from address, used by EasyPost to
+// quote live carrier rates and print a real label. Reuses state.user (kept
+// fresh by the /api/users/me PUT below) rather than a fresh fetch, since this
+// renders right after the profile page's own load.
+function loadShipAddressForm() {
+  const el = document.getElementById("profile-ship-address");
+  if (!el || !state.user) return;
+  const u = state.user;
+  el.innerHTML = `
+    <form id="ship-address-form" class="ship-address-form">
+      <div class="form-row">
+        <input type="text" id="ship-line1" placeholder="${escapeHtml(I18N.t("orders.shipLine1Placeholder"))}" value="${escapeHtml(u.shipFromLine1 || "")}" required />
+      </div>
+      <div class="form-row">
+        <input type="text" id="ship-line2" placeholder="${escapeHtml(I18N.t("orders.shipLine2Placeholder"))}" value="${escapeHtml(u.shipFromLine2 || "")}" />
+      </div>
+      <div class="form-row form-row-split">
+        <input type="text" id="ship-city" placeholder="${escapeHtml(I18N.t("orders.shipCityPlaceholder"))}" value="${escapeHtml(u.shipFromCity || "")}" required />
+        <input type="text" id="ship-state" placeholder="${escapeHtml(I18N.t("orders.shipStatePlaceholder"))}" value="${escapeHtml(u.shipFromState || "")}" />
+      </div>
+      <div class="form-row form-row-split">
+        <input type="text" id="ship-postal" placeholder="${escapeHtml(I18N.t("orders.shipPostalPlaceholder"))}" value="${escapeHtml(u.shipFromPostalCode || "")}" required />
+        <input type="text" id="ship-country" maxlength="2" placeholder="${escapeHtml(I18N.t("orders.shipCountryPlaceholder"))}" value="${escapeHtml(u.shipFromCountry || "")}" required />
+      </div>
+      <button type="submit" class="btn btn-outline">${I18N.t("orders.shipAddressSave")}</button>
+      <p class="form-msg" id="ship-address-msg"></p>
+    </form>
+  `;
+  document.getElementById("ship-address-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msgEl = document.getElementById("ship-address-msg");
+    try {
+      const res = await api("/api/users/me", {
+        method: "PUT",
+        auth: true,
+        body: {
+          shipFromName: u.name || "",
+          shipFromLine1: document.getElementById("ship-line1").value.trim(),
+          shipFromLine2: document.getElementById("ship-line2").value.trim(),
+          shipFromCity: document.getElementById("ship-city").value.trim(),
+          shipFromState: document.getElementById("ship-state").value.trim(),
+          shipFromPostalCode: document.getElementById("ship-postal").value.trim(),
+          shipFromCountry: document.getElementById("ship-country").value.trim(),
+        },
+      });
+      state.user = res.user;
+      localStorage.setItem("authUser", JSON.stringify(res.user));
+      msgEl.textContent = I18N.t("orders.shipAddressSaved");
+      msgEl.className = "form-msg ok";
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+    }
+  });
+}
 
 async function renderProfile(userId) {
   if (!userId) {
@@ -4532,7 +11547,25 @@ async function renderProfile(userId) {
   const reviews = reviewsRes.status === "fulfilled" ? reviewsRes.value : [];
   const products = productsRes.status === "fulfilled" ? productsRes.value : [];
   const photos = photosRes.status === "fulfilled" ? photosRes.value : [];
-  const moments = momentsRes.status === "fulfilled" ? momentsRes.value : [];
+  const allMoments = momentsRes.status === "fulfilled" ? momentsRes.value : [];
+  // Videos hub (task #231) - GET /api/moments/user/:id intentionally
+  // returns both short-form Moments and long-form Videos (they're the same
+  // table), so the split happens here, client-side: the "Moments" stories
+  // rail only ever gets the short-form ones, and the new "Videos" tab
+  // (this user's channel) only gets the long-form ones. This is the
+  // client-side half of the short-form/long-form separation server.js
+  // already enforces on the main scroll feeds.
+  const moments = allMoments.filter((m) => !m.isLongVideo);
+  const userVideos = allMoments.filter((m) => m.isLongVideo);
+  // GET /api/moments/user/:id doesn't attach author name/photo (it's always
+  // the one profile we're already rendering), but videoCardHtml() expects
+  // them - fill them in from the profile response we just fetched.
+  if (profile) {
+    userVideos.forEach((v) => {
+      v.userName = profile.name;
+      v.userPhoto = profile.photo;
+    });
+  }
 
   let friendStatus = null;
   let followStatus = null;
@@ -4560,6 +11593,7 @@ async function renderProfile(userId) {
   viewEl.innerHTML = `
     <div class="profile-cover-wrap">
       <div class="profile-cover" id="profile-cover" style="${profile.coverPhoto ? `background-image:url('${profile.coverPhoto}')` : ""}">
+        ${profile.coverPhoto ? `<button type="button" class="profile-cover-expand-btn" id="profile-cover-expand" aria-label="${I18N.t("profile.viewCoverPhoto")}"></button>` : ""}
         ${
           isMe
             ? `<div class="profile-cover-controls">
@@ -4574,7 +11608,7 @@ async function renderProfile(userId) {
         <div class="profile-avatar-wrap">
           ${
             profile.photo
-              ? `<img class="profile-avatar" src="${profile.photo}" />`
+              ? `<img class="profile-avatar" id="profile-avatar-img" src="${profile.photo}" style="cursor:pointer;" />`
               : `<div class="profile-avatar-placeholder">${initials(profile.name)}</div>`
           }
         </div>
@@ -4590,6 +11624,7 @@ async function renderProfile(userId) {
         <div class="profile-actions" id="profile-actions">
           ${isMe ? `<button class="btn btn-outline" id="btn-edit-profile">${I18N.t("profile.editProfile")}</button>` : ""}
           ${isMe ? `<a class="btn btn-gold" href="#/post">${I18N.t("profile.postNewListing")}</a>` : ""}
+          ${isMe ? `<a class="btn btn-outline" href="#/podcasts">🎙️ ${I18N.t("podcast.eyebrow")}</a>` : ""}
           ${!isMe && profile.isPage && !isBlocked ? pageFollowMarkup(followStatus) : ""}
           ${!isMe && !isBlocked ? friendActionMarkup(friendStatus) : ""}
           ${!isMe && state.token && !isBlocked ? `<a class="btn btn-primary" href="#/messages/${profile.id}">${I18N.t("profile.messageButton")}</a>` : ""}
@@ -4597,6 +11632,26 @@ async function renderProfile(userId) {
         </div>
       </div>
     </div>
+
+    ${
+      isMe
+        ? `<div class="profile-about-card">
+            <h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("orders.sellingAndPayments")}</h2>
+            <a class="btn btn-outline" href="#/orders" style="margin-bottom:10px;">${I18N.t("orders.myOrders")}</a>
+            <div id="profile-payments-status"><p class="form-msg">${I18N.t("common.loading")}</p></div>
+          </div>`
+        : ""
+    }
+
+    ${
+      isMe
+        ? `<div class="profile-about-card">
+            <h2 class="section-heading" style="margin-bottom:6px;">${I18N.t("orders.shipFromHeading")}</h2>
+            <p class="buy-safety-note" style="margin-bottom:12px;">${I18N.t("orders.shipFromHint")}</p>
+            <div id="profile-ship-address"></div>
+          </div>`
+        : ""
+    }
 
     ${isMe && profile.isPage ? `<div class="profile-about-card" id="subs-requests-card" style="display:none;"><h2 class="section-heading" style="margin-bottom:10px;">${I18N.t("subs.requestsHeading")}</h2><div id="subs-requests-list"></div></div>` : ""}
 
@@ -4631,11 +11686,13 @@ async function renderProfile(userId) {
         <button class="tab-btn active" data-tab="listings">${I18N.t("profile.myListings")}</button>
         <button class="tab-btn" data-tab="photos">${I18N.t("profile.photosTab")}</button>
         <button class="tab-btn" data-tab="reviews">${I18N.t("profile.reviews")}</button>
+        ${isMe || userVideos.length ? `<button class="tab-btn" data-tab="videos">${I18N.t("profile.videosTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="friends">${I18N.t("profile.friendsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="requests">${I18N.t("profile.requestsTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="saved">${I18N.t("profile.savedTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="blocked">${I18N.t("profile.blockedTab")}</button>` : ""}
         ${isMe ? `<button class="tab-btn" data-tab="offers">${I18N.t("profile.myOffers")}</button>` : ""}
+        ${isMe ? `<button class="tab-btn" data-tab="analytics">${I18N.t("profile.analyticsTab")}</button>` : ""}
         ${isMe && state.token ? `<button class="tab-btn" data-tab="notifications">${I18N.t("notif.tabTitle")}</button>` : ""}
         ${isMe && state.user && state.user.isOwner ? `<button class="tab-btn" data-tab="ads">${I18N.t("ads.manageAds")}</button>` : ""}
       </div>
@@ -4698,11 +11755,25 @@ async function renderProfile(userId) {
         }
       </div>
 
+      ${
+        isMe || userVideos.length
+          ? `<div id="tab-videos" style="display:none;">
+               <div class="videos-grid">
+                 ${
+                   userVideos.length
+                     ? userVideos.map(videoCardHtml).join("")
+                     : `<div class="empty-state">${I18N.t("videos.emptyChannel")}</div>`
+                 }
+               </div>
+             </div>`
+          : ""
+      }
       ${isMe ? `<div id="tab-friends" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-requests" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-saved" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-blocked" style="display:none;"></div>` : ""}
       ${isMe ? `<div id="tab-offers" style="display:none;"></div>` : ""}
+      ${isMe ? `<div id="tab-analytics" style="display:none;"></div>` : ""}
       ${isMe && state.token ? `<div id="tab-notifications" style="display:none;"></div>` : ""}
       ${isMe && state.user && state.user.isOwner ? `<div id="tab-ads" style="display:none;"></div>` : ""}
     </div>
@@ -4715,7 +11786,7 @@ async function renderProfile(userId) {
     btn.addEventListener("click", async () => {
       document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      ["listings", "photos", "reviews", "friends", "requests", "saved", "blocked", "offers", "notifications", "ads"].forEach((t) => {
+      ["listings", "photos", "reviews", "videos", "friends", "requests", "saved", "blocked", "offers", "analytics", "notifications", "ads"].forEach((t) => {
         const el = document.getElementById("tab-" + t);
         if (el) el.style.display = t === btn.dataset.tab ? "block" : "none";
       });
@@ -4724,15 +11795,40 @@ async function renderProfile(userId) {
       if (btn.dataset.tab === "saved" && isMe) await renderSavedTab();
       if (btn.dataset.tab === "blocked" && isMe) await renderBlockedTab();
       if (btn.dataset.tab === "offers" && isMe) await renderMyOffers();
+      if (btn.dataset.tab === "analytics" && isMe) await renderCreatorAnalyticsTab();
       if (btn.dataset.tab === "notifications" && isMe && state.token) await renderNotificationSettings();
       if (btn.dataset.tab === "ads" && isMe && state.user && state.user.isOwner) await renderAdsManager();
     });
   });
 
+  // Task: tap the cover photo to see it enlarged; tap the profile picture to
+  // see it enlarged AND like/comment on it (reuses the existing photo
+  // lightbox + mkt_photo_likes/mkt_photo_comments - see openPhotoLightbox()
+  // and GET /api/photos/:id/engagement in server.js - with a synthetic
+  // "profile-<userId>" id since the profile picture itself isn't a row in
+  // mkt_user_photos). Available to any viewer, not just the profile owner.
+  const coverExpandBtn = document.getElementById("profile-cover-expand");
+  if (coverExpandBtn) {
+    coverExpandBtn.addEventListener("click", () => openImageLightboxSimple(profile.coverPhoto));
+  }
+  const avatarImg = document.getElementById("profile-avatar-img");
+  if (avatarImg) {
+    avatarImg.addEventListener("click", async () => {
+      const syntheticId = "profile-" + profile.id;
+      let engagement = { likesCount: 0, likedByMe: false, commentsCount: 0 };
+      try {
+        engagement = await api("/api/photos/" + syntheticId + "/engagement", { auth: !!state.token });
+      } catch (e) {}
+      openPhotoLightbox({ id: syntheticId, url: profile.photo, ...engagement });
+    });
+  }
+
   if (isMe) {
     document.getElementById("btn-edit-profile").addEventListener("click", () =>
       openEditProfileModal({ ...profile, phone: state.user ? state.user.phone : "" })
     );
+    loadPaymentsStatusCard();
+    loadShipAddressForm();
     const coverBtn = document.getElementById("btn-edit-cover");
     const coverInput = document.getElementById("cover-input");
     if (coverBtn && coverInput) {
@@ -5030,6 +12126,104 @@ async function renderMyOffers() {
     : `<div class="empty-state">${I18N.t("profile.noOffers")}</div>`;
 }
 
+// Creator Analytics tab: lazy-loaded on first click, same pattern as
+// renderSavedTab/renderMyOffers above. Combines lifetime like/save/comment
+// counters (see server.js incrementUserStat) with a real
+// 7-day-vs-previous-7-day views trend and per-Moment stats for the user's
+// most recent Moments (Moments are permanent now, so this is no longer
+// filtered to "active"/non-expired ones - see server.js /api/creator/stats).
+// The percent-change math for the views trend is computed client-side from
+// the raw views7d/views7dPrev counts the backend returns, guarding the
+// views7dPrev === 0 case (nothing to compare against).
+async function renderCreatorAnalyticsTab() {
+  const el = document.getElementById("tab-analytics");
+  if (!el) return;
+  el.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+
+  let data;
+  try {
+    data = await api("/api/creator/stats", { auth: true });
+  } catch (e) {
+    el.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  const lifetime = data.lifetime || { likesReceived: 0, savesReceived: 0, commentsReceived: 0 };
+
+  let trendHtml;
+  if (!data.views7dPrev) {
+    trendHtml = I18N.t("analytics.viewsTrendNoPrev").replace("{views}", data.views7d);
+  } else {
+    const pctChange = ((data.views7d - data.views7dPrev) / data.views7dPrev) * 100;
+    const sign = pctChange >= 0 ? "▲" : "▼";
+    trendHtml = I18N.t("analytics.viewsTrend")
+      .replace("{views}", data.views7d)
+      .replace("{sign}", sign)
+      .replace("{pct}", Math.abs(Math.round(pctChange)));
+  }
+
+  const completionHtml =
+    data.completionRate7d === null || data.completionRate7d === undefined
+      ? I18N.t("analytics.completionRateUnavailable")
+      : Math.round(data.completionRate7d * 100) + "%";
+
+  const recentMoments = data.recentMoments || [];
+
+  el.innerHTML = `
+    <div class="form-panel" style="max-width:none;">
+      <h3 class="section-subheading">${I18N.t("analytics.sectionTitle")}</h3>
+      <p class="analytics-disclaimer">${I18N.t("analytics.disclaimer")}</p>
+
+      <div class="analytics-stat-grid">
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${data.followerCount || 0}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.followers")}</span>
+        </div>
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${lifetime.likesReceived}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.likesReceived")}</span>
+        </div>
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${lifetime.savesReceived}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.savesReceived")}</span>
+        </div>
+        <div class="analytics-stat-card">
+          <span class="analytics-stat-value">${lifetime.commentsReceived}</span>
+          <span class="analytics-stat-label">${I18N.t("analytics.commentsReceived")}</span>
+        </div>
+      </div>
+
+      <p class="analytics-trend-line">${trendHtml}</p>
+      <p class="analytics-trend-line">${I18N.t("analytics.completionRate")}: <strong>${completionHtml}</strong></p>
+
+      <h4 class="section-subheading">${I18N.t("analytics.recentMomentsTitle")}</h4>
+      ${
+        recentMoments.length
+          ? `<div class="analytics-moment-list">
+              ${recentMoments
+                .map(
+                  (m) => `
+                <div class="analytics-moment-row">
+                  <div class="analytics-moment-meta">
+                    <span class="analytics-moment-caption">${escapeHtml(m.caption || (m.mediaType === "video" ? "\u{1F3A5}" : "\u{1F5BC}️"))}</span>
+                    <span class="analytics-moment-expires">${I18N.t("analytics.postedOn")}: ${fmtDate(m.createdAt)}</span>
+                  </div>
+                  <div class="analytics-moment-stats">
+                    <span>${I18N.t("analytics.momentViews")}: ${m.viewCount}</span>
+                    <span>${I18N.t("analytics.momentLikes")}: ${m.likeCount}</span>
+                    <span>${I18N.t("analytics.momentSaves")}: ${m.saveCount}</span>
+                    <span>${I18N.t("analytics.momentComments")}: ${m.commentCount}</span>
+                  </div>
+                </div>`
+                )
+                .join("")}
+            </div>`
+          : `<div class="empty-state">${I18N.t("analytics.recentMomentsEmpty")}</div>`
+      }
+    </div>
+  `;
+}
+
 // Pinterest-style "Guardado" tab: the user's saved products, grouped into
 // the collections they chose (default "Favoritos") when saving each item.
 async function renderSavedTab() {
@@ -5318,16 +12512,254 @@ function openEditProfileModal(profile) {
   });
 }
 
-// ---------------- Messages ----------------
+// ---------------- Realtime chat (WebSocket client) - task #234 ----------------
+// Talks to the wire contract documented in server.js's "realtime chat
+// (WebSocket)" section (task #233) - read that doc-comment block first if
+// touching anything below. The socket is opened app-wide on login (see
+// setAuth() and the bottom "Init" section) and kept alive across page
+// navigation, not just while #/messages is open, so presence/typing/live
+// delivery and the unread badge all work from anywhere in the app.
+//
+// Progressive enhancement: the REST endpoints (GET /api/conversations,
+// GET /api/conversations/:id) remain the single source of truth and are
+// always used for the initial load of any view. The poll loop started in
+// renderMessages() below only actually performs a fetch while
+// chatSocketConnected is false - i.e. it's a fallback for when the socket
+// never connects at all (old browser, blocked WS, flaky network), not a
+// second parallel update path once the socket is live.
+
+let chatSocket = null;
+let chatSocketConnected = false; // true once THIS socket's "connected" frame arrived
+let chatReconnectAttempts = 0;
+let chatReconnectTimer = null;
+const CHAT_RECONNECT_BASE_MS = 1000;
+const CHAT_RECONNECT_MAX_MS = 30000;
+
+const chatState = {
+  activeOtherId: null, // otherUserId of the open thread, or null
+  otherUser: null, // { id, name, photo } of the open thread's other participant
+  messages: [], // open thread's messages, oldest -> newest, id-keyed source of truth
+  convos: [], // last loaded conversation list (cache, not authoritative)
+  presence: {}, // userId -> { online, lastSeenAt }
+  typingTimer: null, // clears the "typing..." indicator if typing:stop never arrives
+  replyTarget: null, // message object currently staged as a reply quote, or null
+  myTypingActive: false,
+  myTypingIdleTimer: null,
+  pendingAttachment: null, // { dataUrl, kind: "image"|"video" } staged before sending
+};
+
+function chatWsUrl() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return proto + "//" + location.host + "/ws?token=" + encodeURIComponent(state.token);
+}
+
+function connectChatSocket() {
+  if (!state.token) return;
+  if (chatSocket && (chatSocket.readyState === WebSocket.OPEN || chatSocket.readyState === WebSocket.CONNECTING)) return;
+  if (chatReconnectTimer) { clearTimeout(chatReconnectTimer); chatReconnectTimer = null; }
+  let ws;
+  try {
+    ws = new WebSocket(chatWsUrl());
+  } catch (e) {
+    scheduleChatReconnect();
+    return;
+  }
+  chatSocket = ws;
+  ws.addEventListener("message", (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    handleChatSocketMessage(msg);
+  });
+  ws.addEventListener("close", () => {
+    chatSocketConnected = false;
+    if (chatSocket === ws) chatSocket = null;
+    if (state.token) scheduleChatReconnect();
+  });
+  ws.addEventListener("error", () => {
+    // The browser always follows "error" with "close" for WebSocket, which
+    // does the actual reconnect scheduling above - nothing extra needed here.
+  });
+}
+
+function scheduleChatReconnect() {
+  if (chatReconnectTimer || !state.token) return;
+  // Exponential backoff (1s, 2s, 4s, ... capped at 30s) so a dropped
+  // connection (mobile network blip, backgrounding) doesn't hammer the
+  // server, but chat quietly comes back on its own without the user having
+  // to refresh the page.
+  const delay = Math.min(CHAT_RECONNECT_BASE_MS * Math.pow(2, chatReconnectAttempts), CHAT_RECONNECT_MAX_MS);
+  chatReconnectAttempts++;
+  chatReconnectTimer = setTimeout(() => {
+    chatReconnectTimer = null;
+    connectChatSocket();
+  }, delay);
+}
+
+function disconnectChatSocket() {
+  if (chatReconnectTimer) { clearTimeout(chatReconnectTimer); chatReconnectTimer = null; }
+  chatReconnectAttempts = 0;
+  chatSocketConnected = false;
+  if (chatSocket) {
+    // The "close" listener registered in connectChatSocket() will still
+    // fire after this - harmless, since it only schedules a reconnect when
+    // state.token is set, and setAuth(null, null) always clears the token
+    // before calling this on logout.
+    try { chatSocket.close(); } catch (e) {}
+    chatSocket = null;
+  }
+}
+
+function wsSendChat(obj) {
+  if (chatSocket && chatSocket.readyState === WebSocket.OPEN) {
+    try { chatSocket.send(JSON.stringify(obj)); } catch (e) {}
+  }
+}
+
+function handleChatSocketMessage(msg) {
+  if (!msg || typeof msg.type !== "string") return;
+  if (msg.type === "connected") {
+    chatSocketConnected = true;
+    chatReconnectAttempts = 0;
+    return;
+  }
+  if (msg.type === "message:new") return onChatMessageNew(msg.message);
+  if (msg.type === "message:read") return onChatMessageRead(msg);
+  if (msg.type === "reaction:added" || msg.type === "reaction:removed") return onChatReactionChanged(msg);
+  if (msg.type === "message:deleted") return onChatMessageDeleted(msg);
+  if (msg.type === "presence:update" || msg.type === "presence:result") return onChatPresenceUpdate(msg);
+  if (msg.type === "typing") return onChatTyping(msg);
+  // Unknown types (pong, auth:error, ...) are ignored client-side too - same
+  // forward-compatible convention as the server's envelope contract.
+}
+
+function isMessagesRouteOpen() {
+  return !!document.getElementById("convo-list");
+}
+
+function onChatMessageNew(message) {
+  if (!state.user) return;
+  const myId = state.user.id;
+  const otherId = message.fromUserId === myId ? message.toUserId : message.fromUserId;
+  pollUnread();
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+  if (chatState.activeOtherId && otherId === chatState.activeOtherId) {
+    // Re-fetch the thread from the server (rather than just appending the
+    // pushed message locally) so read-receipts flip correctly - per
+    // server.js's documented contract, `read` only flips via a GET
+    // /api/conversations/:id call, which this triggers.
+    loadChatThread(otherId, { keepSkeleton: true });
+  }
+}
+
+function onChatMessageRead(msg) {
+  if (msg.conversationWith !== chatState.activeOtherId) return;
+  let changed = false;
+  chatState.messages.forEach((m) => {
+    if (msg.messageIds.includes(m.id)) { m.read = true; changed = true; }
+  });
+  if (changed) renderThreadMessages([]);
+}
+
+function onChatReactionChanged(msg) {
+  const m = chatState.messages.find((x) => x.id === msg.messageId);
+  if (m) {
+    m.reactions = msg.reactions;
+    renderThreadMessages([]);
+  }
+}
+
+function onChatMessageDeleted(msg) {
+  if (msg.mode === "forEveryone") {
+    const m = chatState.messages.find((x) => x.id === msg.messageId);
+    if (m) {
+      m.deleted = true;
+      m.text = "";
+      m.attachmentUrl = null;
+      m.attachmentType = null;
+      m.reactions = {};
+      renderThreadMessages([]);
+    }
+  } else if (msg.mode === "forMe") {
+    // Only echoed to the caller's OWN other tabs/sessions (see server.js) -
+    // safe to always apply since it can only ever be about our own view.
+    const idx = chatState.messages.findIndex((x) => x.id === msg.messageId);
+    if (idx !== -1) {
+      chatState.messages.splice(idx, 1);
+      renderThreadMessages([]);
+    }
+  }
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+  pollUnread();
+}
+
+function onChatPresenceUpdate(msg) {
+  chatState.presence[msg.userId] = { online: msg.online, lastSeenAt: msg.lastSeenAt };
+  updatePresenceDom(msg.userId);
+}
+
+function onChatTyping(msg) {
+  if (msg.from !== chatState.activeOtherId) return;
+  const row = document.getElementById("chat-typing-row");
+  if (!row) return;
+  clearTimeout(chatState.typingTimer);
+  if (msg.state === "start") {
+    row.style.display = "";
+    // Safety timeout in case a typing:stop frame is lost (dropped
+    // connection mid-type) - the indicator doesn't stick around forever.
+    chatState.typingTimer = setTimeout(() => { row.style.display = "none"; }, 6000);
+    const container = document.getElementById("chat-messages");
+    if (container && container.scrollHeight - container.scrollTop - container.clientHeight < 150) {
+      container.scrollTop = container.scrollHeight;
+    }
+  } else {
+    row.style.display = "none";
+  }
+}
+
+async function fetchPresenceOnce(userId) {
+  try {
+    const p = await api("/api/users/" + userId + "/presence", { auth: true });
+    chatState.presence[userId] = p;
+    updatePresenceDom(userId);
+  } catch (e) {}
+}
+
+function updatePresenceDom(userId) {
+  const p = chatState.presence[userId];
+  if (!p) return;
+  document.querySelectorAll('[data-presence-dot-for="' + userId + '"]').forEach((el) => {
+    el.classList.toggle("online", !!p.online);
+  });
+  if (chatState.activeOtherId === userId) {
+    const sub = document.getElementById("chat-thread-presence");
+    if (sub) sub.innerHTML = presenceLineHtml(p);
+    renderThreadMessages([]); // read-receipt "delivered" state depends on the other user's online-ness
+  }
+}
+
+function presenceLineHtml(p) {
+  if (!p) return I18N.t("messages.offline");
+  if (p.online) return `<span class="presence-dot online inline"></span>${I18N.t("messages.online")}`;
+  if (p.lastSeenAt) return escapeHtml(I18N.t("messages.lastSeenPrefix") + " " + timeAgoStr(p.lastSeenAt));
+  return I18N.t("messages.offline");
+}
+
+// ---------------- Messages (conversation list + thread view) ----------------
 
 let convoPollTimer = null;
+let presenceRefreshTimer = null;
 
 async function renderMessages(otherUserId) {
   if (!state.token) {
     viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
     return;
   }
-  if (convoPollTimer) clearInterval(convoPollTimer);
+  if (convoPollTimer) { clearInterval(convoPollTimer); convoPollTimer = null; }
+  if (presenceRefreshTimer) { clearInterval(presenceRefreshTimer); presenceRefreshTimer = null; }
+  chatState.activeOtherId = otherUserId || null;
+  chatState.messages = [];
+  chatState.replyTarget = null;
+  chatState.pendingAttachment = null;
 
   viewEl.innerHTML = `
     <h2 class="section-heading">${I18N.t("messages.inbox")}</h2>
@@ -5337,76 +12769,786 @@ async function renderMessages(otherUserId) {
     </div>
   `;
 
-  await loadConvoList(otherUserId);
-  if (otherUserId) await loadChat(otherUserId);
+  connectChatSocket(); // no-op if already open/connecting
 
+  await loadConvoList(otherUserId);
+  if (otherUserId) await loadChatThread(otherUserId);
+
+  // REST fallback poll - only actually fetches while the socket hasn't
+  // connected (see the doc-comment at the top of this section).
   convoPollTimer = setInterval(async () => {
-    await loadConvoList(otherUserId);
-    if (otherUserId) await loadChat(otherUserId, true);
+    if (chatSocketConnected) return;
+    await loadConvoList(chatState.activeOtherId);
+    if (chatState.activeOtherId) await loadChatThread(chatState.activeOtherId, { keepSkeleton: true });
   }, 4000);
+
+  if (otherUserId) {
+    presenceRefreshTimer = setInterval(() => {
+      if (chatState.activeOtherId) fetchPresenceOnce(chatState.activeOtherId);
+    }, 30000);
+  }
+}
+
+function convoPreviewText(c) {
+  if (c.lastMessageDeleted) return I18N.t("messages.deletedTombstone");
+  if (c.lastMessageAttachmentType === "audio") return "\u{1F3A4} " + I18N.t("messages.voiceMessage");
+  if (c.lastMessageAttachmentType === "video") return "\u{1F3A5} " + I18N.t("messages.video");
+  if (c.lastMessageAttachmentType === "image") return "\u{1F4F7} " + I18N.t("messages.photo");
+  return c.lastMessage || "";
 }
 
 async function loadConvoList(activeId) {
   const list = document.getElementById("convo-list");
   if (!list) return;
-  const convos = await api("/api/conversations", { auth: true });
+  let convos;
+  try {
+    convos = await api("/api/conversations", { auth: true });
+  } catch (e) {
+    return;
+  }
+  chatState.convos = convos;
   setUnreadBadge(convos.filter((c) => c.unread).length);
   list.innerHTML = convos.length
     ? convos
-        .map(
-          (c) => `
-      <a class="convo-item ${c.userId === activeId ? "active" : ""}" href="#/messages/${c.userId}">
-        ${c.userPhoto ? `<img class="mini-avatar" style="width:32px;height:32px;" src="${c.userPhoto}" />` : `<div class="seller-avatar-placeholder" style="width:32px;height:32px;font-size:13px;">${initials(c.userName)}</div>`}
-        <div>
+        .map((c) => {
+          const presence = chatState.presence[c.userId];
+          const online = presence ? presence.online : false;
+          return `
+      <a class="convo-item ${c.userId === activeId ? "active" : ""} ${c.unread ? "unread" : ""}" href="#/messages/${c.userId}">
+        <span class="convo-avatar-wrap">
+          ${c.userPhoto ? `<img class="convo-avatar" src="${c.userPhoto}" />` : `<div class="seller-avatar-placeholder convo-avatar">${initials(c.userName)}</div>`}
+          <span class="presence-dot ${online ? "online" : ""}" data-presence-dot-for="${c.userId}"></span>
+        </span>
+        <div class="convo-text">
           <div class="convo-name">${escapeHtml(c.userName)}</div>
-          <div class="convo-preview">${escapeHtml(c.lastMessage)}</div>
+          <div class="convo-preview">${escapeHtml(convoPreviewText(c))}</div>
         </div>
-        ${c.unread ? `<span class="convo-dot"></span>` : ""}
-      </a>`
-        )
+        <div class="convo-meta">
+          <span class="convo-time">${timeAgoStr(c.lastAt)}</span>
+          ${c.unread ? `<span class="convo-unread-badge" aria-label="${I18N.t("messages.unread")}"></span>` : ""}
+        </div>
+      </a>`;
+        })
         .join("")
-    : `<p style="padding:16px;color:#888;font-size:13px;">${I18N.t("messages.noConversations")}</p>`;
+    : `<div class="empty-state messages-empty">
+        <p>${I18N.t("messages.noConversations")}</p>
+        <a href="#/marketplace" class="btn btn-secondary">${I18N.t("messages.emptyBrowseCta")}</a>
+      </div>`;
+  // Best-effort presence for conversation partners not yet covered by a live
+  // presence:update - one request per partner, only for what's on screen.
+  convos.slice(0, 20).forEach((c) => {
+    if (!chatState.presence[c.userId]) fetchPresenceOnce(c.userId);
+  });
 }
 
-async function loadChat(otherUserId, silent) {
+// ---- Thread view ----
+
+function chatPanelSkeletonHtml(other) {
+  return `
+    <div class="chat-thread-header">
+      <a href="#/profile/${other.id}" class="chat-thread-avatar-link">
+        ${other.photo ? `<img src="${other.photo}" alt="" />` : `<div class="seller-avatar-placeholder">${initials(other.name)}</div>`}
+      </a>
+      <div class="chat-thread-headtext">
+        <a href="#/profile/${other.id}" class="chat-thread-name">${escapeHtml(other.name || "")}</a>
+        <div class="chat-thread-presence" id="chat-thread-presence">${I18N.t("messages.offline")}</div>
+      </div>
+    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-typing-row" id="chat-typing-row" style="display:none;">
+      <div class="chat-bubble theirs typing-bubble"><span></span><span></span><span></span></div>
+    </div>
+    <div class="chat-reply-preview" id="chat-reply-preview" style="display:none;"></div>
+    <div class="chat-attach-preview" id="chat-attach-preview" style="display:none;"></div>
+    <div class="chat-record-overlay" id="chat-record-overlay" style="display:none;"></div>
+    <div class="chat-input-row">
+      <button type="button" class="chat-icon-btn" id="chat-attach-btn" title="${I18N.t("messages.attach")}" aria-label="${I18N.t("messages.attach")}">\u{1F4CE}</button>
+      <input type="file" id="chat-file-input" accept="image/*,video/*" style="display:none;" />
+      <input id="chat-text" placeholder="${I18N.t("messages.typeMessage")}" autocomplete="off" />
+      <button type="button" class="chat-icon-btn chat-mic-btn" id="chat-mic-btn" title="${I18N.t("messages.holdToRecord")}" aria-label="${I18N.t("messages.holdToRecord")}">\u{1F3A4}</button>
+      <button type="button" class="btn btn-primary chat-send-btn" id="chat-send" style="display:none;">${I18N.t("messages.send")}</button>
+    </div>
+  `;
+}
+
+async function loadChatThread(otherUserId, opts) {
+  opts = opts || {};
   const panel = document.getElementById("chat-panel");
   if (!panel) return;
-  if (!silent) panel.innerHTML = `<div class="chat-messages" id="chat-messages"></div><div class="chat-input-row"><input id="chat-text" placeholder="${I18N.t("messages.typeMessage")}" /><button class="btn btn-primary" id="chat-send">${I18N.t("messages.send")}</button></div>`;
 
-  const messages = await api("/api/conversations/" + otherUserId, { auth: true });
-  const other = await api("/api/users/" + otherUserId);
+  if (panel.dataset.threadFor !== otherUserId) {
+    let other;
+    try {
+      other = await api("/api/users/" + otherUserId);
+    } catch (e) {
+      other = { id: otherUserId, name: "?" };
+    }
+    chatState.otherUser = other;
+    panel.dataset.threadFor = otherUserId;
+    panel.innerHTML = chatPanelSkeletonHtml(other);
+    wireChatPanel(otherUserId);
+    fetchPresenceOnce(otherUserId);
+  }
+
+  let messages;
+  try {
+    messages = await api("/api/conversations/" + otherUserId, { auth: true });
+  } catch (e) {
+    return;
+  }
+  const prevIds = new Set(chatState.messages.map((m) => m.id));
+  chatState.messages = messages;
+  const newIds = messages.filter((m) => !prevIds.has(m.id)).map((m) => m.id);
+  renderThreadMessages(newIds);
+  pollUnread();
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+}
+
+function mergeIncomingMessage(m) {
+  const idx = chatState.messages.findIndex((x) => x.id === m.id);
+  if (idx === -1) chatState.messages.push(m);
+  else chatState.messages[idx] = m;
+  chatState.messages.sort((a, b) => a.createdAt - b.createdAt);
+  renderThreadMessages([m.id]);
+  if (isMessagesRouteOpen()) loadConvoList(chatState.activeOtherId);
+}
+
+function renderThreadMessages(newIds) {
   const container = document.getElementById("chat-messages");
-  if (container) {
-    container.innerHTML = messages
-      .map(
-        (m) =>
-          `<div class="chat-bubble ${m.fromUserId === state.user.id ? "mine" : "theirs"}">${escapeHtml(m.text)}</div>`
-      )
-      .join("");
-    container.scrollTop = container.scrollHeight;
-  }
+  if (!container) return;
+  const newSet = new Set(newIds || []);
+  const wasEmpty = !container.dataset.everRendered;
+  const nearBottom = wasEmpty || container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+  container.innerHTML = chatState.messages.map((m) => messageRowHtml(m, newSet.has(m.id))).join("");
+  container.dataset.everRendered = "1";
+  wireVoicePlayers(container);
+  // Only auto-scroll if the user was already near the bottom (or this is
+  // the first render) - don't yank them away from history they scrolled up
+  // to read, per task #234's UX requirement.
+  if (nearBottom) container.scrollTop = container.scrollHeight;
+}
 
-  const sendBtn = document.getElementById("chat-send");
-  if (sendBtn && !sendBtn.dataset.wired) {
-    sendBtn.dataset.wired = "1";
-    const send = async () => {
-      const input = document.getElementById("chat-text");
-      const text = input.value.trim();
-      if (!text) return;
-      input.value = "";
-      try {
-        await api("/api/conversations/" + otherUserId, { method: "POST", auth: true, body: { text } });
-        await loadChat(otherUserId, true);
-        await loadConvoList(otherUserId);
-      } catch (e) {
-        alert(e.message);
-      }
-    };
-    sendBtn.addEventListener("click", send);
-    document.getElementById("chat-text").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") send();
-    });
+const CHAT_REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"];
+
+function attachmentPreviewLabel(m) {
+  if (m.attachmentType === "audio") return "\u{1F3A4} " + I18N.t("messages.voiceMessage");
+  if (m.attachmentType === "video") return "\u{1F3A5} " + I18N.t("messages.video");
+  if (m.attachmentType === "image") return "\u{1F4F7} " + I18N.t("messages.photo");
+  return "";
+}
+
+function truncateText(s, n) {
+  s = s || "";
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function replyQuoteHtml(replyToId) {
+  const orig = chatState.messages.find((x) => x.id === replyToId);
+  if (!orig) return `<div class="chat-reply-quote" data-scroll-to="${replyToId}">${I18N.t("messages.originalMessage")}</div>`;
+  const label = orig.deleted ? I18N.t("messages.deletedTombstone") : orig.text || attachmentPreviewLabel(orig);
+  return `<div class="chat-reply-quote" data-scroll-to="${replyToId}">${escapeHtml(truncateText(label, 80))}</div>`;
+}
+
+function attachmentHtml(m) {
+  if (!m.attachmentType || !m.attachmentUrl) return "";
+  if (m.attachmentType === "image") {
+    return `<img class="chat-attach-img" src="${m.attachmentUrl}" data-lightbox-url="${m.attachmentUrl}" data-lightbox-type="image" alt="" />`;
   }
+  if (m.attachmentType === "video") {
+    return `<div class="chat-attach-video" data-lightbox-url="${m.attachmentUrl}" data-lightbox-type="video">
+      <video src="${m.attachmentUrl}#t=0.1" preload="metadata" muted playsinline></video>
+      <span class="chat-attach-play-badge">▶</span>
+    </div>`;
+  }
+  if (m.attachmentType === "audio") {
+    return `<div class="voice-player">
+      <audio src="${m.attachmentUrl}" preload="metadata"></audio>
+      <button type="button" class="voice-player-btn" aria-label="${I18N.t("messages.play")}">▶</button>
+      <div class="voice-player-track"><div class="voice-player-fill"></div></div>
+      <span class="voice-player-time">0:00</span>
+    </div>`;
+  }
+  return "";
+}
+
+function reactionPillsHtml(m) {
+  const entries = Object.entries(m.reactions || {}).filter(([, users]) => users && users.length);
+  if (!entries.length) return "";
+  const myId = state.user.id;
+  return `<div class="chat-reaction-pills">${entries
+    .map(
+      ([emoji, users]) =>
+        `<button type="button" class="chat-reaction-pill ${users.includes(myId) ? "mine" : ""}" data-message-id="${m.id}" data-emoji="${emoji}">${emoji} <span>${users.length}</span></button>`
+    )
+    .join("")}</div>`;
+}
+
+function fmtMsgTime(ts) {
+  return new Date(ts).toLocaleTimeString(I18N.lang === "es" ? "es-ES" : "en-US", { hour: "2-digit", minute: "2-digit" });
+}
+
+function receiptHtml(m) {
+  if (m.read) return `<span class="chat-receipt read" title="${I18N.t("messages.read")}">✓✓</span>`;
+  const other = chatState.presence[m.toUserId];
+  if (other && other.online) return `<span class="chat-receipt delivered" title="${I18N.t("messages.delivered")}">✓✓</span>`;
+  return `<span class="chat-receipt sent" title="${I18N.t("messages.sent")}">✓</span>`;
+}
+
+function messageRowHtml(m, isNew) {
+  const mine = m.fromUserId === state.user.id;
+  const rowClasses = ["chat-msg-row", mine ? "mine" : "theirs"];
+  if (isNew) rowClasses.push("msg-enter");
+  let inner;
+  if (m.deleted) {
+    inner = `<div class="chat-bubble ${mine ? "mine" : "theirs"} deleted">${I18N.t("messages.deletedTombstone")}</div>`;
+  } else {
+    inner = `
+      <div class="chat-bubble ${mine ? "mine" : "theirs"} ${!m.text && m.attachmentType ? "media-only" : ""}">
+        ${m.replyToId ? replyQuoteHtml(m.replyToId) : ""}
+        ${attachmentHtml(m)}
+        ${m.text ? `<div class="chat-bubble-text">${escapeHtml(m.text)}</div>` : ""}
+        <div class="chat-bubble-meta">
+          <span class="chat-bubble-time">${fmtMsgTime(m.createdAt)}</span>
+          ${mine ? receiptHtml(m) : ""}
+        </div>
+      </div>
+      ${reactionPillsHtml(m)}
+    `;
+  }
+  return `<div class="${rowClasses.join(" ")}" data-message-id="${m.id}" data-from-id="${m.fromUserId}">${inner}</div>`;
+}
+
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+// Minimal custom voice-note player (play/pause + elapsed/total time + a
+// slim progress bar) instead of a raw <audio controls> element, matching
+// the app's own visual style. `timeupdate`/`loadedmetadata`/`ended` don't
+// bubble, so each <audio> needs its own listeners wired once (tracked via
+// dataset.wired, same one-time-wiring convention used elsewhere in app.js).
+function wireVoicePlayers(container) {
+  container.querySelectorAll(".voice-player audio").forEach((audio) => {
+    if (audio.dataset.wired) return;
+    audio.dataset.wired = "1";
+    const wrap = audio.closest(".voice-player");
+    const btn = wrap.querySelector(".voice-player-btn");
+    const fill = wrap.querySelector(".voice-player-fill");
+    const timeEl = wrap.querySelector(".voice-player-time");
+    audio.addEventListener("loadedmetadata", () => {
+      if (isFinite(audio.duration)) timeEl.textContent = fmtDuration(audio.duration);
+    });
+    audio.addEventListener("timeupdate", () => {
+      if (audio.duration) {
+        fill.style.width = (audio.currentTime / audio.duration) * 100 + "%";
+        timeEl.textContent = fmtDuration(audio.currentTime);
+      }
+    });
+    audio.addEventListener("play", () => { btn.textContent = "⏸"; });
+    audio.addEventListener("pause", () => {
+      btn.textContent = "▶";
+      if (audio.ended) { fill.style.width = "0%"; timeEl.textContent = isFinite(audio.duration) ? fmtDuration(audio.duration) : "0:00"; }
+    });
+  });
+}
+
+function scrollToMessage(id) {
+  const row = document.querySelector('.chat-msg-row[data-message-id="' + id + '"]');
+  if (!row) return;
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.classList.add("highlight-flash");
+  setTimeout(() => row.classList.remove("highlight-flash"), 1200);
+}
+
+function openChatLightbox(url, type) {
+  const overlay = document.createElement("div");
+  overlay.className = "chat-lightbox-overlay";
+  overlay.innerHTML = `
+    <button type="button" class="chat-lightbox-close" aria-label="${I18N.t("common.close")}">×</button>
+    <div class="chat-lightbox-media-wrap">
+      ${
+        type === "video"
+          ? `<video src="${url}" controls autoplay playsinline class="chat-lightbox-media"></video>`
+          : `<img src="${url}" class="chat-lightbox-media" alt="" />`
+      }
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay || e.target.closest(".chat-lightbox-close")) overlay.remove();
+  });
+}
+
+async function toggleMyReaction(messageId, emoji) {
+  const m = chatState.messages.find((x) => x.id === messageId);
+  if (!m) return;
+  const myId = state.user.id;
+  const already = !!(m.reactions && m.reactions[emoji] && m.reactions[emoji].includes(myId));
+  try {
+    const res = await api("/api/messages/" + messageId + "/react", { method: already ? "DELETE" : "POST", auth: true, body: { emoji } });
+    m.reactions = res.reactions;
+    renderThreadMessages([]);
+  } catch (e) {}
+}
+
+async function deleteChatMessage(messageId, mode) {
+  try {
+    await api("/api/messages/" + messageId, { method: "DELETE", auth: true, body: { mode } });
+    if (mode === "forMe") {
+      const idx = chatState.messages.findIndex((x) => x.id === messageId);
+      if (idx !== -1) chatState.messages.splice(idx, 1);
+    } else {
+      const m = chatState.messages.find((x) => x.id === messageId);
+      if (m) {
+        m.deleted = true;
+        m.text = "";
+        m.attachmentUrl = null;
+        m.attachmentType = null;
+        m.reactions = {};
+      }
+    }
+    renderThreadMessages([]);
+    loadConvoList(chatState.activeOtherId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function setReplyTargetById(id) {
+  const m = chatState.messages.find((x) => x.id === id);
+  if (!m || m.deleted) return;
+  chatState.replyTarget = m;
+  renderReplyPreview();
+  const input = document.getElementById("chat-text");
+  if (input) input.focus();
+}
+
+function clearReplyTarget() {
+  chatState.replyTarget = null;
+  renderReplyPreview();
+}
+
+function renderReplyPreview() {
+  const el = document.getElementById("chat-reply-preview");
+  if (!el) return;
+  if (!chatState.replyTarget) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  const m = chatState.replyTarget;
+  const label = m.text || attachmentPreviewLabel(m);
+  el.style.display = "flex";
+  el.innerHTML = `
+    <div class="chat-reply-preview-bar">
+      <span class="chat-reply-preview-text">${escapeHtml(truncateText(label, 90))}</span>
+      <button type="button" class="chat-reply-cancel" data-reply-cancel aria-label="${I18N.t("common.close")}">×</button>
+    </div>`;
+}
+
+function closeMessageActionSheet() {
+  const existing = document.getElementById("chat-action-overlay");
+  if (existing) existing.remove();
+}
+
+function openMessageActionSheet(messageId) {
+  const m = chatState.messages.find((x) => x.id === messageId);
+  if (!m || m.deleted) return;
+  closeMessageActionSheet();
+  const mine = m.fromUserId === state.user.id;
+  const overlay = document.createElement("div");
+  overlay.className = "chat-action-overlay";
+  overlay.id = "chat-action-overlay";
+  overlay.innerHTML = `
+    <div class="chat-action-sheet">
+      <div class="chat-reaction-row">
+        ${CHAT_REACTION_EMOJIS.map((em) => `<button type="button" class="chat-reaction-choice" data-emoji="${em}">${em}</button>`).join("")}
+      </div>
+      <button type="button" class="chat-action-item" data-action="reply">${I18N.t("messages.reply")}</button>
+      <button type="button" class="chat-action-item" data-action="deleteForMe">${I18N.t("messages.deleteForMe")}</button>
+      ${mine ? `<button type="button" class="chat-action-item danger" data-action="deleteForEveryone">${I18N.t("messages.deleteForEveryone")}</button>` : ""}
+      <button type="button" class="chat-action-item" data-action="cancel">${I18N.t("common.cancel")}</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", async (e) => {
+    if (e.target === overlay) return closeMessageActionSheet();
+    const emojiBtn = e.target.closest(".chat-reaction-choice");
+    if (emojiBtn) {
+      await toggleMyReaction(messageId, emojiBtn.dataset.emoji);
+      closeMessageActionSheet();
+      return;
+    }
+    const actionBtn = e.target.closest(".chat-action-item");
+    if (!actionBtn) return;
+    const action = actionBtn.dataset.action;
+    closeMessageActionSheet();
+    if (action === "reply") setReplyTargetById(messageId);
+    else if (action === "deleteForMe") deleteChatMessage(messageId, "forMe");
+    else if (action === "deleteForEveryone") deleteChatMessage(messageId, "forEveryone");
+  });
+}
+
+// Long-press (mouse+touch, via Pointer Events) opens the reaction/action
+// sheet; a short horizontal drag on a bubble is the WhatsApp-style
+// swipe-to-reply gesture. Both share one pointerdown->move->up state
+// machine per container so they don't fight each other.
+function wireLongPressAndSwipe(container) {
+  const LONG_PRESS_MS = 450;
+  const SWIPE_THRESHOLD = 56;
+  let pressTimer = null;
+  let pressTarget = null;
+  let startX = 0, startY = 0, tracking = false, swiped = false;
+
+  const clearPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+
+  container.addEventListener("pointerdown", (e) => {
+    const row = e.target.closest(".chat-msg-row");
+    if (!row || row.classList.contains("deleted")) return;
+    if (e.target.closest(".chat-reaction-pill, .voice-player-btn, [data-lightbox-url], .chat-reply-quote")) return;
+    pressTarget = row;
+    startX = e.clientX;
+    startY = e.clientY;
+    tracking = true;
+    swiped = false;
+    pressTimer = setTimeout(() => {
+      if (!tracking) return;
+      openMessageActionSheet(row.dataset.messageId);
+      tracking = false;
+    }, LONG_PRESS_MS);
+  });
+  container.addEventListener("pointermove", (e) => {
+    if (!tracking || !pressTarget) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if (Math.abs(dy) > 30) {
+      clearPress();
+      tracking = false;
+      pressTarget.classList.remove("swiping");
+      pressTarget.style.transform = "";
+      return;
+    }
+    if (dx > 12 && dx < 140) {
+      clearPress(); // horizontal drag cancels the long-press timer and becomes a swipe
+      pressTarget.classList.add("swiping");
+      pressTarget.style.transform = "translateX(" + dx + "px)";
+      swiped = dx > SWIPE_THRESHOLD;
+    }
+  });
+  const endPress = () => {
+    clearPress();
+    if (pressTarget) {
+      if (swiped) setReplyTargetById(pressTarget.dataset.messageId);
+      pressTarget.classList.remove("swiping");
+      pressTarget.style.transform = "";
+    }
+    tracking = false;
+    swiped = false;
+    pressTarget = null;
+  };
+  container.addEventListener("pointerup", endPress);
+  container.addEventListener("pointerleave", endPress);
+  container.addEventListener("pointercancel", endPress);
+}
+
+function toggleComposeButtons() {
+  const input = document.getElementById("chat-text");
+  const sendBtn = document.getElementById("chat-send");
+  const micBtn = document.getElementById("chat-mic-btn");
+  if (!input || !sendBtn || !micBtn) return;
+  const hasText = input.value.trim().length > 0;
+  sendBtn.style.display = hasText ? "" : "none";
+  micBtn.style.display = hasText ? "none" : "";
+}
+
+function handleMyTyping(otherUserId) {
+  if (!chatState.myTypingActive) {
+    chatState.myTypingActive = true;
+    wsSendChat({ type: "typing:start", to: otherUserId });
+  }
+  clearTimeout(chatState.myTypingIdleTimer);
+  chatState.myTypingIdleTimer = setTimeout(() => stopMyTyping(otherUserId), 3000);
+}
+
+function stopMyTyping(otherUserId) {
+  clearTimeout(chatState.myTypingIdleTimer);
+  chatState.myTypingIdleTimer = null;
+  if (chatState.myTypingActive) {
+    chatState.myTypingActive = false;
+    wsSendChat({ type: "typing:stop", to: otherUserId });
+  }
+}
+
+async function sendChatText() {
+  const input = document.getElementById("chat-text");
+  const otherId = chatState.activeOtherId;
+  if (!input || !otherId) return;
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  toggleComposeButtons();
+  stopMyTyping(otherId);
+  const body = { text };
+  if (chatState.replyTarget) body.replyToId = chatState.replyTarget.id;
+  clearReplyTarget();
+  try {
+    const sent = await api("/api/conversations/" + otherId, { method: "POST", auth: true, body });
+    mergeIncomingMessage(sent);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function stageChatAttachment(file) {
+  const isImage = file.type.startsWith("image/");
+  const isVideo = file.type.startsWith("video/");
+  if (!isImage && !isVideo) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    chatState.pendingAttachment = { dataUrl: reader.result, kind: isImage ? "image" : "video" };
+    renderAttachPreview();
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderAttachPreview() {
+  const el = document.getElementById("chat-attach-preview");
+  if (!el) return;
+  const a = chatState.pendingAttachment;
+  if (!a) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  el.style.display = "flex";
+  el.innerHTML = `
+    <div class="chat-attach-preview-bar">
+      ${a.kind === "image" ? `<img src="${a.dataUrl}" class="chat-attach-preview-thumb" />` : `<video src="${a.dataUrl}" class="chat-attach-preview-thumb" muted></video>`}
+      <span class="chat-attach-preview-label">${a.kind === "image" ? I18N.t("messages.photo") : I18N.t("messages.video")}</span>
+      <button type="button" class="chat-icon-btn" data-attach-cancel aria-label="${I18N.t("common.cancel")}">×</button>
+      <button type="button" class="btn btn-primary chat-attach-send-btn" data-attach-send>${I18N.t("messages.send")}</button>
+    </div>`;
+  el.querySelector("[data-attach-cancel]").addEventListener("click", () => {
+    chatState.pendingAttachment = null;
+    renderAttachPreview();
+  });
+  el.querySelector("[data-attach-send]").addEventListener("click", sendChatAttachment);
+}
+
+async function sendChatAttachment() {
+  const a = chatState.pendingAttachment;
+  const otherId = chatState.activeOtherId;
+  if (!a || !otherId) return;
+  chatState.pendingAttachment = null;
+  renderAttachPreview();
+  try {
+    const up = await api("/api/messages/attachments", { method: "POST", auth: true, body: { media: a.dataUrl, type: a.kind, conversationWith: otherId } });
+    const body = { attachmentUrl: up.url, attachmentType: up.type };
+    if (chatState.replyTarget) body.replyToId = chatState.replyTarget.id;
+    clearReplyTarget();
+    const sent = await api("/api/conversations/" + otherId, { method: "POST", auth: true, body });
+    mergeIncomingMessage(sent);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// Voice-note hold-to-record: pointerdown starts recording immediately (a
+// dedicated mic button, so no hold-threshold delay is needed the way the
+// camera wizard needs one to disambiguate hold-vs-tap on a shared shutter
+// button), pointerup releases + sends, sliding the pointer up past a
+// threshold cancels - the standard WhatsApp voice-note gesture. Reuses the
+// same MediaRecorder + getUserMedia({audio:true}) approach as
+// wireWizardCaptureGesture()/beginHoldRecording() in the camera wizard.
+function wireVoiceNoteGesture(micBtn, otherUserId) {
+  if (!micBtn) return;
+  let recorder = null;
+  let chunks = [];
+  let stream = null;
+  let startTs = 0;
+  let durationTimer = null;
+  let canceled = false;
+  let startY = 0;
+
+  const overlayEl = () => document.getElementById("chat-record-overlay");
+
+  const updateOverlay = (elapsedMs, dragY) => {
+    const el = overlayEl();
+    if (!el) return;
+    const cancelZone = dragY < -70;
+    el.classList.toggle("cancel-armed", cancelZone);
+    el.innerHTML = `
+      <div class="chat-record-pulse"></div>
+      <span class="chat-record-time">${fmtDuration(Math.floor(elapsedMs / 1000))}</span>
+      <span class="chat-record-hint">${cancelZone ? I18N.t("messages.releaseToCancel") : I18N.t("messages.slideToCancel")}</span>
+    `;
+  };
+
+  const startRecording = async () => {
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      alert(I18N.t("messages.micUnavailable"));
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      alert(I18N.t("messages.micUnavailable"));
+      return;
+    }
+    try {
+      recorder = new MediaRecorder(stream);
+    } catch (e) {
+      stream.getTracks().forEach((t) => t.stop());
+      alert(I18N.t("messages.micUnavailable"));
+      return;
+    }
+    chunks = [];
+    canceled = false;
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunks.push(e.data);
+    };
+    recorder.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      if (!canceled && Date.now() - startTs >= 500) {
+        finalizeVoiceNote(chunks, recorder.mimeType || "audio/webm", otherUserId);
+      }
+      chunks = [];
+    };
+    recorder.start(250);
+    startTs = Date.now();
+    micBtn.classList.add("recording");
+    const el = overlayEl();
+    if (el) el.style.display = "flex";
+    durationTimer = setInterval(() => updateOverlay(Date.now() - startTs, 0), 200);
+    updateOverlay(0, 0);
+  };
+
+  const stopRecording = (didCancel) => {
+    canceled = didCancel;
+    clearInterval(durationTimer);
+    durationTimer = null;
+    micBtn.classList.remove("recording");
+    const el = overlayEl();
+    if (el) {
+      el.style.display = "none";
+      el.classList.remove("cancel-armed");
+    }
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+  };
+
+  micBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { micBtn.setPointerCapture(e.pointerId); } catch (err) {}
+    startY = e.clientY;
+    startRecording();
+  });
+  micBtn.addEventListener("pointermove", (e) => {
+    if (!recorder || recorder.state !== "recording") return;
+    const dy = e.clientY - startY;
+    updateOverlay(Date.now() - startTs, dy);
+    if (dy < -90) stopRecording(true);
+  });
+  const release = () => {
+    if (recorder && recorder.state === "recording") stopRecording(false);
+  };
+  micBtn.addEventListener("pointerup", release);
+  micBtn.addEventListener("pointercancel", () => {
+    if (recorder && recorder.state === "recording") stopRecording(true);
+  });
+}
+
+function finalizeVoiceNote(chunks, mimeType, otherUserId) {
+  const blob = new Blob(chunks, { type: mimeType.split(";")[0] || "audio/webm" });
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const up = await api("/api/messages/attachments", { method: "POST", auth: true, body: { media: reader.result, type: "audio", conversationWith: otherUserId } });
+      const body = { attachmentUrl: up.url, attachmentType: up.type };
+      if (chatState.replyTarget) body.replyToId = chatState.replyTarget.id;
+      clearReplyTarget();
+      const sent = await api("/api/conversations/" + otherUserId, { method: "POST", auth: true, body });
+      mergeIncomingMessage(sent);
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+  reader.readAsDataURL(blob);
+}
+
+// One-time wiring for a freshly-built thread panel skeleton (called from
+// loadChatThread() only when the panel is rebuilt for a new otherUserId,
+// not on every message update - message-level interactions use event
+// delegation on #chat-messages so they keep working across re-renders).
+function wireChatPanel(otherUserId) {
+  const container = document.getElementById("chat-messages");
+  const input = document.getElementById("chat-text");
+  const sendBtn = document.getElementById("chat-send");
+  const micBtn = document.getElementById("chat-mic-btn");
+  const attachBtn = document.getElementById("chat-attach-btn");
+  const fileInput = document.getElementById("chat-file-input");
+  const replyPreview = document.getElementById("chat-reply-preview");
+
+  input.addEventListener("input", () => {
+    toggleComposeButtons();
+    handleMyTyping(otherUserId);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendChatText();
+    }
+  });
+  input.addEventListener("blur", () => stopMyTyping(otherUserId));
+  sendBtn.addEventListener("click", sendChatText);
+
+  attachBtn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (file) stageChatAttachment(file);
+    fileInput.value = "";
+  });
+
+  wireVoiceNoteGesture(micBtn, otherUserId);
+
+  container.addEventListener("click", (e) => {
+    const reactPill = e.target.closest(".chat-reaction-pill");
+    if (reactPill) {
+      toggleMyReaction(reactPill.dataset.messageId, reactPill.dataset.emoji);
+      return;
+    }
+    const voiceBtn = e.target.closest(".voice-player-btn");
+    if (voiceBtn) {
+      const audio = voiceBtn.closest(".voice-player").querySelector("audio");
+      if (audio.paused) {
+        document.querySelectorAll(".voice-player audio").forEach((a) => {
+          if (a !== audio) a.pause();
+        });
+        audio.play().catch(() => {});
+      } else {
+        audio.pause();
+      }
+      return;
+    }
+    const lightboxTarget = e.target.closest("[data-lightbox-url]");
+    if (lightboxTarget) {
+      openChatLightbox(lightboxTarget.dataset.lightboxUrl, lightboxTarget.dataset.lightboxType);
+      return;
+    }
+    const quote = e.target.closest(".chat-reply-quote");
+    if (quote) {
+      scrollToMessage(quote.dataset.scrollTo);
+      return;
+    }
+  });
+
+  wireLongPressAndSwipe(container);
+
+  replyPreview.addEventListener("click", (e) => {
+    if (e.target.closest("[data-reply-cancel]")) clearReplyTarget();
+  });
+
+  toggleComposeButtons();
 }
 
 // ---------------- International (producer/distributor cross-border matching) ----------------
@@ -5425,6 +13567,16 @@ function intlRoleLabel(roleType) {
   return roleType === "producer" ? I18N.t("intl.roleProducer") : I18N.t("intl.roleDistributor");
 }
 
+// Structured book-focused services a directory company can offer - keeps
+// this list in sync with server.js's INTL_BOOK_SERVICES.
+const INTL_BOOK_SERVICES = ["sourcing", "foreign_language", "academic", "logistics", "wholesale"];
+function intlBookServiceTagsHtml(bookServices) {
+  if (!bookServices || !bookServices.length) return "";
+  return `<div class="intl-book-service-tags">${bookServices
+    .map((s) => `<span class="intl-book-service-tag">${I18N.t("intl.bookService_" + s)}</span>`)
+    .join("")}</div>`;
+}
+
 function renderIntlHome() {
   viewEl.innerHTML = `
     <div class="intl-hero">
@@ -5432,6 +13584,11 @@ function renderIntlHome() {
       <p>${I18N.t("intl.heroSubtitle")}</p>
     </div>
     <p class="intl-intro">${I18N.t("intl.heroIntro")}</p>
+    <div class="intl-services-grid">
+      ${INTL_BOOK_SERVICES.map(
+        (s) => `<div class="intl-service-card"><strong>${I18N.t("intl.bookService_" + s)}</strong><p>${I18N.t("intl.bookServiceDesc_" + s)}</p></div>`
+      ).join("")}
+    </div>
 
     <div class="intl-cta-row">
       <a class="btn btn-gold" href="#/intl/register">${I18N.t("intl.ctaRegister")}</a>
@@ -5457,6 +13614,7 @@ async function renderIntlDirectory(query) {
   if (query.country) params.set("country", query.country);
   if (query.industry) params.set("industry", query.industry);
   if (query.roleType) params.set("roleType", query.roleType);
+  if (query.bookService) params.set("bookService", query.bookService);
 
   const companies = await api("/api/intl/companies?" + params.toString());
 
@@ -5471,6 +13629,7 @@ async function renderIntlDirectory(query) {
         </div>
         <p class="intl-card-name">${escapeHtml(c.companyName)}</p>
         <p class="intl-card-meta">\u{1F30D} ${escapeHtml(c.country)}${c.industry ? " &middot; " + escapeHtml(c.industry) : ""}</p>
+        ${intlBookServiceTagsHtml(c.bookServices)}
         <p class="intl-card-desc">${escapeHtml((c.description || "").slice(0, 140))}${c.description && c.description.length > 140 ? "…" : ""}</p>
       </a>`
         )
@@ -5488,6 +13647,12 @@ async function renderIntlDirectory(query) {
         <option value="producer" ${query.roleType === "producer" ? "selected" : ""}>${I18N.t("intl.roleProducer")}</option>
         <option value="distributor" ${query.roleType === "distributor" ? "selected" : ""}>${I18N.t("intl.roleDistributor")}</option>
       </select>
+      <select id="if-book-service">
+        <option value="" ${!query.bookService ? "selected" : ""}>${I18N.t("intl.bookServiceAll")}</option>
+        ${INTL_BOOK_SERVICES.map(
+          (s) => `<option value="${s}" ${query.bookService === s ? "selected" : ""}>${I18N.t("intl.bookService_" + s)}</option>`
+        ).join("")}
+      </select>
       <button id="if-apply">${I18N.t("intl.applyFilters")}</button>
     </div>
     <div class="intl-grid">${cards}</div>
@@ -5498,9 +13663,11 @@ async function renderIntlDirectory(query) {
     const country = document.getElementById("if-country").value.trim();
     const industry = document.getElementById("if-industry").value.trim();
     const roleType = document.getElementById("if-role").value;
+    const bookService = document.getElementById("if-book-service").value;
     if (country) p.set("country", country);
     if (industry) p.set("industry", industry);
     if (roleType) p.set("roleType", roleType);
+    if (bookService) p.set("bookService", bookService);
     location.hash = "#/intl/directory" + (p.toString() ? "?" + p.toString() : "");
   });
 }
@@ -5526,6 +13693,7 @@ async function renderIntlCompanyDetail(id) {
       </div>
       <h1 class="detail-title">${escapeHtml(c.companyName)}</h1>
       <div class="detail-meta">\u{1F30D} ${escapeHtml(c.country)}${c.industry ? " &middot; " + escapeHtml(c.industry) : ""}</div>
+      ${intlBookServiceTagsHtml(c.bookServices)}
       <p style="white-space:pre-wrap;font-size:14px;margin-top:14px;">${escapeHtml(c.description || "")}</p>
       ${c.website ? `<p><a href="${escapeHtml(c.website)}" target="_blank" rel="noopener">${escapeHtml(c.website)}</a></p>` : ""}
 
@@ -5565,6 +13733,7 @@ async function renderIntlMyCompanies() {
         </div>
         <p class="intl-card-name">${escapeHtml(c.companyName)}</p>
         <p class="intl-card-meta">\u{1F30D} ${escapeHtml(c.country)}${c.industry ? " &middot; " + escapeHtml(c.industry) : ""}</p>
+        ${intlBookServiceTagsHtml(c.bookServices)}
       </a>`
         )
         .join("")
@@ -5620,6 +13789,19 @@ async function renderIntlForm(editId) {
         <input type="text" id="ic-industry" value="${escapeHtml(existing ? existing.industry : "")}" />
       </div>
       <div class="form-group">
+        <label>${I18N.t("intl.bookServicesLabel")}</label>
+        <p class="form-field-hint">${I18N.t("intl.bookServicesHint")}</p>
+        <div class="intl-book-services-check">
+          ${INTL_BOOK_SERVICES.map(
+            (s) => `
+            <label class="intl-book-service-option">
+              <input type="checkbox" name="ic-book-service" value="${s}" ${existing && existing.bookServices && existing.bookServices.includes(s) ? "checked" : ""} />
+              ${I18N.t("intl.bookService_" + s)}
+            </label>`
+          ).join("")}
+        </div>
+      </div>
+      <div class="form-group">
         <label>${I18N.t("intl.description")}</label>
         <textarea id="ic-description" rows="5">${escapeHtml(existing ? existing.description : "")}</textarea>
       </div>
@@ -5653,6 +13835,7 @@ async function renderIntlForm(editId) {
       contactEmail: document.getElementById("ic-email").value,
       contactPhone: document.getElementById("ic-phone").value,
       website: document.getElementById("ic-website").value,
+      bookServices: Array.from(document.querySelectorAll('input[name="ic-book-service"]:checked')).map((el) => el.value),
     };
     try {
       if (editId) {
@@ -5743,6 +13926,10 @@ function adminTabsMarkup(active) {
     { key: "reports", label: I18N.t("admin.tabReports") },
     { key: "products", label: I18N.t("admin.tabProducts") },
     { key: "users", label: I18N.t("admin.tabUsers") },
+    { key: "books", label: I18N.t("admin.tabBooks") },
+    { key: "audiobooks", label: I18N.t("admin.tabAudiobooks") },
+    { key: "disputes", label: I18N.t("admin.tabDisputes") },
+    { key: "integrations", label: I18N.t("admin.tabIntegrations") },
   ];
   return `<div class="admin-tabs">${tabs
     .map((t) => `<a href="#/admin/${t.key}" class="admin-tab${active === t.key ? " active" : ""}">${t.label}</a>`)
@@ -5762,7 +13949,229 @@ async function renderAdminPanel(section) {
   `;
   if (section === "users") return renderAdminUsers();
   if (section === "products") return renderAdminProducts();
+  if (section === "books") return renderAdminBookSubmissions();
+  if (section === "audiobooks") return renderAdminAudiobookSubmissions();
+  if (section === "disputes") return renderAdminDisputes();
+  if (section === "integrations") return renderAdminIntegrations();
   return renderAdminReports();
+}
+
+// Task #58/#127 - a buyer reported a problem with a real, paid order.
+// Funds are frozen (order status "disputed") until an admin picks one of
+// these two outcomes here: release the seller's payout, or refund the buyer
+// in full. Both actions call Stripe directly and are logged on the order.
+async function renderAdminDisputes() {
+  const content = document.getElementById("admin-content");
+  content.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let orders;
+  try {
+    orders = await api("/api/admin/orders?status=disputed", { auth: true });
+  } catch (e) {
+    content.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!orders.length) {
+    content.innerHTML = `<p class="form-msg">${I18N.t("admin.noDisputes")}</p>`;
+    return;
+  }
+  content.innerHTML = orders
+    .map(
+      (o) => `
+    <div class="form-panel" style="margin-bottom:14px;" data-order-id="${o.id}">
+      <p><strong>${fmtPrice(o.amount)}</strong> &middot; ${I18N.t("orders.payoutLabel")}: ${fmtPrice(o.sellerPayout)}</p>
+      <p style="font-size:13px;color:var(--text-secondary);">${I18N.t("orders.roleBuyer")}: ${escapeHtml(o.buyerName)} (${escapeHtml(o.buyerEmail)})</p>
+      <p style="font-size:13px;color:var(--text-secondary);">${I18N.t("orders.roleSeller")}: ${escapeHtml(o.sellerName)} (${escapeHtml(o.sellerEmail)})</p>
+      <p style="margin-top:8px;white-space:pre-wrap;">${escapeHtml(o.disputeReason || "")}</p>
+      <div class="action-row" style="margin-top:10px;">
+        <button class="btn btn-gold" data-action="release">${I18N.t("admin.resolveRelease")}</button>
+        <button class="btn btn-danger" data-action="refund">${I18N.t("admin.resolveRefund")}</button>
+      </div>
+      <p class="form-msg admin-dispute-msg"></p>
+    </div>`
+    )
+    .join("");
+
+  content.querySelectorAll("[data-order-id]").forEach((card) => {
+    const orderId = card.dataset.orderId;
+    const msgEl = card.querySelector(".admin-dispute-msg");
+    card.querySelectorAll("[data-action]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const action = btn.dataset.action;
+        if (!confirm(I18N.t("admin.confirmResolve." + action))) return;
+        card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+        try {
+          await api("/api/admin/orders/" + orderId + "/resolve", { method: "POST", auth: true, body: { action } });
+          card.style.opacity = "0.5";
+          msgEl.textContent = I18N.t("admin.resolved");
+          msgEl.className = "form-msg ok admin-dispute-msg";
+        } catch (e) {
+          card.querySelectorAll("button").forEach((b) => (b.disabled = false));
+          msgEl.textContent = e.message;
+          msgEl.className = "form-msg error admin-dispute-msg";
+        }
+      });
+    });
+  });
+}
+
+// Task #278 - a simple one-click way for a non-technical admin to check
+// whether the Lulu print-on-demand connection is actually working, without
+// touching any code or curl. Read-only: never creates a cost calculation or
+// a print job, just asks the server to fetch an OAuth token from Lulu.
+async function renderAdminIntegrations() {
+  const content = document.getElementById("admin-content");
+  content.innerHTML = `
+    <div class="form-panel">
+      <h3 class="section-heading" style="font-size:16px;">${I18N.t("admin.luluTitle")}</h3>
+      <p style="color:var(--text-secondary);font-size:13px;">${I18N.t("admin.luluDesc")}</p>
+      <button class="btn btn-primary" id="lulu-check-btn">${I18N.t("admin.luluCheckButton")}</button>
+      <div id="lulu-status-result" style="margin-top:14px;"></div>
+    </div>
+  `;
+  const resultEl = document.getElementById("lulu-status-result");
+  async function checkStatus() {
+    resultEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+    try {
+      const data = await api("/api/admin/lulu-status", { auth: true });
+      if (!data.configured) {
+        resultEl.innerHTML = `<p class="form-msg error">${I18N.t("admin.luluNotConfigured")}</p>`;
+      } else if (data.connected) {
+        resultEl.innerHTML = `<p class="form-msg success">✅ ${I18N.t("admin.luluConnected")} (${escapeHtml(data.baseUrl || "")})</p>`;
+      } else {
+        resultEl.innerHTML = `<p class="form-msg error">❌ ${escapeHtml(data.message || I18N.t("admin.luluFailed"))}</p>`;
+      }
+    } catch (e) {
+      resultEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    }
+  }
+  document.getElementById("lulu-check-btn").addEventListener("click", checkStatus);
+  checkStatus();
+}
+
+// Task #244 - team review queue for the "Publish a Book" independent-
+// author program. Approving here never makes a book public/for sale (see
+// ORIGINAL_BOOK_PROGRAM_ENABLED in server.js) - it just records that our
+// team liked it, so we can see how the pipeline feels end to end before
+// any legal/monetization terms exist.
+async function renderAdminBookSubmissions() {
+  const content = document.getElementById("admin-content");
+  let works;
+  try {
+    works = await api("/api/admin/original-works?status=team_review", { auth: true });
+  } catch (e) {
+    content.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  content.innerHTML = works.length
+    ? `<div class="intl-admin-list">${works
+        .map(
+          (w) => `
+      <div class="intl-admin-row">
+        <div class="intl-card-head">
+          <span class="intl-role-tag">${escapeHtml(w.genre || I18N.t("publishBook.genreUnset"))}</span>
+        </div>
+        <p class="intl-card-name">${escapeHtml(w.title || I18N.t("publishBook.untitled"))}</p>
+        <p class="intl-card-meta">${I18N.t("admin.bookBy")}: ${escapeHtml(w.authorName)} (${escapeHtml(w.authorEmail)}) &middot; ${fmtDate(w.submittedAt)}</p>
+        ${w.synopsis ? `<p style="font-size:13px;color:#555;">${escapeHtml(w.synopsis)}</p>` : ""}
+        ${w.aiReviewNotes ? `<p style="font-size:13px;color:#555;">&#129302; ${escapeHtml(w.aiReviewNotes)}</p>` : ""}
+        <p class="intl-card-meta">${w.chapters.length} ${I18N.t("publishBook.chaptersHeading")}</p>
+        <a class="btn" href="#/publish-book/${w.id}" target="_blank">${I18N.t("admin.viewTarget")}</a>
+        <div class="form-group">
+          <label>${I18N.t("admin.resolutionNote")}</label>
+          <textarea rows="2" data-book-note="${w.id}"></textarea>
+        </div>
+        <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-primary" data-book-approve="${w.id}">${I18N.t("admin.approve")}</button>
+          <button class="btn" data-book-reject="${w.id}">${I18N.t("admin.reject")}</button>
+        </div>
+      </div>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("admin.booksEmpty")}</div>`;
+
+  async function setBookDecision(id, decision) {
+    const note = document.querySelector(`[data-book-note="${id}"]`);
+    try {
+      await api("/api/admin/original-works/" + id + "/decision", {
+        method: "POST",
+        auth: true,
+        body: { decision, notes: note ? note.value : "" },
+      });
+      renderAdminBookSubmissions();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+  document.querySelectorAll("[data-book-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => setBookDecision(btn.dataset.bookApprove, "approve"));
+  });
+  document.querySelectorAll("[data-book-reject]").forEach((btn) => {
+    btn.addEventListener("click", () => setBookDecision(btn.dataset.bookReject, "reject"));
+  });
+}
+
+// 2026-09 - review queue for audiobooks authors submit to sell. Unlike the
+// text-book queue above, an approval here really can go live (see
+// AUDIOBOOKS_PROGRAM_ENABLED in server.js) once the author hits "Publish".
+async function renderAdminAudiobookSubmissions() {
+  const content = document.getElementById("admin-content");
+  let books;
+  try {
+    books = await api("/api/admin/audiobooks?status=team_review", { auth: true });
+  } catch (e) {
+    content.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  content.innerHTML = books.length
+    ? `<div class="intl-admin-list">${books
+        .map(
+          (a) => `
+      <div class="intl-admin-row">
+        <div class="intl-card-head">
+          <span class="intl-role-tag">${escapeHtml(a.genre || I18N.t("publishBook.genreUnset"))}</span>
+        </div>
+        <p class="intl-card-name">${escapeHtml(a.title || I18N.t("audiobooks.untitled"))}</p>
+        <p class="intl-card-meta">${I18N.t("admin.bookBy")}: ${escapeHtml(a.authorName)} (${escapeHtml(a.authorEmail)}) &middot; ${fmtDate(a.submittedAt)} &middot; ${a.price > 0 ? fmtPrice(a.price) : I18N.t("audiobooks.free")}</p>
+        ${a.synopsis ? `<p style="font-size:13px;color:#555;">${escapeHtml(a.synopsis)}</p>` : ""}
+        <p class="intl-card-meta">${a.chapters.length} ${I18N.t("audiobooks.chaptersHeading")} &middot; ${fmtDuration(a.totalDurationSeconds)}</p>
+        <div id="admin-audiobook-chapters-${a.id}">${a.chapters.map((c, i) => `<div class="publishbook-chapter"><p style="font-size:13px;">${i + 1}. ${escapeHtml(c.title)}</p>${audiobookChapterPlayerHtml(c, i)}</div>`).join("")}</div>
+        <div class="form-group">
+          <label>${I18N.t("admin.resolutionNote")}</label>
+          <textarea rows="2" data-audiobook-note="${a.id}"></textarea>
+        </div>
+        <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-primary" data-audiobook-approve="${a.id}">${I18N.t("admin.approve")}</button>
+          <button class="btn" data-audiobook-reject="${a.id}">${I18N.t("admin.reject")}</button>
+        </div>
+      </div>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("admin.audiobooksEmpty")}</div>`;
+
+  books.forEach((a) => {
+    const chaptersEl = document.getElementById("admin-audiobook-chapters-" + a.id);
+    if (chaptersEl) wireAudiobookPlayerClicks(chaptersEl);
+  });
+
+  async function setAudiobookDecision(id, decision) {
+    const note = document.querySelector(`[data-audiobook-note="${id}"]`);
+    try {
+      await api("/api/admin/audiobooks/" + id + "/decision", {
+        method: "POST",
+        auth: true,
+        body: { decision, notes: note ? note.value : "" },
+      });
+      renderAdminAudiobookSubmissions();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+  document.querySelectorAll("[data-audiobook-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => setAudiobookDecision(btn.dataset.audiobookApprove, "approve"));
+  });
+  document.querySelectorAll("[data-audiobook-reject]").forEach((btn) => {
+    btn.addEventListener("click", () => setAudiobookDecision(btn.dataset.audiobookReject, "reject"));
+  });
 }
 
 async function renderAdminReports() {
@@ -5852,12 +14261,35 @@ async function renderAdminProducts() {
           <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
             <a class="btn" href="#/product/${p.id}" target="_blank">${I18N.t("admin.viewTarget")}</a>
             <a class="btn" href="#/edit/${p.id}" target="_blank">${I18N.t("product.editListing")}</a>
+            <button class="btn btn-outline" data-toggle-flag-product="${p.id}" data-flagged="${p.flagged ? "1" : "0"}">${p.flagged ? I18N.t("admin.unhideProduct") : I18N.t("admin.hideProduct")}</button>
             <button class="btn btn-danger" data-delete-product="${p.id}">${I18N.t("common.delete")}</button>
           </div>
         </div>`
           )
           .join("")}</div>`
       : `<div class="empty-state">${I18N.t("admin.noResults")}</div>`;
+
+    // Fix (2026-09 technical review): moderation could previously only
+    // permanently delete a listing - there was no reversible "take this
+    // down for now" action, even though the server already supports it
+    // (PUT .../flagged, which the public browse endpoint already excludes
+    // from results - see the `!p.flagged` filter on GET /api/products).
+    // This just exposes that existing capability as a button.
+    document.querySelectorAll("[data-toggle-flag-product]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const nowFlagged = btn.dataset.flagged === "1";
+        try {
+          await api("/api/admin/products/" + btn.dataset.toggleFlagProduct, {
+            method: "PUT",
+            auth: true,
+            body: { flagged: !nowFlagged },
+          });
+          load(document.getElementById("admin-product-search").value.trim());
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    });
 
     document.querySelectorAll("[data-delete-product]").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -5983,6 +14415,765 @@ async function renderAdminUsers() {
   load("");
 }
 
+// ---------------- Legal pages (Terms & Conditions / Privacy Policy) ----------------
+// These were previously drafted but never wired into the router - the
+// footer links pointed at #/terms and #/privacy with no matching route, so
+// they silently rendered "page not found". Fixed by writing real bilingual
+// content covering the platform as it exists today and wiring it up here.
+// As with the Dating safety addendum, this is AI-drafted legal content and
+// should still be reviewed by a licensed attorney for the jurisdictions
+// HieloIce operates in before being treated as final/binding.
+
+function legalLastUpdated() {
+  const d = new Date();
+  const months = I18N.lang === "es"
+    ? ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    : ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  return I18N.lang === "es"
+    ? `Ultima actualizacion: ${d.getDate()} de ${months[d.getMonth()]} de ${d.getFullYear()}`
+    : `Last updated: ${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+function termsContent() {
+  if (I18N.lang === "es") {
+    return {
+      title: "Terminos y Condiciones de HieloIce",
+      sections: [
+        ["1. Aceptacion de estos terminos",
+         "Al crear una cuenta o usar HieloIce (el sitio web, la aplicacion movil y todas sus funciones, incluyendo el Marketplace, Moments, Loops, Videos, Book Club, Comunidades, Podcasts y Dating), aceptas estos Terminos y Condiciones y nuestra Politica de Privacidad. Si no estas de acuerdo, no debes usar la plataforma."],
+        ["2. Elegibilidad",
+         "HieloIce es solo para personas mayores de 18 anos. Confirmamos tu edad mediante la fecha de nacimiento que proporcionas al registrarte o al confirmarla despues; esto es una declaracion propia y no una verificacion de identidad por terceros. Si descubrimos que una cuenta pertenece a un menor de edad, la suspenderemos."],
+        ["3. Tu cuenta",
+         "Eres responsable de mantener segura tu contrasena y de toda la actividad en tu cuenta. Debes proporcionar informacion veraz al registrarte. No se permite crear multiples cuentas para evadir una suspension o para manipular funciones como calificaciones, reportes o el algoritmo de recomendacion."],
+        ["4. El Marketplace de libros usados",
+         "El Marketplace conecta a compradores y vendedores de libros usados directamente entre si. HieloIce no es parte de estas transacciones, no garantiza la condicion, autenticidad o entrega de ningun articulo, y actualmente no procesa pagos entre usuarios ni ofrece proteccion de pago tipo garantia (escrow) - los acuerdos de pago y envio se realizan directamente entre comprador y vendedor bajo su propio riesgo. Esta prohibido publicar articulos ilegales, robados o falsificados."],
+        ["5. Funciones sociales",
+         "Moments, Loops, Videos, Book Club, Comunidades y Podcasts te permiten publicar y compartir contenido con otros usuarios. Eres responsable del contenido que publicas y debes tener los derechos necesarios sobre el. Nos reservamos el derecho de eliminar contenido que viole estas reglas o nuestras politicas de la comunidad."],
+        ["6. HieloIce Dating",
+         "Dating es una funcion separada y opcional dentro de HieloIce, sujeta a su propia adenda de Seguridad y Terminos que puedes leer en cualquier momento desde la seccion de Dating. Al activar Dating, tambien aceptas esos terminos adicionales."],
+        ["7. Contenido que publicas",
+         "Conservas la propiedad de las fotos, videos, textos y demas contenido que publicas. Al subirlos, nos otorgas una licencia para almacenarlos, mostrarlos y distribuirlos dentro de la plataforma segun la configuracion de privacidad que elijas. No publiques contenido que no tengas derecho a compartir, que infrinja derechos de autor, o que involucre a menores de edad de forma inapropiada."],
+        ["8. Conducta prohibida",
+         "Esta prohibido: acosar, amenazar o discriminar a otros usuarios; publicar contenido ilegal, fraudulento o enganoso; suplantar la identidad de otra persona o entidad; usar bots, scraping u otras herramientas automatizadas no autorizadas; intentar acceder a cuentas ajenas o a partes no publicas de la plataforma; y cualquier otra actividad que viole la ley aplicable."],
+        ["9. Reportes, bloqueo y cumplimiento",
+         "Puedes reportar o bloquear a otros usuarios y publicaciones desde la plataforma. Revisamos los reportes y podemos advertir, suspender o eliminar permanentemente cuentas que violen estas reglas, sin previo aviso en casos graves."],
+        ["10. Propiedad intelectual",
+         "El nombre HieloIce, su logotipo y el diseno de la plataforma son propiedad de HieloIce. No se permite copiar, imitar o usar nuestra marca sin autorizacion. HieloIce tampoco permite el uso de iconos, simbolos, imagenes o marcas registradas de otras empresas o plataformas dentro del servicio."],
+        ["11. Exencion de garantias y limitacion de responsabilidad",
+         "HieloIce se ofrece \"tal cual\", sin garantias de ningun tipo. No garantizamos que la plataforma este libre de errores o interrupciones, ni la veracidad, seguridad o legalidad del contenido publicado por los usuarios. En la maxima medida permitida por la ley, HieloIce no sera responsable por danos indirectos, incidentales o consecuentes derivados del uso de la plataforma."],
+        ["12. Terminacion",
+         "Podemos suspender o eliminar tu cuenta si violas estos terminos. Puedes eliminar tu cuenta en cualquier momento desde la pagina de eliminacion de cuenta."],
+        ["13. Cambios a estos terminos",
+         "Podemos actualizar estos terminos a medida que la plataforma evolucione. Los cambios importantes se comunicaran dentro de la aplicacion. El uso continuado de HieloIce despues de un cambio implica tu aceptacion de los nuevos terminos."],
+        ["14. Ley aplicable",
+         "Estos terminos se rigen por las leyes aplicables segun la jurisdiccion de operacion de HieloIce. [Nota interna: esta seccion debe completarse con el asesoramiento de un abogado con licencia segun donde se constituya y opere la empresa.]"],
+        ["15. Contacto",
+         "Si tienes preguntas sobre estos terminos, escribenos a info@hieloice.com."],
+      ],
+    };
+  }
+  return {
+    title: "HieloIce Terms & Conditions",
+    sections: [
+      ["1. Acceptance of these terms",
+       "By creating an account or using HieloIce (the website, mobile app, and all its features, including the Marketplace, Moments, Loops, Videos, Book Club, Communities, Podcasts, and Dating), you agree to these Terms & Conditions and our Privacy Policy. If you don't agree, you may not use the platform."],
+      ["2. Eligibility",
+       "HieloIce is for adults 18 and older only. We confirm your age from the birthdate you provide when registering or when later confirming it; this is self-attestation, not third-party identity verification. If we discover an account belongs to a minor, we will suspend it."],
+      ["3. Your account",
+       "You're responsible for keeping your password secure and for all activity on your account. You must provide truthful information when registering. Creating multiple accounts to evade a suspension or manipulate features like ratings, reports, or the recommendation algorithm is not allowed."],
+      ["4. The used-book Marketplace",
+       "The Marketplace connects buyers and sellers of used books directly with each other. HieloIce is not a party to these transactions, does not guarantee the condition, authenticity, or delivery of any item, and does not currently process payments between users or offer escrow-style payment protection - payment and shipping arrangements happen directly between buyer and seller at their own risk. Posting illegal, stolen, or counterfeit items is prohibited."],
+      ["5. Social features",
+       "Moments, Loops, Videos, Book Club, Communities, and Podcasts let you post and share content with other users. You're responsible for the content you post and must have the necessary rights to it. We reserve the right to remove content that violates these rules or our community guidelines."],
+      ["6. HieloIce Dating",
+       "Dating is a separate, opt-in feature within HieloIce, subject to its own Safety & Terms addendum, which you can read at any time from the Dating section. Activating Dating means you also agree to those additional terms."],
+      ["7. Content you post",
+       "You keep ownership of the photos, videos, text, and other content you post. By uploading it, you grant us a license to store, display, and distribute it within the platform according to the privacy settings you choose. Don't post content you don't have the right to share, that infringes copyright, or that inappropriately involves minors."],
+      ["8. Prohibited conduct",
+       "Prohibited: harassing, threatening, or discriminating against other users; posting illegal, fraudulent, or misleading content; impersonating another person or entity; using bots, scraping, or other unauthorized automated tools; attempting to access other users' accounts or non-public parts of the platform; and any other activity that violates applicable law."],
+      ["9. Reporting, blocking, and enforcement",
+       "You can report or block other users and posts from within the platform. We review reports and may warn, suspend, or permanently remove accounts that violate these rules, without prior notice in serious cases."],
+      ["10. Intellectual property",
+       "The HieloIce name, logo, and platform design are the property of HieloIce. Copying, imitating, or using our brand without authorization is not permitted. HieloIce likewise does not permit the use of icons, symbols, images, or trademarks belonging to other companies or platforms within the service."],
+      ["11. Disclaimer of warranties and limitation of liability",
+       "HieloIce is provided \"as is\", without warranties of any kind. We don't guarantee the platform will be error-free or uninterrupted, or the truthfulness, safety, or legality of content posted by users. To the maximum extent permitted by law, HieloIce will not be liable for indirect, incidental, or consequential damages arising from use of the platform."],
+      ["12. Termination",
+       "We may suspend or remove your account if you violate these terms. You can delete your account at any time from the account deletion page."],
+      ["13. Changes to these terms",
+       "We may update these terms as the platform evolves. Material changes will be communicated within the app. Continued use of HieloIce after a change means you accept the new terms."],
+      ["14. Governing law",
+       "These terms are governed by applicable law based on HieloIce's operating jurisdiction. [Internal note: this section should be completed with advice from a licensed attorney based on where the company is incorporated and operates.]"],
+      ["15. Contact",
+       "If you have questions about these terms, email us at info@hieloice.com."],
+    ],
+  };
+}
+
+function privacyContent() {
+  if (I18N.lang === "es") {
+    return {
+      title: "Politica de Privacidad de HieloIce",
+      sections: [
+        ["1. Informacion que recopilamos",
+         "Recopilamos la informacion que nos proporcionas directamente: nombre, correo electronico, telefono (opcional), fecha de nacimiento, fotos y videos que subes, mensajes que envias, y la informacion de tu perfil de Dating si lo activas (incluyendo ubicacion aproximada, con tu permiso). Tambien recopilamos informacion de uso automaticamente, como paginas visitadas y acciones dentro de la app, para mejorar la plataforma."],
+        ["2. Como usamos tu informacion",
+         "Usamos tu informacion para operar la plataforma (mostrar tu perfil, procesar publicaciones, conectar amigos, calcular distancias aproximadas en Dating), para verificar que tienes al menos 18 anos, para enviarte notificaciones que elijas recibir, para prevenir fraude y abuso, y para mejorar nuestras funciones."],
+        ["3. Como compartimos tu informacion",
+         "No vendemos tu informacion personal. Compartimos datos unicamente con proveedores de servicio que nos ayudan a operar HieloIce (por ejemplo, Supabase para la base de datos y almacenamiento, Render para el alojamiento del sitio, Jamendo para la biblioteca de musica libre de regalias, y Google o Facebook si eliges iniciar sesion con ellos), y cuando la ley lo exige."],
+        ["4. Tus opciones y derechos",
+         "Puedes editar tu perfil y tu informacion en cualquier momento. Puedes desactivar tu perfil de Dating sin perder tus matches ni tu informacion. Puedes eliminar tu cuenta por completo desde la pagina de eliminacion de cuenta, lo cual borra tu informacion personal segun lo descrito alli. Puedes ajustar tus preferencias de notificaciones desde tu perfil."],
+        ["5. Retencion de datos",
+         "Conservamos tu informacion mientras tu cuenta este activa. Si eliminas tu cuenta, eliminamos o anonimizamos tu informacion personal, salvo lo que debamos conservar por obligaciones legales o para prevenir fraude."],
+        ["6. Privacidad de menores",
+         "HieloIce es una plataforma solo para personas mayores de 18 anos. No recopilamos intencionalmente informacion de menores de edad. Si tienes motivos para creer que un menor de edad esta usando la plataforma, contactanos de inmediato a info@hieloice.com."],
+        ["7. Seguridad",
+         "Tomamos medidas razonables para proteger tu informacion, incluyendo el uso de conexiones cifradas (HTTPS) y control de acceso a nuestra base de datos. Ningun sistema es completamente seguro, por lo que no podemos garantizar una seguridad absoluta."],
+        ["8. Ubicacion en Dating",
+         "Si activas Dating y compartes tu ubicacion, la usamos unicamente para calcular una distancia aproximada entre tu y otros usuarios de Dating. Nunca mostramos tu ubicacion exacta ni tu direccion a otros usuarios."],
+        ["9. Cambios a esta politica",
+         "Podemos actualizar esta politica de privacidad de vez en cuando. Los cambios importantes se comunicaran dentro de la aplicacion."],
+        ["10. Contacto",
+         "Si tienes preguntas sobre esta politica de privacidad o quieres ejercer tus derechos sobre tu informacion, escribenos a info@hieloice.com."],
+      ],
+    };
+  }
+  return {
+    title: "HieloIce Privacy Policy",
+    sections: [
+      ["1. Information we collect",
+       "We collect information you provide directly: name, email, phone (optional), date of birth, photos and videos you upload, messages you send, and your Dating profile information if you activate it (including approximate location, with your permission). We also automatically collect usage information, like pages visited and in-app actions, to improve the platform."],
+      ["2. How we use your information",
+       "We use your information to operate the platform (display your profile, process posts, connect friends, compute approximate distances in Dating), to verify you're at least 18, to send you notifications you choose to receive, to prevent fraud and abuse, and to improve our features."],
+      ["3. How we share your information",
+       "We do not sell your personal information. We share data only with service providers that help us run HieloIce (for example, Supabase for database and storage, Render for site hosting, Jamendo for the royalty-free music library, and Google or Facebook if you choose to sign in with them), and when required by law."],
+      ["4. Your choices and rights",
+       "You can edit your profile and information at any time. You can deactivate your Dating profile without losing your matches or information. You can delete your account entirely from the account deletion page, which erases your personal information as described there. You can adjust your notification preferences from your profile."],
+      ["5. Data retention",
+       "We keep your information while your account is active. If you delete your account, we delete or anonymize your personal information, except what we must retain for legal obligations or to prevent fraud."],
+      ["6. Children's privacy",
+       "HieloIce is a platform for adults 18 and older only. We do not knowingly collect information from minors. If you have reason to believe a minor is using the platform, contact us immediately at info@hieloice.com."],
+      ["7. Security",
+       "We take reasonable measures to protect your information, including encrypted connections (HTTPS) and access controls on our database. No system is completely secure, so we cannot guarantee absolute security."],
+      ["8. Location in Dating",
+       "If you activate Dating and share your location, we use it only to compute an approximate distance between you and other Dating users. We never show your exact location or address to other users."],
+      ["9. Changes to this policy",
+       "We may update this privacy policy from time to time. Material changes will be communicated within the app."],
+      ["10. Contact",
+       "If you have questions about this privacy policy or want to exercise your rights over your information, email us at info@hieloice.com."],
+    ],
+  };
+}
+
+function renderTerms() {
+  const content = termsContent();
+  viewEl.innerHTML = `
+    <div class="form-panel legal-page">
+      <h2 class="section-heading">${escapeHtml(content.title)}</h2>
+      <p class="legal-updated">${escapeHtml(legalLastUpdated())}</p>
+      ${content.sections
+        .map(([heading, body]) => `<h3 class="legal-heading">${escapeHtml(heading)}</h3><p class="legal-body">${escapeHtml(body)}</p>`)
+        .join("")}
+      <a class="form-footer-link" href="#/">${I18N.t("common.goHome")}</a>
+    </div>
+  `;
+}
+
+function renderPrivacy() {
+  const content = privacyContent();
+  viewEl.innerHTML = `
+    <div class="form-panel legal-page">
+      <h2 class="section-heading">${escapeHtml(content.title)}</h2>
+      <p class="legal-updated">${escapeHtml(legalLastUpdated())}</p>
+      ${content.sections
+        .map(([heading, body]) => `<h3 class="legal-heading">${escapeHtml(heading)}</h3><p class="legal-body">${escapeHtml(body)}</p>`)
+        .join("")}
+      <a class="form-footer-link" href="#/">${I18N.t("common.goHome")}</a>
+    </div>
+  `;
+}
+
+// ---------------- Dating ----------------
+// Tinder/Bumble-style opt-in feature (Carlos's explicit spec): heart+arrow
+// icon inside Friends, swipe right = like / swipe left = pass,
+// location + shared-interest matching, block/unmatch, safety-first, matches
+// exchange photos/video/messages through the existing #/messages system.
+// Separate from the main HieloIce profile - off by default (dating_profiles
+// is its own opt-in row, not part of mkt_users). Every screen here assumes
+// the platform-wide 18+ gate (see AGE_GATE_EXEMPT_ROUTES / renderConfirmAge
+// above) has already run before this code can be reached; the server
+// independently re-verifies age on every request regardless.
+
+const DATING_SAFETY_ACK_KEY = "datingSafetyAckV1";
+const datingDeckState = { candidates: [], index: 0 };
+
+// Bilingual draft of the Dating-specific safety/terms addendum (Carlos's
+// explicit choice: build the technical feature AND draft this for a real
+// attorney to review before public launch - not a substitute for one).
+// Kept as a plain-language draft, not final legal copy.
+function datingTermsContent() {
+  if (I18N.lang === "es") {
+    return {
+      title: "Terminos y Seguridad de HieloIce Dating",
+      notice:
+        "BORRADOR - Este documento es un borrador preparado para HieloIce y aun no ha sido revisado ni aprobado por un abogado. No debe publicarse ni considerarse vinculante hasta que un abogado con licencia lo revise y apruebe.",
+      sections: [
+        [
+          "1. Elegibilidad y edad",
+          "HieloIce Dating es solo para personas mayores de 18 anos. Confirmamos tu edad con la fecha de nacimiento que proporcionaste al crear tu cuenta o al confirmarla despues. No realizamos verificacion de identidad, antecedentes penales, estado civil ni verificacion de edad por terceros. Si tienes motivos para creer que un usuario es menor de edad, reportalo de inmediato usando la funcion de Reportar.",
+        ],
+        [
+          "2. Como funciona el emparejamiento",
+          "Dating es un perfil separado y opcional, apagado por defecto, distinto de tu perfil principal de HieloIce. Cuando lo activas, otros usuarios con Dating activo pueden verte segun intereses compartidos y una distancia aproximada (nunca tu ubicacion exacta ni tu direccion). Deslizar a la derecha indica interes (\"like\"); deslizar a la izquierda indica que no (\"pass\"). Si dos personas se dan like mutuamente, se crea un match y pueden enviarse mensajes.",
+        ],
+        [
+          "3. Tu seguridad al conocer gente",
+          "Reunete por primera vez en un lugar publico. Avisa a un amigo o familiar donde vas y con quien. No compartas informacion financiera, contrasenas ni documentos de identidad. Nunca envies dinero a alguien que conociste en la plataforma, sin importar la historia que te cuenten - esto es una senal comun de fraude. Confia en tu instinto: si algo se siente mal, puedes bloquear, reportar o dejar de responder en cualquier momento.",
+        ],
+        [
+          "4. Conducta prohibida",
+          "Esta prohibido: acosar o enviar contenido no solicitado explicito; suplantar la identidad de otra persona; usar Dating con fines comerciales, publicitarios o de reclutamiento; solicitar dinero, regalos o informacion financiera; publicar o enviar contenido ilegal; contactar o intentar contactar a menores de edad. Violar estas reglas puede resultar en suspension o eliminacion permanente de la cuenta.",
+        ],
+        [
+          "5. Contenido que compartes",
+          "Las fotos, videos, mensajes e informacion que compartes en Dating siguen siendo tuyos. Al subirlos, autorizas a HieloIce a mostrarlos dentro de la plataforma a las personas con las que interactuas (por ejemplo, tus fotos de perfil a otros usuarios, o los mensajes al destinatario de un match). No subas contenido que no tengas derecho a compartir, ni contenido que involucre a menores de edad.",
+        ],
+        [
+          "6. Bloquear, deshacer match y reportar",
+          "Puedes bloquear o deshacer el match con cualquier persona en cualquier momento desde tu lista de matches. Bloquear a alguien impide todo contacto futuro en ambas direcciones. Puedes reportar a un usuario por acoso, perfil falso, contenido inapropiado u otras razones; nuestro equipo revisa los reportes y puede suspender cuentas que violen estas reglas.",
+        ],
+        [
+          "7. Sin garantias",
+          "HieloIce no verifica la identidad, antecedentes, intenciones ni veracidad de la informacion de ningun usuario de Dating. No garantizamos la seguridad de ningun encuentro o interaccion, en linea o en persona. Usas Dating bajo tu propio riesgo y criterio.",
+        ],
+        [
+          "8. Datos que usamos para Dating",
+          "Para mostrarte personas cercanas, usamos tu ubicacion (con tu permiso) para calcular una distancia aproximada - nunca compartimos tu ubicacion exacta ni tu direccion con otros usuarios. Puedes desactivar Dating en cualquier momento desde la configuracion de tu perfil de Dating; esto oculta tu perfil de la busqueda mientras conserva tus matches e informacion.",
+        ],
+        [
+          "9. Vigencia y cambios",
+          "Podemos actualizar este documento a medida que la funcion evolucione. Los cambios importantes se comunicaran dentro de la aplicacion.",
+        ],
+      ],
+    };
+  }
+  return {
+    title: "HieloIce Dating Safety & Terms",
+    notice:
+      "DRAFT - This document is a draft prepared for HieloIce and has not yet been reviewed or approved by an attorney. It should not be published or treated as binding until reviewed and approved by a licensed attorney.",
+    sections: [
+      [
+        "1. Eligibility and age",
+        "HieloIce Dating is for adults 18 and older only. We confirm your age from the birthdate you provided when creating your account or when later confirming it. We do not perform identity verification, criminal background checks, marital-status checks, or third-party age verification. If you have reason to believe a user is a minor, report them immediately using the Report feature.",
+      ],
+      [
+        "2. How matching works",
+        "Dating is a separate, opt-in profile, off by default, distinct from your main HieloIce profile. Once activated, other users with Dating active can see you based on shared interests and an approximate distance (never your exact location or address). Swiping right indicates interest (\"like\"); swiping left means no (\"pass\"). When two people like each other, a match is created and they can message each other.",
+      ],
+      [
+        "3. Your safety when meeting people",
+        "Meet for the first time in a public place. Tell a friend or family member where you're going and with whom. Don't share financial information, passwords, or identity documents. Never send money to someone you met on the platform, no matter what story they tell you - this is a common sign of fraud. Trust your instincts: if something feels wrong, you can block, report, or stop responding at any time.",
+      ],
+      [
+        "4. Prohibited conduct",
+        "Prohibited: harassment or sending unsolicited explicit content; impersonating another person; using Dating for commercial, advertising, or recruiting purposes; soliciting money, gifts, or financial information; posting or sending unlawful content; contacting or attempting to contact minors. Violating these rules may result in account suspension or permanent removal.",
+      ],
+      [
+        "5. Content you share",
+        "Photos, videos, messages, and information you share on Dating remain yours. By uploading them, you authorize HieloIce to display them within the platform to the people you interact with (for example, your profile photos to other users, or messages to a match recipient). Do not upload content you don't have the right to share, or content involving minors.",
+      ],
+      [
+        "6. Blocking, unmatching, and reporting",
+        "You can block or unmatch anyone at any time from your matches list. Blocking someone prevents all future contact in both directions. You can report a user for harassment, a fake profile, inappropriate content, or other reasons; our team reviews reports and may suspend accounts that violate these rules.",
+      ],
+      [
+        "7. No guarantees",
+        "HieloIce does not verify the identity, background, intentions, or truthfulness of any Dating user's information. We do not guarantee the safety of any encounter or interaction, online or in person. You use Dating at your own risk and discretion.",
+      ],
+      [
+        "8. Data we use for Dating",
+        "To show you nearby people, we use your location (with your permission) to compute an approximate distance - we never share your exact location or address with other users. You can deactivate Dating at any time from your Dating profile settings; this hides your profile from discovery while keeping your matches and information intact.",
+      ],
+      [
+        "9. Updates",
+        "We may update this document as the feature evolves. Material changes will be communicated within the app.",
+      ],
+    ],
+  };
+}
+
+function renderDatingTerms() {
+  const content = datingTermsContent();
+  viewEl.innerHTML = `
+    <div class="form-panel dating-terms-page">
+      <div class="dating-terms-draft-banner">${escapeHtml(content.notice)}</div>
+      <h2 class="section-heading">💘 ${escapeHtml(content.title)}</h2>
+      ${content.sections
+        .map(
+          ([heading, body]) => `
+        <h3 class="dating-terms-heading">${escapeHtml(heading)}</h3>
+        <p class="dating-terms-body">${escapeHtml(body)}</p>`
+        )
+        .join("")}
+      <a class="form-footer-link" href="#/dating">${I18N.t("common.goBack")}</a>
+    </div>
+  `;
+}
+
+async function renderDatingSwipe() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let data;
+  try {
+    data = await api("/api/dating/profile", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!data.profile || !data.profile.active) return renderDatingIntro();
+  return renderDatingDeck();
+}
+
+function renderDatingIntro() {
+  viewEl.innerHTML = `
+    <div class="dating-intro">
+      <div class="dating-intro-icon">💘</div>
+      <h2 class="section-heading">${I18N.t("dating.introTitle")}</h2>
+      <p class="dating-intro-body">${I18N.t("dating.introBody")}</p>
+      <div class="dating-safety-box">
+        <h3>${I18N.t("dating.safetyTitle")}</h3>
+        <ul class="dating-safety-list">
+          <li>${I18N.t("dating.safety1")}</li>
+          <li>${I18N.t("dating.safety2")}</li>
+          <li>${I18N.t("dating.safety3")}</li>
+          <li>${I18N.t("dating.safety4")}</li>
+          <li>${I18N.t("dating.safety5")}</li>
+        </ul>
+      </div>
+      <p class="form-field-hint"><a href="#/dating-terms">${I18N.t("dating.readFullSafetyTerms")}</a></p>
+      <button class="btn btn-primary" id="dating-intro-continue" style="width:100%;">${I18N.t("dating.introCta")}</button>
+      <a class="form-footer-link" href="#/friends">${I18N.t("common.goBack")}</a>
+    </div>
+  `;
+  document.getElementById("dating-intro-continue").addEventListener("click", () => {
+    localStorage.setItem(DATING_SAFETY_ACK_KEY, "1");
+    location.hash = "#/dating/setup";
+  });
+}
+
+async function datingFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function renderDatingSetup() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let data;
+  try {
+    data = await api("/api/dating/profile", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const profile = data.profile || { bio: "", photos: [], interests: [], gender: "", seeking: [], active: false, hasLocation: false };
+  const setupPhotos = profile.photos.slice();
+  let setupLat = null;
+  let setupLng = null;
+  let locationStatus = profile.hasLocation ? I18N.t("dating.locationSaved") : I18N.t("dating.locationNotSet");
+
+  viewEl.innerHTML = `
+    <div class="form-panel dating-setup-panel">
+      <h2 class="section-heading">💘 ${I18N.t("dating.setupTitle")}</h2>
+      <p class="form-field-hint">${I18N.t("dating.setupHint")}</p>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.photosLabel")}</label>
+        <div class="dating-photo-grid" id="dating-photo-grid"></div>
+        <input type="file" id="dating-photo-input" accept="image/*" multiple style="display:none;" />
+        <button type="button" class="btn btn-outline" id="dating-photo-add-btn">${I18N.t("dating.addPhoto")}</button>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.bioLabel")}</label>
+        <textarea id="dating-bio" rows="3" maxlength="500">${escapeHtml(profile.bio || "")}</textarea>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.interestsLabel")}</label>
+        <input type="text" id="dating-interests" value="${escapeHtml((profile.interests || []).join(", "))}" placeholder="${I18N.t("dating.interestsPlaceholder")}" />
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.genderLabel")}</label>
+        <select id="dating-gender">
+          <option value="">${I18N.t("dating.genderSelect")}</option>
+          <option value="woman" ${profile.gender === "woman" ? "selected" : ""}>${I18N.t("dating.genderWoman")}</option>
+          <option value="man" ${profile.gender === "man" ? "selected" : ""}>${I18N.t("dating.genderMan")}</option>
+          <option value="nonbinary" ${profile.gender === "nonbinary" ? "selected" : ""}>${I18N.t("dating.genderNonbinary")}</option>
+          <option value="other" ${profile.gender === "other" ? "selected" : ""}>${I18N.t("dating.genderOther")}</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.seekingLabel")}</label>
+        <div class="dating-seeking-options" id="dating-seeking-options">
+          ${["woman", "man", "nonbinary", "other"]
+            .map(
+              (g) => `
+            <label class="dating-seeking-chip">
+              <input type="checkbox" value="${g}" ${(profile.seeking || []).includes(g) ? "checked" : ""} />
+              ${I18N.t("dating.gender" + g.charAt(0).toUpperCase() + g.slice(1))}
+            </label>`
+            )
+            .join("")}
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>${I18N.t("dating.locationLabel")}</label>
+        <p class="form-field-hint" id="dating-location-status">${escapeHtml(locationStatus)}</p>
+        <button type="button" class="btn btn-outline" id="dating-location-btn">${I18N.t("dating.shareLocation")}</button>
+        <p class="form-field-hint">${I18N.t("dating.locationPrivacyNote")}</p>
+      </div>
+
+      <button class="btn btn-primary" id="dating-setup-save" style="width:100%;">${profile.active ? I18N.t("common.save") : I18N.t("dating.activateCta")}</button>
+      ${profile.active ? `<button class="btn btn-secondary" id="dating-setup-deactivate" style="width:100%;margin-top:8px;">${I18N.t("dating.deactivate")}</button>` : ""}
+      <p class="form-msg" id="dating-setup-msg"></p>
+      <a class="form-footer-link" href="#/dating">${I18N.t("common.goBack")}</a>
+    </div>
+  `;
+
+  function drawPhotoGrid() {
+    const grid = document.getElementById("dating-photo-grid");
+    grid.innerHTML = setupPhotos
+      .map(
+        (p, i) => `
+      <div class="dating-photo-thumb">
+        <img src="${p}" />
+        <button type="button" class="dating-photo-remove" data-i="${i}" aria-label="${I18N.t("common.delete")}">×</button>
+      </div>`
+      )
+      .join("");
+    grid.querySelectorAll(".dating-photo-remove").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        setupPhotos.splice(Number(btn.dataset.i), 1);
+        drawPhotoGrid();
+      });
+    });
+  }
+  drawPhotoGrid();
+
+  document.getElementById("dating-photo-add-btn").addEventListener("click", () => document.getElementById("dating-photo-input").click());
+  document.getElementById("dating-photo-input").addEventListener("change", async (e) => {
+    const files = Array.from(e.target.files || []).slice(0, 6 - setupPhotos.length);
+    for (const file of files) {
+      try {
+        setupPhotos.push(await datingFileToDataUrl(file));
+      } catch (err) {
+        // skip a file that fails to read
+      }
+    }
+    drawPhotoGrid();
+    e.target.value = "";
+  });
+
+  // Carlos's explicit choice: only ever an approximate distance is shown to
+  // other users - the browser's precise coordinates are sent to our own
+  // server (over HTTPS) for matching, but the server itself only ever
+  // returns a rounded distance bucket to any client, never raw lat/lng of
+  // another person. See approximateDistanceLabel() in server.js.
+  document.getElementById("dating-location-btn").addEventListener("click", () => {
+    const statusEl = document.getElementById("dating-location-status");
+    if (!navigator.geolocation) {
+      statusEl.textContent = I18N.t("dating.locationUnsupported");
+      return;
+    }
+    statusEl.textContent = I18N.t("common.loading");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setupLat = pos.coords.latitude;
+        setupLng = pos.coords.longitude;
+        statusEl.textContent = I18N.t("dating.locationSaved");
+      },
+      () => {
+        statusEl.textContent = I18N.t("dating.locationDenied");
+      },
+      { enableHighAccuracy: false, timeout: 10000 }
+    );
+  });
+
+  async function saveProfile(activate) {
+    const msgEl = document.getElementById("dating-setup-msg");
+    const bio = document.getElementById("dating-bio").value;
+    const interests = document
+      .getElementById("dating-interests")
+      .value.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const gender = document.getElementById("dating-gender").value;
+    const seeking = Array.from(document.querySelectorAll("#dating-seeking-options input:checked")).map((el) => el.value);
+    const body = { bio, interests, gender, seeking, photos: setupPhotos, active: activate };
+    if (typeof setupLat === "number" && typeof setupLng === "number") {
+      body.lat = setupLat;
+      body.lng = setupLng;
+    }
+    try {
+      await api("/api/dating/profile", { method: "PUT", auth: true, body });
+      location.hash = "#/dating";
+      router();
+    } catch (e) {
+      msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  }
+
+  document.getElementById("dating-setup-save").addEventListener("click", () => saveProfile(true));
+  const deactivateBtn = document.getElementById("dating-setup-deactivate");
+  if (deactivateBtn) {
+    deactivateBtn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("dating.confirmDeactivate"))) return;
+      try {
+        await api("/api/dating/deactivate", { method: "POST", auth: true });
+        location.hash = "#/friends";
+        router();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
+}
+
+async function renderDatingDeck() {
+  viewEl.innerHTML = `
+    <div class="dating-deck-page">
+      <div class="dating-deck-header">
+        <h2 class="section-heading">💘 ${I18N.t("dating.deckTitle")}</h2>
+        <div class="dating-deck-header-links">
+          <a href="#/dating/matches">${I18N.t("dating.matchesLink")}</a>
+          <a href="#/dating/setup">${I18N.t("dating.editProfileLink")}</a>
+          <a href="#/dating-terms">${I18N.t("dating.safetyLink")}</a>
+        </div>
+      </div>
+      <div class="dating-card-stack" id="dating-card-stack"></div>
+      <div class="dating-deck-actions">
+        <button class="dating-action-btn dating-action-pass" id="dating-btn-pass" aria-label="${I18N.t("dating.pass")}">✕</button>
+        <button class="dating-action-btn dating-action-like" id="dating-btn-like" aria-label="${I18N.t("dating.like")}">♥</button>
+      </div>
+    </div>
+  `;
+
+  datingDeckState.candidates = [];
+  datingDeckState.index = 0;
+  try {
+    datingDeckState.candidates = await api("/api/dating/discover", { auth: true });
+  } catch (e) {
+    document.getElementById("dating-card-stack").innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+
+  drawDatingCard();
+  document.getElementById("dating-btn-pass").addEventListener("click", () => datingSwipeCurrent("pass"));
+  document.getElementById("dating-btn-like").addEventListener("click", () => datingSwipeCurrent("like"));
+}
+
+function drawDatingCard() {
+  const stack = document.getElementById("dating-card-stack");
+  if (!stack) return;
+  const candidate = datingDeckState.candidates[datingDeckState.index];
+  if (!candidate) {
+    stack.innerHTML = `<div class="dating-empty-state"><p>${I18N.t("dating.noMoreCards")}</p><a class="btn btn-outline" href="#/dating/setup">${I18N.t("dating.editProfileLink")}</a></div>`;
+    return;
+  }
+  const photo = (candidate.photos && candidate.photos[0]) || "";
+  stack.innerHTML = `
+    <div class="dating-card" id="dating-active-card">
+      ${photo ? `<img class="dating-card-photo" src="${photo}" />` : `<div class="dating-card-photo-placeholder">${initials(candidate.name)}</div>`}
+      <div class="dating-card-overlay">
+        <p class="dating-card-name">${escapeHtml(candidate.name)}${candidate.distance ? ` · ${escapeHtml(candidate.distance)}` : ""}</p>
+        ${candidate.bio ? `<p class="dating-card-bio">${escapeHtml(candidate.bio)}</p>` : ""}
+        ${
+          candidate.interests && candidate.interests.length
+            ? `<div class="dating-card-chips">${candidate.interests
+                .slice(0, 6)
+                .map((i) => `<span class="dating-chip">${escapeHtml(i)}</span>`)
+                .join("")}</div>`
+            : ""
+        }
+      </div>
+      <div class="dating-card-swipe-hint dating-card-hint-like">${I18N.t("dating.like")}</div>
+      <div class="dating-card-swipe-hint dating-card-hint-pass">${I18N.t("dating.pass")}</div>
+    </div>
+  `;
+  wireDatingCardDrag();
+}
+
+// Pointer-based drag-to-swipe, with the button fallback above always
+// working too (accessibility + trackpads without touch/drag support).
+function wireDatingCardDrag() {
+  const card = document.getElementById("dating-active-card");
+  if (!card) return;
+  let startX = 0;
+  let startY = 0;
+  let dragging = false;
+  let dx = 0;
+
+  const onDown = (e) => {
+    dragging = true;
+    const p = e.touches ? e.touches[0] : e;
+    startX = p.clientX;
+    startY = p.clientY;
+    card.style.transition = "none";
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    const p = e.touches ? e.touches[0] : e;
+    dx = p.clientX - startX;
+    const dy = p.clientY - startY;
+    const rotate = dx / 12;
+    card.style.transform = `translate(${dx}px, ${dy}px) rotate(${rotate}deg)`;
+    card.classList.toggle("dating-card-lean-like", dx > 40);
+    card.classList.toggle("dating-card-lean-pass", dx < -40);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    card.style.transition = "";
+    if (dx > 100) {
+      datingSwipeCurrent("like");
+    } else if (dx < -100) {
+      datingSwipeCurrent("pass");
+    } else {
+      card.style.transform = "";
+      card.classList.remove("dating-card-lean-like", "dating-card-lean-pass");
+    }
+    dx = 0;
+  };
+
+  card.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+  card.addEventListener("touchstart", onDown, { passive: true });
+  card.addEventListener("touchmove", onMove, { passive: true });
+  card.addEventListener("touchend", onUp);
+}
+
+async function datingSwipeCurrent(direction) {
+  const candidate = datingDeckState.candidates[datingDeckState.index];
+  const card = document.getElementById("dating-active-card");
+  if (!candidate) return;
+  if (card) {
+    card.style.transition = "transform 0.25s ease, opacity 0.25s ease";
+    card.style.transform = direction === "like" ? "translate(400px, -60px) rotate(20deg)" : "translate(-400px, -60px) rotate(-20deg)";
+    card.style.opacity = "0";
+  }
+  datingDeckState.index++;
+  try {
+    const result = await api("/api/dating/swipe", { method: "POST", auth: true, body: { targetId: candidate.userId, direction } });
+    setTimeout(() => {
+      drawDatingCard();
+      if (result.matched) datingShowMatchOverlay(candidate);
+    }, 200);
+  } catch (e) {
+    setTimeout(() => drawDatingCard(), 200);
+  }
+}
+
+function datingShowMatchOverlay(candidate) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay dating-match-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box dating-match-box">
+      <div class="dating-match-icon">💘</div>
+      <h2 class="section-heading">${I18N.t("dating.itsAMatch")}</h2>
+      <p>${I18N.t("dating.matchBody").replace("{name}", escapeHtml(candidate.name))}</p>
+      <div class="action-row">
+        <a class="btn btn-primary" href="#/messages/${candidate.userId}">${I18N.t("dating.sendMessage")}</a>
+        <button class="btn btn-secondary" id="dating-match-close">${I18N.t("dating.keepSwiping")}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.getElementById("dating-match-close").addEventListener("click", () => overlay.remove());
+  const msgLink = overlay.querySelector("a.btn-primary");
+  if (msgLink) msgLink.addEventListener("click", () => overlay.remove());
+}
+
+async function renderDatingMatches() {
+  if (!state.token) {
+    location.hash = "#/login";
+    return;
+  }
+  viewEl.innerHTML = `
+    <h2 class="section-heading">💘 ${I18N.t("dating.matchesTitle")}</h2>
+    <a class="form-footer-link" href="#/dating">${I18N.t("common.goBack")}</a>
+    <div id="dating-matches-list"><p>${I18N.t("common.loading")}</p></div>
+  `;
+  const listEl = document.getElementById("dating-matches-list");
+  let matches;
+  try {
+    matches = await api("/api/dating/matches", { auth: true });
+  } catch (e) {
+    listEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!matches.length) {
+    listEl.innerHTML = `<div class="empty-state">${I18N.t("dating.noMatches")}</div>`;
+    return;
+  }
+  listEl.innerHTML = `<div class="dating-matches-grid">${matches
+    .map(
+      (m) => `
+    <div class="dating-match-card" data-match-id="${m.matchId}" data-user-id="${m.userId}">
+      ${m.photo ? `<img class="dating-match-photo" src="${m.photo}" />` : `<div class="dating-match-photo-placeholder">${initials(m.name)}</div>`}
+      <p class="dating-match-name">${escapeHtml(m.name)}</p>
+      <div class="dating-match-actions">
+        <a class="btn btn-outline" href="#/messages/${m.userId}">${I18N.t("dating.sendMessage")}</a>
+        <button class="btn-icon-text dating-unmatch-btn" data-match-id="${m.matchId}">${I18N.t("dating.unmatch")}</button>
+        <button class="btn-icon-text dating-report-btn" data-user-id="${m.userId}">${I18N.t("report.reportUser")}</button>
+        <button class="btn-icon-text dating-block-btn" data-user-id="${m.userId}" data-match-id="${m.matchId}">${I18N.t("dating.block")}</button>
+      </div>
+    </div>`
+    )
+    .join("")}</div>`;
+
+  listEl.querySelectorAll(".dating-unmatch-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("dating.confirmUnmatch"))) return;
+      try {
+        await api("/api/dating/matches/" + btn.dataset.matchId + "/unmatch", { method: "POST", auth: true });
+        renderDatingMatches();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  });
+  listEl.querySelectorAll(".dating-report-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openReportModal("user", btn.dataset.userId));
+  });
+  listEl.querySelectorAll(".dating-block-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("profile.confirmBlock"))) return;
+      try {
+        await api("/api/users/" + btn.dataset.userId + "/block", { method: "POST", auth: true });
+        await api("/api/dating/matches/" + btn.dataset.matchId + "/unmatch", { method: "POST", auth: true });
+        renderDatingMatches();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  });
+}
+
 // ---------------- Init ----------------
 
 applyStaticI18n();
@@ -5992,3 +15183,7 @@ router();
 pollUnread();
 unreadPollTimer = setInterval(pollUnread, 20000);
 registerServiceWorker();
+// Task #234 - open the app-wide chat socket immediately on page load if a
+// session already exists (returning visitor), not just right after a fresh
+// login via setAuth().
+if (state.token) connectChatSocket();
