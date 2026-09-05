@@ -337,11 +337,41 @@ if (navLogoutBtn) {
 
 let unreadPollTimer = null;
 
+// The bell/envelope badges live inside .topbar-nav, a row that scrolls
+// sideways on narrow phones (so Profile/Messages/Publish/Book Club/Podcasts/
+// notifications never wrap to a second line). Two earlier fixes tried to
+// keep the badge fully visible while it stayed position:absolute inside
+// that row (bigger offsets, then reserving margin after the icon) - neither
+// worked because anything that pokes out past the row's own content edge
+// gets clipped by the row itself, and reserving room there just makes the
+// row's scrollable width bigger instead of freeing up visible screen space.
+// This computes the icon's real on-screen position and pins the badge there
+// with position:fixed, exactly like the Marketplace/PUBLISH A BOOK dropdowns
+// already do - fixed positioning is anchored to the viewport, not the
+// scrolling row, so it can never be clipped by it.
+function positionNavBadge(anchorId, badgeEl) {
+  const anchor = document.getElementById(anchorId);
+  if (!anchor || !badgeEl) return;
+  const r = anchor.getBoundingClientRect();
+  badgeEl.style.top = Math.max(2, r.top - 6) + "px";
+  badgeEl.style.left = (r.right - 10) + "px";
+}
+
+function repositionVisibleNavBadges() {
+  const mBadge = document.getElementById("nav-messages-badge");
+  if (mBadge && getComputedStyle(mBadge).display !== "none") positionNavBadge("nav-messages", mBadge);
+  const nBadge = document.getElementById("nav-notifications-badge");
+  if (nBadge && getComputedStyle(nBadge).display !== "none") positionNavBadge("nav-notifications", nBadge);
+}
+window.addEventListener("resize", repositionVisibleNavBadges);
+document.querySelector(".topbar-nav") && document.querySelector(".topbar-nav").addEventListener("scroll", repositionVisibleNavBadges);
+
 function setUnreadBadge(count) {
   const badge = document.getElementById("nav-messages-badge");
   if (!badge) return;
   if (count > 0) {
     badge.textContent = count > 9 ? "9+" : String(count);
+    positionNavBadge("nav-messages", badge);
     badge.style.display = "inline-flex";
   } else {
     badge.style.display = "none";
@@ -762,6 +792,19 @@ function updateGlobalSearchPlaceholder() {
     });
   }
   document.addEventListener("click", () => closeAllDropdowns());
+  // A dropdown (Marketplace, Create, or Post an Ad) opened from the nav only
+  // ever closed on a generic document click. Tapping straight from an open
+  // dropdown into a nav icon like Moments navigates (hash changes) but is
+  // itself a click, so closeAllDropdowns() above did fire - except Moments/
+  // Clips replaces the whole page with a fixed full-screen overlay appended
+  // fresh to <body> right as that same click is still being handled, and on
+  // some phones the new overlay's first paint landed a frame before the
+  // dropdown's display:none took visual effect, so the (still technically
+  // "closing") dropdown briefly rendered on top of the new page and ate the
+  // next tap. Explicitly closing on every hash change removes the race
+  // entirely - by the time the new page's content exists, any dropdown is
+  // already guaranteed closed, independent of click timing.
+  window.addEventListener("hashchange", () => closeAllDropdowns());
 })();
 
 function setIconNavBadge(count) {
@@ -772,6 +815,7 @@ function setIconNavBadge(count) {
   if (!badge) return;
   if (count > 0) {
     badge.textContent = count > 9 ? "9+" : String(count);
+    positionNavBadge("nav-notifications", badge);
     badge.style.display = "inline-flex";
   } else {
     badge.style.display = "none";
@@ -8443,6 +8487,140 @@ function audiobookStatusBadge(status) {
   return `<span class="publishbook-status publishbook-status-${cls || "draft"}">${I18N.t("audiobooks.status." + status)}</span>`;
 }
 
+// Holds the most recently recorded chapter narration (a Blob from
+// MediaRecorder) between "Stop" and the form's submit handler picking it up
+// - module-level rather than a draw()-local var so it survives fine either
+// way, but reset to null after every successful upload/every draw() so a
+// stale recording from a previous chapter can never get attached by mistake.
+let audiobookRecordedBlob = null;
+
+// Wires the record-narration-from-your-microphone panel on the "Add Chapter"
+// form (task: authors should be able to narrate straight from the platform
+// instead of only uploading a pre-made file). Real getUserMedia constraints
+// do the actual noise/echo cleanup - echoCancellation/noiseSuppression/
+// autoGainControl are genuine browser DSP (not a cosmetic label), which is
+// an honest bar for "professional-sounding" without us pretending to ship
+// custom studio-grade audio processing we don't have.
+function wireAudiobookRecorder() {
+  const tabBtns = document.querySelectorAll(".audiobook-source-tab");
+  const panels = document.querySelectorAll(".audiobook-source-panel");
+  tabBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      tabBtns.forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      panels.forEach((p) => { p.style.display = p.dataset.panel === btn.dataset.tab ? "block" : "none"; });
+    });
+  });
+
+  const startBtn = document.getElementById("audiobook-record-start");
+  const stopBtn = document.getElementById("audiobook-record-stop");
+  const againBtn = document.getElementById("audiobook-record-again");
+  const preview = document.getElementById("audiobook-record-preview");
+  const msgEl = document.getElementById("audiobook-record-msg");
+  const timeEl = document.getElementById("audiobook-recorder-time");
+  const meterFill = document.getElementById("audiobook-recorder-meter-fill");
+  if (!startBtn) return; // recorder markup not present (shouldn't happen, but don't throw if it changes later)
+
+  let mediaRecorder = null;
+  let mediaStream = null;
+  let chunks = [];
+  let timerHandle = null;
+  let seconds = 0;
+  let audioCtx = null;
+  let analyser = null;
+  let meterRafId = null;
+
+  function fmt(totalSeconds) {
+    const m = Math.floor(totalSeconds / 60);
+    const s = Math.floor(totalSeconds % 60);
+    return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+  }
+  function stopMeter() {
+    if (meterRafId) cancelAnimationFrame(meterRafId);
+    meterRafId = null;
+    if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+    analyser = null;
+    if (meterFill) meterFill.style.width = "0%";
+  }
+  function tickMeter() {
+    if (!analyser) return;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(data);
+    const avg = data.reduce((sum, v) => sum + v, 0) / data.length;
+    if (meterFill) meterFill.style.width = Math.min(100, (avg / 150) * 100) + "%";
+    meterRafId = requestAnimationFrame(tickMeter);
+  }
+  function stopStream() {
+    if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
+  }
+
+  startBtn.addEventListener("click", async () => {
+    msgEl.textContent = "";
+    audiobookRecordedBlob = null;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+      });
+    } catch (e) {
+      msgEl.textContent = I18N.t("audiobooks.micDenied");
+      return;
+    }
+    const mimeCandidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+    const mimeType = mimeCandidates.find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m));
+    chunks = [];
+    try {
+      mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType, audioBitsPerSecond: 128000 }) : new MediaRecorder(mediaStream);
+    } catch (e) {
+      mediaRecorder = new MediaRecorder(mediaStream);
+    }
+    mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      audiobookRecordedBlob = new Blob(chunks, { type: mediaRecorder.mimeType || "audio/webm" });
+      preview.src = URL.createObjectURL(audiobookRecordedBlob);
+      preview.style.display = "block";
+      stopStream();
+      stopMeter();
+    };
+    mediaRecorder.start();
+
+    seconds = 0;
+    timeEl.textContent = fmt(0);
+    timerHandle = setInterval(() => { seconds += 1; timeEl.textContent = fmt(seconds); }, 1000);
+
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(mediaStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      tickMeter();
+    } catch (e) { /* level meter is cosmetic - recording still works without it */ }
+
+    startBtn.style.display = "none";
+    stopBtn.style.display = "inline-block";
+    againBtn.style.display = "none";
+    preview.style.display = "none";
+  });
+
+  stopBtn.addEventListener("click", () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+    clearInterval(timerHandle);
+    stopBtn.style.display = "none";
+    againBtn.style.display = "inline-block";
+  });
+
+  againBtn.addEventListener("click", () => {
+    audiobookRecordedBlob = null;
+    preview.removeAttribute("src");
+    preview.style.display = "none";
+    againBtn.style.display = "none";
+    startBtn.style.display = "inline-block";
+    timeEl.textContent = "00:00";
+    msgEl.textContent = "";
+  });
+}
+
 function audiobookFileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -8557,6 +8735,152 @@ async function renderAudiobooksCatalog(query) {
   `;
 }
 
+// ---- Persistent audiobook player (task: audio should keep playing while
+// browsing elsewhere on the site, with a small floating mini-player and a
+// real OS media notification/lock-screen control, like a real audiobook
+// app). The <audio> element and the mini-player bar are created once and
+// appended directly to <body> - OUTSIDE #view, which the router wipes and
+// rebuilds (innerHTML =) on every navigation - so playback survives moving
+// between pages, exactly the same trick #chatbot-widget already relies on
+// to stay put across routes. Boundary to be honest about: this keeps
+// playing across in-app navigation, tab-switching, screen-off, and the app
+// being backgrounded (the Media Session integration below is what puts
+// real play/pause/skip controls on the lock screen/notification shade
+// while that's happening) - but, like any web page or app, fully closing
+// the browser tab/app still stops it. There is no way around that from a
+// website without a native background-audio service.
+const AudiobookPlayer = (function () {
+  let audioEl = null, miniEl = null, coverImg, titleEl, chapterEl, fillEl, playPauseBtn;
+  let book = null;
+  let chapterIndex = 0;
+
+  function ensureDom() {
+    if (audioEl) return;
+    audioEl = document.createElement("audio");
+    audioEl.id = "audiobook-global-audio";
+    audioEl.preload = "none";
+    document.body.appendChild(audioEl);
+
+    miniEl = document.createElement("div");
+    miniEl.className = "audiobook-miniplayer";
+    miniEl.id = "audiobook-miniplayer";
+    miniEl.style.display = "none";
+    miniEl.innerHTML = `
+      <img class="audiobook-miniplayer-cover" id="audiobook-miniplayer-cover" alt="" />
+      <div class="audiobook-miniplayer-info">
+        <p class="audiobook-miniplayer-title" id="audiobook-miniplayer-title"></p>
+        <p class="audiobook-miniplayer-chapter" id="audiobook-miniplayer-chapter"></p>
+        <div class="audiobook-miniplayer-track"><div class="audiobook-miniplayer-fill" id="audiobook-miniplayer-fill"></div></div>
+      </div>
+      <button type="button" class="audiobook-miniplayer-btn" id="audiobook-miniplayer-prev" aria-label="Previous chapter">&#9198;</button>
+      <button type="button" class="audiobook-miniplayer-btn" id="audiobook-miniplayer-playpause" aria-label="Play or pause">&#10074;&#10074;</button>
+      <button type="button" class="audiobook-miniplayer-btn" id="audiobook-miniplayer-next" aria-label="Next chapter">&#9197;</button>
+      <button type="button" class="audiobook-miniplayer-btn audiobook-miniplayer-close" id="audiobook-miniplayer-close" aria-label="Close player">&times;</button>
+    `;
+    document.body.appendChild(miniEl);
+
+    coverImg = document.getElementById("audiobook-miniplayer-cover");
+    titleEl = document.getElementById("audiobook-miniplayer-title");
+    chapterEl = document.getElementById("audiobook-miniplayer-chapter");
+    fillEl = document.getElementById("audiobook-miniplayer-fill");
+    playPauseBtn = document.getElementById("audiobook-miniplayer-playpause");
+
+    playPauseBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePlayPause(); });
+    document.getElementById("audiobook-miniplayer-close").addEventListener("click", (e) => { e.stopPropagation(); stop(); });
+    document.getElementById("audiobook-miniplayer-prev").addEventListener("click", (e) => { e.stopPropagation(); skip(-1); });
+    document.getElementById("audiobook-miniplayer-next").addEventListener("click", (e) => { e.stopPropagation(); skip(1); });
+    // Tapping the cover/title area (not the buttons) jumps back to that
+    // audiobook's page, the way tapping a music app's mini-player does.
+    miniEl.addEventListener("click", () => { if (book) location.hash = "#/audiobooks/" + book.id; });
+
+    audioEl.addEventListener("timeupdate", updateProgress);
+    audioEl.addEventListener("play", () => { updatePlayIcon(true); if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing"; });
+    audioEl.addEventListener("pause", () => { updatePlayIcon(false); if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused"; });
+    audioEl.addEventListener("ended", () => skip(1));
+  }
+
+  function updateProgress() {
+    if (fillEl && audioEl.duration) fillEl.style.width = ((audioEl.currentTime / audioEl.duration) * 100) + "%";
+    if ("mediaSession" in navigator && navigator.mediaSession.setPositionState && audioEl.duration) {
+      try { navigator.mediaSession.setPositionState({ duration: audioEl.duration, playbackRate: audioEl.playbackRate || 1, position: audioEl.currentTime }); } catch (e) {}
+    }
+  }
+
+  function updatePlayIcon(isPlaying) {
+    if (playPauseBtn) playPauseBtn.innerHTML = isPlaying ? "&#10074;&#10074;" : "&#9654;";
+    refreshListenButtons();
+  }
+
+  // Every "Play"/"Pause" button rendered on an audiobook detail page reads
+  // its label from whichever chapter is actually loaded in the ONE shared
+  // player, so the right button stays in sync even if the mini-player was
+  // started from a different page.
+  function refreshListenButtons() {
+    document.querySelectorAll(".audiobook-listen-btn").forEach((btn) => {
+      const isThis = !!(book && btn.dataset.bookId === book.id && Number(btn.dataset.index) === chapterIndex);
+      btn.textContent = isThis && audioEl && !audioEl.paused ? I18N.t("audiobooks.pauseChapter") : I18N.t("audiobooks.playChapter");
+      btn.classList.toggle("active", isThis);
+    });
+  }
+
+  function setMediaSession() {
+    if (!("mediaSession" in navigator) || !book) return;
+    const chapter = book.chapters[chapterIndex];
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: chapter ? chapter.title : book.title,
+        artist: book.authorName || "HieloIce",
+        album: book.title,
+        artwork: book.coverImageUrl ? [{ src: book.coverImageUrl, sizes: "512x512", type: "image/jpeg" }] : [],
+      });
+    } catch (e) {}
+    navigator.mediaSession.setActionHandler("play", () => resume());
+    navigator.mediaSession.setActionHandler("pause", () => pause());
+    navigator.mediaSession.setActionHandler("previoustrack", () => skip(-1));
+    navigator.mediaSession.setActionHandler("nexttrack", () => skip(1));
+    navigator.mediaSession.setActionHandler("seekbackward", (d) => { audioEl.currentTime = Math.max(0, audioEl.currentTime - (d.seekOffset || 10)); });
+    navigator.mediaSession.setActionHandler("seekforward", (d) => { audioEl.currentTime = Math.min(audioEl.duration || 1e9, audioEl.currentTime + (d.seekOffset || 10)); });
+  }
+
+  function playBook(bookObj, index) {
+    ensureDom();
+    if (!bookObj || !Array.isArray(bookObj.chapters) || !bookObj.chapters[index]) return;
+    const sameTrack = book && book.id === bookObj.id && chapterIndex === index;
+    book = bookObj;
+    chapterIndex = index;
+    if (!sameTrack) audioEl.src = bookObj.chapters[index].audioUrl;
+    audioEl.play().catch(() => {});
+    titleEl.textContent = bookObj.title || "";
+    chapterEl.textContent = bookObj.chapters[index].title || "";
+    coverImg.src = bookObj.coverImageUrl || "icon.png";
+    miniEl.style.display = "flex";
+    setMediaSession();
+    refreshListenButtons();
+  }
+
+  function togglePlayPause() { if (audioEl) { audioEl.paused ? resume() : pause(); } }
+  function pause() { if (audioEl) audioEl.pause(); }
+  function resume() { if (audioEl) audioEl.play().catch(() => {}); }
+  function stop() {
+    if (!audioEl) return;
+    audioEl.pause();
+    audioEl.removeAttribute("src");
+    book = null;
+    if (miniEl) miniEl.style.display = "none";
+    if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
+    refreshListenButtons();
+  }
+  function skip(direction) {
+    if (!book) return;
+    const next = chapterIndex + direction;
+    if (next < 0 || next >= book.chapters.length) { if (direction > 0) stop(); return; }
+    playBook(book, next);
+  }
+  function isPlaying(bookId, index) { return !!(book && book.id === bookId && index === chapterIndex && audioEl && !audioEl.paused); }
+
+  return { playBook, togglePlayPause, pause, resume, stop, skip, isPlaying, refreshListenButtons };
+})();
+
 async function renderAudiobookDetail(id) {
   viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
   let a;
@@ -8572,7 +8896,12 @@ async function renderAudiobookDetail(id) {
   function chaptersSectionHtml() {
     if (hasChapters) {
       return `<div id="audiobook-chapters">${a.chapters
-        .map((c, i) => `<div class="publishbook-chapter"><p class="publishbook-chapter-title" style="font-weight:600;">${i + 1}. ${escapeHtml(c.title)}</p>${audiobookChapterPlayerHtml(c, i)}</div>`)
+        .map(
+          (c, i) => `<div class="publishbook-chapter">
+            <p class="publishbook-chapter-title" style="font-weight:600;">${i + 1}. ${escapeHtml(c.title)}</p>
+            <button type="button" class="btn btn-outline audiobook-listen-btn" data-book-id="${a.id}" data-index="${i}">${I18N.t("audiobooks.playChapter")}</button>
+          </div>`
+        )
         .join("")}</div>`;
     }
     return `
@@ -8596,7 +8925,14 @@ async function renderAudiobookDetail(id) {
     <h3 class="publishbook-chapters-heading">${I18N.t("audiobooks.chaptersHeading")}</h3>
     ${chaptersSectionHtml()}
   `;
-  wireAudiobookPlayerClicks(document.getElementById("audiobook-chapters"));
+  document.querySelectorAll(".audiobook-listen-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.index);
+      if (AudiobookPlayer.isPlaying(a.id, idx)) AudiobookPlayer.pause();
+      else AudiobookPlayer.playBook(a, idx);
+    });
+  });
+  AudiobookPlayer.refreshListenButtons();
 
   const acquireBtn = document.getElementById("audiobook-acquire-btn");
   if (acquireBtn) {
@@ -8639,11 +8975,14 @@ async function renderAudiobooksMine() {
   const listHtml = books.length
     ? `<div class="publishbook-grid">${books
         .map(
-          (a) => `<a class="card publishbook-card" href="#/audiobooks/edit/${a.id}">
-        <p class="publishbook-card-genre">${escapeHtml(a.genre || I18N.t("publishBook.genreUnset"))}</p>
-        <h3>${escapeHtml(a.title || I18N.t("audiobooks.untitled"))}</h3>
-        ${audiobookStatusBadge(a.status)}
-      </a>`
+          (a) => `<div class="card publishbook-card publishbook-card-mine">
+        <a class="publishbook-card-link" href="#/audiobooks/edit/${a.id}">
+          <p class="publishbook-card-genre">${escapeHtml(a.genre || I18N.t("publishBook.genreUnset"))}</p>
+          <h3>${escapeHtml(a.title || I18N.t("audiobooks.untitled"))}</h3>
+          ${audiobookStatusBadge(a.status)}
+        </a>
+        <button type="button" class="btn btn-danger-outline publishbook-card-delete" data-audiobook-id="${a.id}">${I18N.t("audiobooks.deleteMine")}</button>
+      </div>`
         )
         .join("")}</div>`
     : `<div class="empty-state">${I18N.t("audiobooks.emptyMine")}</div>`;
@@ -8670,6 +9009,20 @@ async function renderAudiobooksMine() {
     newForm.style.display = "block";
     newForm.scrollIntoView({ behavior: "smooth", block: "center" });
     newForm.querySelector('[name="title"]').focus();
+  });
+  document.querySelectorAll(".publishbook-card-delete").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(I18N.t("audiobooks.confirmDelete"))) return;
+      const id = btn.dataset.audiobookId;
+      btn.disabled = true;
+      try {
+        await api("/api/audiobooks/" + id, { method: "DELETE", auth: true });
+        renderAudiobooksMine();
+      } catch (err) {
+        btn.disabled = false;
+        alert(err.message || I18N.t("audiobooks.deleteFailed"));
+      }
+    });
   });
   newForm.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -8765,7 +9118,27 @@ async function renderAudiobookEditor(id) {
 
       <form id="audiobook-add-chapter-form" class="stacked-form">
         <label>${I18N.t("audiobooks.chapterTitleLabel")}<input type="text" name="chapterTitle" maxlength="150" placeholder="${I18N.t("publishBook.chapterTitlePlaceholder")} ${chapters.length + 1}" /></label>
-        <label>${I18N.t("audiobooks.chapterAudioLabel")}<input type="file" name="chapterAudio" accept="audio/*" required /></label>
+        <div class="audiobook-source-tabs" role="tablist">
+          <button type="button" class="audiobook-source-tab active" data-tab="upload">&#128193; ${I18N.t("audiobooks.uploadFileTab")}</button>
+          <button type="button" class="audiobook-source-tab" data-tab="record">&#127908; ${I18N.t("audiobooks.recordTab")}</button>
+        </div>
+        <div class="audiobook-source-panel" data-panel="upload">
+          <label>${I18N.t("audiobooks.chapterAudioLabel")}<input type="file" name="chapterAudio" accept="audio/*" /></label>
+        </div>
+        <div class="audiobook-source-panel" data-panel="record" style="display:none;">
+          <div class="audiobook-recorder" id="audiobook-recorder">
+            <div class="audiobook-recorder-meter"><div class="audiobook-recorder-meter-fill" id="audiobook-recorder-meter-fill"></div></div>
+            <p class="audiobook-recorder-time" id="audiobook-recorder-time">00:00</p>
+            <div class="audiobook-recorder-controls">
+              <button type="button" class="btn btn-primary" id="audiobook-record-start">&#127908; ${I18N.t("audiobooks.recordStart")}</button>
+              <button type="button" class="btn btn-outline" id="audiobook-record-stop" style="display:none;">&#9209; ${I18N.t("audiobooks.recordStop")}</button>
+              <button type="button" class="btn btn-outline" id="audiobook-record-again" style="display:none;">&#8635; ${I18N.t("audiobooks.recordAgain")}</button>
+            </div>
+            <audio id="audiobook-record-preview" controls style="display:none;"></audio>
+            <p class="field-hint">${I18N.t("audiobooks.recordHint")}</p>
+            <p class="form-msg error" id="audiobook-record-msg"></p>
+          </div>
+        </div>
         <button type="submit" class="btn btn-outline" id="audiobook-add-chapter-btn">${I18N.t("audiobooks.addChapter")}</button>
         <p class="form-msg" id="audiobook-add-chapter-msg"></p>
       </form>
@@ -8805,27 +9178,43 @@ async function renderAudiobookEditor(id) {
       });
     });
 
+    wireAudiobookRecorder();
+
     document.getElementById("audiobook-add-chapter-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
-      const file = fd.get("chapterAudio");
       const msgEl = document.getElementById("audiobook-add-chapter-msg");
-      if (!file || !file.size) {
-        msgEl.textContent = I18N.t("audiobooks.chapterAudioRequired");
-        msgEl.className = "form-msg error";
-        return;
+      const activeTabBtn = document.querySelector(".audiobook-source-tab.active");
+      const activeTab = activeTabBtn ? activeTabBtn.dataset.tab : "upload";
+      let source = null;
+      if (activeTab === "record") {
+        source = audiobookRecordedBlob;
+        if (!source) {
+          msgEl.textContent = I18N.t("audiobooks.recordingRequired");
+          msgEl.className = "form-msg error";
+          return;
+        }
+      } else {
+        const file = fd.get("chapterAudio");
+        if (!file || !file.size) {
+          msgEl.textContent = I18N.t("audiobooks.chapterAudioRequired");
+          msgEl.className = "form-msg error";
+          return;
+        }
+        source = file;
       }
       const addBtn = document.getElementById("audiobook-add-chapter-btn");
       addBtn.disabled = true;
       msgEl.textContent = I18N.t("audiobooks.uploading");
       msgEl.className = "form-msg";
       try {
-        const [durationSeconds, media] = await Promise.all([probeAudioDuration(file), audiobookFileToDataUrl(file)]);
+        const [durationSeconds, media] = await Promise.all([probeAudioDuration(source), audiobookFileToDataUrl(source)]);
         await api("/api/audiobooks/" + encodeURIComponent(id) + "/chapters", {
           method: "POST",
           auth: true,
           body: { title: fd.get("chapterTitle"), media, durationSeconds },
         });
+        audiobookRecordedBlob = null;
         await refresh();
       } catch (err) {
         msgEl.textContent = err.message;
