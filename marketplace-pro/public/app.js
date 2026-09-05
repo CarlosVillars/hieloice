@@ -405,6 +405,7 @@ function applyStaticI18n() {
   setText("nav-post", I18N.t("nav.postAd"));
   setText("nav-post-original-label", I18N.t("nav.publishOriginal"));
   setText("nav-post-used-label", I18N.t("nav.sellUsed"));
+  setText("nav-post-audiobook-label", I18N.t("nav.uploadAudiobook"));
   const navBookClubEl = document.getElementById("nav-book-club");
   if (navBookClubEl) {
     const bookClubLabel = I18N.t("iconnav.bookClub");
@@ -416,6 +417,12 @@ function applyStaticI18n() {
     const podcastsLabel = I18N.t("iconnav.dropdownPodcasts");
     navPodcastsEl.title = podcastsLabel;
     navPodcastsEl.setAttribute("aria-label", podcastsLabel);
+  }
+  const navAudiobooksEl = document.getElementById("nav-audiobooks");
+  if (navAudiobooksEl) {
+    const audiobooksLabel = I18N.t("nav.audiobooks");
+    navAudiobooksEl.title = audiobooksLabel;
+    navAudiobooksEl.setAttribute("aria-label", audiobooksLabel);
   }
   setText("nav-login", I18N.t("nav.login"));
   setText("nav-register", I18N.t("nav.register"));
@@ -449,6 +456,16 @@ function applyStaticI18n() {
   setText("icon-nav-books-exchange-soon", I18N.t("iconnav.booksSoonTag"));
   setText("icon-nav-books-recommend-soon", I18N.t("iconnav.booksSoonTag"));
   setText("icon-nav-books-auction-soon", I18N.t("iconnav.booksSoonTag"));
+  // Footer — was never translated before (stayed in English regardless of
+  // the selected language). See PROJECT.md known-issues log, 2026-09 entry.
+  setText("footer-social-label", I18N.t("footer.followUs"));
+  setText("footer-terms", I18N.t("footer.terms"));
+  setText("footer-privacy", I18N.t("footer.privacy"));
+  setText("footer-bug", I18N.t("footer.reportBug"));
+  setText("footer-music", I18N.t("footer.music"));
+  setText("footer-contact", I18N.t("footer.contact"));
+  setText("footer-stripe-label", I18N.t("footer.stripeLabel"));
+  setText("footer-rights", I18N.t("footer.rights"));
 }
 
 const langEnBtn = document.getElementById("lang-en");
@@ -768,6 +785,7 @@ async function router() {
     if (parts[0] === "confirm-age") return renderConfirmAge();
     if (parts[0] === "terms") return renderTerms();
     if (parts[0] === "privacy") return renderPrivacy();
+    if (parts[0] === "report-bug") return renderReportBug();
     if (parts[0] === "dating-terms") return renderDatingTerms();
     if (parts[0] === "dating" && parts[1] === "matches") return renderDatingMatches();
     if (parts[0] === "dating" && parts[1] === "setup") return renderDatingSetup();
@@ -784,6 +802,10 @@ async function router() {
     if (parts[0] === "publish-book" && parts[1]) return renderPublishBookEditor(parts[1]);
     if (parts[0] === "publish-book") return renderPublishBookHome();
     if (parts[0] === "music") return renderMusicLibrary(query);
+    if (parts[0] === "audiobooks" && parts[1] === "mine") return renderAudiobooksMine();
+    if (parts[0] === "audiobooks" && parts[1] === "edit" && parts[2]) return renderAudiobookEditor(parts[2]);
+    if (parts[0] === "audiobooks" && parts[1]) return renderAudiobookDetail(parts[1]);
+    if (parts[0] === "audiobooks") return renderAudiobooksCatalog(query);
     if (parts[0] === "podcast" && parts[1]) return renderPodcastChannel(parts[1]);
     if (parts[0] === "podcast-episode" && parts[1]) return renderPodcastEpisode(parts[1]);
     if (parts[0] === "podcasts") return renderPodcastLibrary(query);
@@ -1956,6 +1978,14 @@ function renderProductActions(p) {
   if (!state.token) {
     return `<p class="form-msg" style="margin-top:14px;">${I18N.t("product.loginToOffer")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
   }
+  // Fix (2026-09 technical review): once a listing is no longer "active"
+  // (someone else already paid for it, is mid-checkout, or the seller marked
+  // it sold/reserved), never show a working buy button - the backend already
+  // rejects the purchase, but showing a live "Pay Now" button anyway just
+  // invites a confusing failed-payment attempt.
+  if (p.status && p.status !== "active") {
+    return `<p class="form-msg" style="margin-top:14px;">${I18N.t("product.noLongerAvailable")}</p>`;
+  }
   // Task #58/#127 - real, protected checkout. Only offered once the seller
   // has finished Stripe onboarding (sellerPaymentsReady); otherwise this
   // falls back to the old "express interest" flow so browsing/negotiating
@@ -3020,6 +3050,47 @@ function renderDeleteAccount() {
       viewEl.innerHTML = `<div class="form-panel"><p>${I18N.t("deleteAccount.done")}</p></div>`;
     } catch (e) {
       msgEl.textContent = e.message;
+      msgEl.className = "form-msg error";
+    }
+  });
+}
+
+// The footer "Report a Bug" link (#/report-bug) pointed nowhere - the
+// bug.* i18n strings existed but no route/view ever consumed them. Wired
+// up 2026-09 together with POST /api/bug-reports in server.js.
+function renderReportBug() {
+  viewEl.innerHTML = `
+    <div class="form-panel">
+      <h2 class="section-heading">${I18N.t("bug.title")}</h2>
+      <p>${I18N.t("bug.intro")}</p>
+      <div class="form-group">
+        <label>${I18N.t("bug.description")}</label>
+        <textarea id="bug-description" rows="5" placeholder="${escapeHtml(I18N.t("bug.descriptionPlaceholder"))}"></textarea>
+      </div>
+      <div class="form-group">
+        <label>${I18N.t("bug.email")}</label>
+        <input type="email" id="bug-email" value="${state.user ? escapeHtml(state.user.email || "") : ""}" />
+      </div>
+      <button class="btn btn-primary" id="bug-submit" style="width:100%;">${I18N.t("bug.submit")}</button>
+      <p class="form-msg" id="bug-msg"></p>
+    </div>
+  `;
+  document.getElementById("bug-submit").addEventListener("click", async () => {
+    const msgEl = document.getElementById("bug-msg");
+    const description = document.getElementById("bug-description").value.trim();
+    const email = document.getElementById("bug-email").value.trim();
+    if (!description) {
+      msgEl.textContent = I18N.t("bug.required");
+      msgEl.className = "form-msg error";
+      return;
+    }
+    try {
+      await api("/api/bug-reports", { method: "POST", auth: true, body: { description, email, pageUrl: location.href } });
+      msgEl.textContent = I18N.t("bug.sent");
+      msgEl.className = "form-msg success";
+      document.getElementById("bug-description").value = "";
+    } catch (e) {
+      msgEl.textContent = e.message || I18N.t("bug.required");
       msgEl.className = "form-msg error";
     }
   });
@@ -8326,6 +8397,426 @@ function drawMusicLibrary() {
   });
 }
 
+// ---------------- Audiobooks ("#/audiobooks", "#/audiobooks/:id",
+// "#/audiobooks/mine", "#/audiobooks/edit/:id") ----------------
+// Two ways a book lands here: an author narrates/owns their own book and
+// sells it (reviewed by our team first, same shape as "Publish a Book"
+// above, just for audio), or it's a free public-domain classic (LibriVox)
+// seeded on the server. Unlike "Publish a Book", this one is really live -
+// see AUDIOBOOKS_PROGRAM_ENABLED in server.js.
+
+function audiobookStatusBadge(status) {
+  const cls = { draft: "", needs_revision: "warn", rejected: "rejected", team_review: "pending", approved: "approved", published: "approved" }[status] || "";
+  return `<span class="publishbook-status publishbook-status-${cls || "draft"}">${I18N.t("audiobooks.status." + status)}</span>`;
+}
+
+function audiobookFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Probes an audio file's real playback length client-side (so the chapter
+// list can show accurate durations without any server-side audio decoding,
+// which this codebase has no facility for) - same "create a hidden media
+// element, wait for loadedmetadata, then discard it" pattern used for video
+// duration checks elsewhere (see the Moments/wizard upload code).
+function probeAudioDuration(file) {
+  return new Promise((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const probe = new Audio();
+    probe.preload = "metadata";
+    probe.onloadedmetadata = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(probe.duration && isFinite(probe.duration) ? probe.duration : 0);
+    };
+    probe.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(0);
+    };
+    probe.src = objectUrl;
+  });
+}
+
+function audiobookChapterPlayerHtml(chapter, index) {
+  return `<div class="voice-player audiobook-chapter-player" data-index="${index}">
+    <audio src="${chapter.audioUrl}" preload="metadata"></audio>
+    <button type="button" class="voice-player-btn" aria-label="${I18N.t("messages.play")}">▶</button>
+    <div class="voice-player-track"><div class="voice-player-fill"></div></div>
+    <span class="voice-player-time">0:00</span>
+  </div>`;
+}
+
+// Delegated play/pause + progress wiring shared by every audiobook page that
+// shows a chapter list, since .voice-player has no built-in global listener
+// (see wireVoicePlayers/the chat click handler it was originally built for).
+function wireAudiobookPlayerClicks(container) {
+  wireVoicePlayers(container);
+  container.addEventListener("click", (e) => {
+    const btn = e.target.closest(".voice-player-btn");
+    if (!btn) return;
+    const audio = btn.closest(".voice-player").querySelector("audio");
+    if (audio.paused) {
+      container.querySelectorAll(".voice-player audio").forEach((a) => {
+        if (a !== audio) a.pause();
+      });
+      audio.play().catch(() => {});
+    } else {
+      audio.pause();
+    }
+  });
+}
+
+function audiobookCoverCardHtml(a) {
+  const cover = a.coverImageUrl;
+  const priceLabel = a.price > 0 ? fmtPrice(a.price) : I18N.t("audiobooks.free");
+  return `<a href="#/audiobooks/${a.id}" class="podcast-episode-card">
+    <span class="podcast-episode-card-cover" style="${cover ? `background-image:url('${cover.replace(/'/g, "%27")}')` : ""}">${cover ? "" : "🎧"}</span>
+    <span class="podcast-episode-card-info">
+      <strong>${escapeHtml(a.title)}</strong>
+      <span class="podcast-episode-card-channel">${escapeHtml(a.authorName || "")}</span>
+      <span class="podcast-episode-card-stats">${escapeHtml(a.genre || "")} &middot; ${priceLabel}</span>
+    </span>
+  </a>`;
+}
+
+async function renderAudiobooksCatalog(query) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  const params = new URLSearchParams();
+  if (query && query.q) params.set("q", query.q);
+  if (query && query.source) params.set("source", query.source);
+  let books;
+  try {
+    books = await api("/api/audiobooks" + (params.toString() ? "?" + params.toString() : ""));
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const activeSource = (query && query.source) || "all";
+  const tabs = [
+    { key: "all", label: I18N.t("audiobooks.tabAll") },
+    { key: "original", label: I18N.t("audiobooks.tabOriginal") },
+    { key: "public_domain", label: I18N.t("audiobooks.tabFree") },
+  ];
+  viewEl.innerHTML = `
+    <div class="publishbook-hero">
+      <p class="publishbook-hero-eyebrow">🎧</p>
+      <h2 class="publishbook-hero-title">${I18N.t("audiobooks.heading")}</h2>
+      <p class="publishbook-hero-subtitle">${I18N.t("audiobooks.subtitle")}</p>
+      <a class="btn btn-primary publishbook-hero-cta" href="#/audiobooks/mine">${I18N.t("audiobooks.uploadYours")}</a>
+    </div>
+    <div class="podcast-ep-source-tabs">
+      ${tabs
+        .map(
+          (t) =>
+            `<a href="#/audiobooks${t.key === "all" ? "" : "?source=" + t.key}" class="podcast-ep-source-tab${activeSource === t.key ? " active" : ""}">${t.label}</a>`
+        )
+        .join("")}
+    </div>
+    ${
+      books.length
+        ? `<div class="podcast-episode-grid">${books.map(audiobookCoverCardHtml).join("")}</div>`
+        : `<div class="empty-state">${I18N.t("audiobooks.emptyCatalog")}</div>`
+    }
+  `;
+}
+
+async function renderAudiobookDetail(id) {
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let a;
+  try {
+    a = await api("/api/audiobooks/" + encodeURIComponent(id), { auth: !!state.token });
+  } catch (e) {
+    viewEl.innerHTML = `<div class="empty-state">${I18N.t("audiobooks.notFound")}</div>`;
+    return;
+  }
+  const hasChapters = Array.isArray(a.chapters) && a.chapters.length > 0;
+  const priceLabel = a.price > 0 ? fmtPrice(a.price) : I18N.t("audiobooks.free");
+
+  function chaptersSectionHtml() {
+    if (hasChapters) {
+      return `<div id="audiobook-chapters">${a.chapters
+        .map((c, i) => `<div class="publishbook-chapter"><p class="publishbook-chapter-title" style="font-weight:600;">${i + 1}. ${escapeHtml(c.title)}</p>${audiobookChapterPlayerHtml(c, i)}</div>`)
+        .join("")}</div>`;
+    }
+    return `
+      <div id="audiobook-chapters" class="empty-state">🔒 ${I18N.t("audiobooks.chaptersLocked")}</div>
+      <button type="button" class="btn btn-primary" id="audiobook-acquire-btn">${a.price > 0 ? I18N.t("audiobooks.buyFor") + " " + fmtPrice(a.price) : I18N.t("audiobooks.getFree")}</button>
+      <p class="form-msg" id="audiobook-acquire-msg"></p>
+    `;
+  }
+
+  viewEl.innerHTML = `
+    <a href="#/audiobooks" class="back-link">&larr; ${I18N.t("audiobooks.backToCatalog")}</a>
+    <div class="publishbook-detail-header">
+      ${audiobookStatusBadge(a.status)}
+      ${a.source === "public_domain" ? `<span class="publishbook-status publishbook-status-approved">${I18N.t("audiobooks.publicDomainBadge")}</span>` : ""}
+    </div>
+    ${a.coverImageUrl ? `<img src="${a.coverImageUrl}" alt="" style="max-width:220px;border-radius:8px;margin-bottom:12px;" />` : ""}
+    <h2 class="section-heading">${escapeHtml(a.title)}</h2>
+    <p class="groups-subtitle">${escapeHtml(a.authorName || "")} &middot; ${escapeHtml(a.genre || "")} &middot; ${priceLabel}</p>
+    ${a.synopsis ? `<p class="group-detail-desc">${escapeHtml(a.synopsis)}</p>` : ""}
+    ${a.isOwner ? `<a class="btn btn-outline" href="#/audiobooks/edit/${a.id}">${I18N.t("audiobooks.editMine")}</a>` : ""}
+    <h3 class="publishbook-chapters-heading">${I18N.t("audiobooks.chaptersHeading")}</h3>
+    ${chaptersSectionHtml()}
+  `;
+  wireAudiobookPlayerClicks(document.getElementById("audiobook-chapters"));
+
+  const acquireBtn = document.getElementById("audiobook-acquire-btn");
+  if (acquireBtn) {
+    acquireBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        location.hash = "#/login";
+        return;
+      }
+      acquireBtn.disabled = true;
+      const msgEl = document.getElementById("audiobook-acquire-msg");
+      try {
+        const result = await api("/api/audiobooks/" + encodeURIComponent(id) + "/acquire", { method: "POST", auth: true });
+        if (result.checkoutUrl) {
+          window.location.href = result.checkoutUrl;
+          return;
+        }
+        renderAudiobookDetail(id); // granted or alreadyOwned - reload to unlock chapters
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+        acquireBtn.disabled = false;
+      }
+    });
+  }
+}
+
+async function renderAudiobooksMine() {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let books;
+  try {
+    books = await api("/api/audiobooks/mine", { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const listHtml = books.length
+    ? `<div class="publishbook-grid">${books
+        .map(
+          (a) => `<a class="card publishbook-card" href="#/audiobooks/edit/${a.id}">
+        <p class="publishbook-card-genre">${escapeHtml(a.genre || I18N.t("publishBook.genreUnset"))}</p>
+        <h3>${escapeHtml(a.title || I18N.t("audiobooks.untitled"))}</h3>
+        ${audiobookStatusBadge(a.status)}
+      </a>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("audiobooks.emptyMine")}</div>`;
+
+  viewEl.innerHTML = `
+    <div class="publishbook-hero">
+      <p class="publishbook-hero-eyebrow">${I18N.t("audiobooks.eyebrow")}</p>
+      <h2 class="publishbook-hero-title">${I18N.t("audiobooks.myHeading")}</h2>
+      <p class="publishbook-hero-subtitle">${I18N.t("audiobooks.mySubtitle")}</p>
+      <button type="button" class="btn btn-primary publishbook-hero-cta" id="audiobook-new-btn">${I18N.t("audiobooks.newAudiobook")}</button>
+    </div>
+    <form id="audiobook-new-form" class="stacked-form publishbook-new-form" style="display:none;">
+      <label>${I18N.t("audiobooks.titleLabel")}<input type="text" name="title" required maxlength="200" /></label>
+      <button type="submit" class="btn btn-primary">${I18N.t("audiobooks.createSubmit")}</button>
+      <p class="form-msg" id="audiobook-new-msg"></p>
+    </form>
+    ${books.length ? `<h3 class="publishbook-chapters-heading">${I18N.t("audiobooks.yourAudiobooks")}</h3>` : ""}
+    <div style="margin-top:8px;">${listHtml}</div>
+  `;
+
+  const newBtn = document.getElementById("audiobook-new-btn");
+  const newForm = document.getElementById("audiobook-new-form");
+  newBtn.addEventListener("click", () => {
+    newForm.style.display = "block";
+    newForm.scrollIntoView({ behavior: "smooth", block: "center" });
+    newForm.querySelector('[name="title"]').focus();
+  });
+  newForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const msgEl = document.getElementById("audiobook-new-msg");
+    try {
+      const created = await api("/api/audiobooks", { method: "POST", auth: true, body: { title: fd.get("title") } });
+      location.hash = "#/audiobooks/edit/" + created.id;
+    } catch (err) {
+      msgEl.textContent = err.message;
+      msgEl.className = "form-msg error";
+    }
+  });
+}
+
+async function renderAudiobookEditor(id) {
+  if (!state.token) {
+    viewEl.innerHTML = `<p class="form-msg" style="text-align:center;">${I18N.t("messages.loginRequired")} <a href="#/login">${I18N.t("nav.login")}</a></p>`;
+    return;
+  }
+  viewEl.innerHTML = `<p>${I18N.t("common.loading")}</p>`;
+  let a;
+  try {
+    a = await api("/api/audiobooks/" + encodeURIComponent(id), { auth: true });
+  } catch (e) {
+    viewEl.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  const editable = ["draft", "needs_revision", "rejected"].includes(a.status);
+  const chapters = Array.isArray(a.chapters) ? a.chapters : [];
+
+  if (!editable) {
+    viewEl.innerHTML = `
+      <a href="#/audiobooks/mine" class="back-link">&larr; ${I18N.t("audiobooks.backToList")}</a>
+      <div class="publishbook-detail-header">${audiobookStatusBadge(a.status)}</div>
+      <h2 class="section-heading">${escapeHtml(a.title)}</h2>
+      ${a.status === "approved" ? `<div id="audiobook-publish-wrap"><button type="button" class="btn btn-primary" id="audiobook-publish-btn">&#128640; ${I18N.t("audiobooks.publishNow")}</button></div>` : ""}
+      <h3 class="publishbook-chapters-heading">${I18N.t("audiobooks.chaptersHeading")}</h3>
+      <div id="audiobook-chapters">${chapters.map((c, i) => `<div class="publishbook-chapter"><p style="font-weight:600;">${i + 1}. ${escapeHtml(c.title)}</p>${audiobookChapterPlayerHtml(c, i)}</div>`).join("")}</div>
+    `;
+    wireAudiobookPlayerClicks(document.getElementById("audiobook-chapters"));
+    const publishBtn = document.getElementById("audiobook-publish-btn");
+    if (publishBtn) {
+      publishBtn.addEventListener("click", async () => {
+        publishBtn.disabled = true;
+        try {
+          const result = await api("/api/audiobooks/" + encodeURIComponent(id) + "/publish", { method: "POST", auth: true });
+          if (result.comingSoon) {
+            document.getElementById("audiobook-publish-wrap").innerHTML = `<p class="form-msg">${I18N.t("audiobooks.publishComingSoon")}</p>`;
+          } else {
+            location.hash = "#/audiobooks/" + id;
+          }
+        } catch (err) {
+          showAppToast(err.message);
+          publishBtn.disabled = false;
+        }
+      });
+    }
+    return;
+  }
+
+  async function refresh() {
+    a = await api("/api/audiobooks/" + encodeURIComponent(id), { auth: true });
+    draw();
+  }
+
+  function draw() {
+    viewEl.innerHTML = `
+      <a href="#/audiobooks/mine" class="back-link">&larr; ${I18N.t("audiobooks.backToList")}</a>
+      <div class="publishbook-detail-header">${audiobookStatusBadge(a.status)}</div>
+      ${a.status === "rejected" && a.rejectionNotes ? `<p class="form-msg error">${escapeHtml(a.rejectionNotes)}</p>` : ""}
+      <form id="audiobook-edit-form" class="stacked-form">
+        <label>${I18N.t("audiobooks.titleLabel")}<input type="text" name="title" required maxlength="200" value="${escapeHtml(a.title || "")}" /></label>
+        <label>${I18N.t("audiobooks.genreLabel")}<input type="text" name="genre" maxlength="60" value="${escapeHtml(a.genre || "")}" placeholder="${I18N.t("publishBook.genrePlaceholder")}" /></label>
+        <label>${I18N.t("audiobooks.synopsisLabel")}<textarea name="synopsis" maxlength="2000" placeholder="${I18N.t("publishBook.synopsisPlaceholder")}">${escapeHtml(a.synopsis || "")}</textarea></label>
+        <label>${I18N.t("audiobooks.priceLabel")}<input type="number" name="price" min="0" max="500" step="0.01" value="${a.price || 0}" /></label>
+        <p class="field-hint">${I18N.t("audiobooks.priceHint")}</p>
+        <label>${I18N.t("audiobooks.coverLabel")} (${I18N.t("common.optional")})<input type="file" name="coverImage" accept="image/*" /></label>
+        <button type="submit" class="btn btn-primary">${I18N.t("common.save")}</button>
+        <p class="form-msg" id="audiobook-edit-msg"></p>
+      </form>
+
+      <h3 class="publishbook-chapters-heading">${I18N.t("audiobooks.chaptersHeading")}</h3>
+      <div id="audiobook-chapters">${chapters
+        .map(
+          (c, i) => `<div class="publishbook-chapter">
+            <p style="font-weight:600;">${i + 1}. ${escapeHtml(c.title)}</p>
+            ${audiobookChapterPlayerHtml(c, i)}
+            <button type="button" class="btn btn-outline audiobook-delete-chapter-btn" data-index="${i}">${I18N.t("audiobooks.deleteChapter")}</button>
+          </div>`
+        )
+        .join("")}</div>
+
+      <form id="audiobook-add-chapter-form" class="stacked-form">
+        <label>${I18N.t("audiobooks.chapterTitleLabel")}<input type="text" name="chapterTitle" maxlength="150" placeholder="${I18N.t("publishBook.chapterTitlePlaceholder")} ${chapters.length + 1}" /></label>
+        <label>${I18N.t("audiobooks.chapterAudioLabel")}<input type="file" name="chapterAudio" accept="audio/*" required /></label>
+        <button type="submit" class="btn btn-outline" id="audiobook-add-chapter-btn">${I18N.t("audiobooks.addChapter")}</button>
+        <p class="form-msg" id="audiobook-add-chapter-msg"></p>
+      </form>
+
+      <button type="button" class="btn btn-primary" id="audiobook-submit-btn" style="margin-top:16px;" ${chapters.length === 0 ? "disabled" : ""}>${I18N.t("audiobooks.submitForReview")}</button>
+      <p class="form-msg" id="audiobook-submit-msg"></p>
+    `;
+    wireAudiobookPlayerClicks(document.getElementById("audiobook-chapters"));
+
+    document.getElementById("audiobook-edit-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const msgEl = document.getElementById("audiobook-edit-msg");
+      const body = { title: fd.get("title"), genre: fd.get("genre"), synopsis: fd.get("synopsis"), price: fd.get("price") };
+      const coverFile = fd.get("coverImage");
+      if (coverFile && coverFile.size > 0) body.coverImage = await audiobookFileToDataUrl(coverFile);
+      try {
+        a = await api("/api/audiobooks/" + encodeURIComponent(id), { method: "PATCH", auth: true, body });
+        msgEl.textContent = I18N.t("audiobooks.saved");
+        msgEl.className = "form-msg";
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+      }
+    });
+
+    document.querySelectorAll(".audiobook-delete-chapter-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api("/api/audiobooks/" + encodeURIComponent(id) + "/chapters/" + btn.dataset.index, { method: "DELETE", auth: true });
+          await refresh();
+        } catch (err) {
+          showAppToast(err.message);
+          btn.disabled = false;
+        }
+      });
+    });
+
+    document.getElementById("audiobook-add-chapter-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const file = fd.get("chapterAudio");
+      const msgEl = document.getElementById("audiobook-add-chapter-msg");
+      if (!file || !file.size) {
+        msgEl.textContent = I18N.t("audiobooks.chapterAudioRequired");
+        msgEl.className = "form-msg error";
+        return;
+      }
+      const addBtn = document.getElementById("audiobook-add-chapter-btn");
+      addBtn.disabled = true;
+      msgEl.textContent = I18N.t("audiobooks.uploading");
+      msgEl.className = "form-msg";
+      try {
+        const [durationSeconds, media] = await Promise.all([probeAudioDuration(file), audiobookFileToDataUrl(file)]);
+        await api("/api/audiobooks/" + encodeURIComponent(id) + "/chapters", {
+          method: "POST",
+          auth: true,
+          body: { title: fd.get("chapterTitle"), media, durationSeconds },
+        });
+        await refresh();
+      } catch (err) {
+        msgEl.textContent = err.message;
+        msgEl.className = "form-msg error";
+        addBtn.disabled = false;
+      }
+    });
+
+    document.getElementById("audiobook-submit-btn").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try {
+        await api("/api/audiobooks/" + encodeURIComponent(id) + "/submit", { method: "POST", auth: true });
+        location.hash = "#/audiobooks/mine";
+      } catch (err) {
+        document.getElementById("audiobook-submit-msg").textContent = err.message;
+        document.getElementById("audiobook-submit-msg").className = "form-msg error";
+        e.target.disabled = false;
+      }
+    });
+  }
+
+  draw();
+}
+
 // ---------------- Podcasts ("#/podcasts", "#/podcast/:id", "#/podcast-episode/:id") ----------------
 // Free for every creator - a growth/reach feature (get people creating AND
 // listening), not paid hosting. Modeled loosely on the two platforms that
@@ -13014,6 +13505,7 @@ function adminTabsMarkup(active) {
     { key: "products", label: I18N.t("admin.tabProducts") },
     { key: "users", label: I18N.t("admin.tabUsers") },
     { key: "books", label: I18N.t("admin.tabBooks") },
+    { key: "audiobooks", label: I18N.t("admin.tabAudiobooks") },
     { key: "disputes", label: I18N.t("admin.tabDisputes") },
     { key: "integrations", label: I18N.t("admin.tabIntegrations") },
   ];
@@ -13036,6 +13528,7 @@ async function renderAdminPanel(section) {
   if (section === "users") return renderAdminUsers();
   if (section === "products") return renderAdminProducts();
   if (section === "books") return renderAdminBookSubmissions();
+  if (section === "audiobooks") return renderAdminAudiobookSubmissions();
   if (section === "disputes") return renderAdminDisputes();
   if (section === "integrations") return renderAdminIntegrations();
   return renderAdminReports();
@@ -13195,6 +13688,70 @@ async function renderAdminBookSubmissions() {
   });
 }
 
+// 2026-09 - review queue for audiobooks authors submit to sell. Unlike the
+// text-book queue above, an approval here really can go live (see
+// AUDIOBOOKS_PROGRAM_ENABLED in server.js) once the author hits "Publish".
+async function renderAdminAudiobookSubmissions() {
+  const content = document.getElementById("admin-content");
+  let books;
+  try {
+    books = await api("/api/admin/audiobooks?status=team_review", { auth: true });
+  } catch (e) {
+    content.innerHTML = `<p class="form-msg error">${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  content.innerHTML = books.length
+    ? `<div class="intl-admin-list">${books
+        .map(
+          (a) => `
+      <div class="intl-admin-row">
+        <div class="intl-card-head">
+          <span class="intl-role-tag">${escapeHtml(a.genre || I18N.t("publishBook.genreUnset"))}</span>
+        </div>
+        <p class="intl-card-name">${escapeHtml(a.title || I18N.t("audiobooks.untitled"))}</p>
+        <p class="intl-card-meta">${I18N.t("admin.bookBy")}: ${escapeHtml(a.authorName)} (${escapeHtml(a.authorEmail)}) &middot; ${fmtDate(a.submittedAt)} &middot; ${a.price > 0 ? fmtPrice(a.price) : I18N.t("audiobooks.free")}</p>
+        ${a.synopsis ? `<p style="font-size:13px;color:#555;">${escapeHtml(a.synopsis)}</p>` : ""}
+        <p class="intl-card-meta">${a.chapters.length} ${I18N.t("audiobooks.chaptersHeading")} &middot; ${fmtDuration(a.totalDurationSeconds)}</p>
+        <div id="admin-audiobook-chapters-${a.id}">${a.chapters.map((c, i) => `<div class="publishbook-chapter"><p style="font-size:13px;">${i + 1}. ${escapeHtml(c.title)}</p>${audiobookChapterPlayerHtml(c, i)}</div>`).join("")}</div>
+        <div class="form-group">
+          <label>${I18N.t("admin.resolutionNote")}</label>
+          <textarea rows="2" data-audiobook-note="${a.id}"></textarea>
+        </div>
+        <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-primary" data-audiobook-approve="${a.id}">${I18N.t("admin.approve")}</button>
+          <button class="btn" data-audiobook-reject="${a.id}">${I18N.t("admin.reject")}</button>
+        </div>
+      </div>`
+        )
+        .join("")}</div>`
+    : `<div class="empty-state">${I18N.t("admin.audiobooksEmpty")}</div>`;
+
+  books.forEach((a) => {
+    const chaptersEl = document.getElementById("admin-audiobook-chapters-" + a.id);
+    if (chaptersEl) wireAudiobookPlayerClicks(chaptersEl);
+  });
+
+  async function setAudiobookDecision(id, decision) {
+    const note = document.querySelector(`[data-audiobook-note="${id}"]`);
+    try {
+      await api("/api/admin/audiobooks/" + id + "/decision", {
+        method: "POST",
+        auth: true,
+        body: { decision, notes: note ? note.value : "" },
+      });
+      renderAdminAudiobookSubmissions();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+  document.querySelectorAll("[data-audiobook-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => setAudiobookDecision(btn.dataset.audiobookApprove, "approve"));
+  });
+  document.querySelectorAll("[data-audiobook-reject]").forEach((btn) => {
+    btn.addEventListener("click", () => setAudiobookDecision(btn.dataset.audiobookReject, "reject"));
+  });
+}
+
 async function renderAdminReports() {
   const content = document.getElementById("admin-content");
   let reports;
@@ -13282,12 +13839,35 @@ async function renderAdminProducts() {
           <div class="form-row" style="align-items:flex-end;flex-wrap:wrap;gap:8px;">
             <a class="btn" href="#/product/${p.id}" target="_blank">${I18N.t("admin.viewTarget")}</a>
             <a class="btn" href="#/edit/${p.id}" target="_blank">${I18N.t("product.editListing")}</a>
+            <button class="btn btn-outline" data-toggle-flag-product="${p.id}" data-flagged="${p.flagged ? "1" : "0"}">${p.flagged ? I18N.t("admin.unhideProduct") : I18N.t("admin.hideProduct")}</button>
             <button class="btn btn-danger" data-delete-product="${p.id}">${I18N.t("common.delete")}</button>
           </div>
         </div>`
           )
           .join("")}</div>`
       : `<div class="empty-state">${I18N.t("admin.noResults")}</div>`;
+
+    // Fix (2026-09 technical review): moderation could previously only
+    // permanently delete a listing - there was no reversible "take this
+    // down for now" action, even though the server already supports it
+    // (PUT .../flagged, which the public browse endpoint already excludes
+    // from results - see the `!p.flagged` filter on GET /api/products).
+    // This just exposes that existing capability as a button.
+    document.querySelectorAll("[data-toggle-flag-product]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const nowFlagged = btn.dataset.flagged === "1";
+        try {
+          await api("/api/admin/products/" + btn.dataset.toggleFlagProduct, {
+            method: "PUT",
+            auth: true,
+            body: { flagged: !nowFlagged },
+          });
+          load(document.getElementById("admin-product-search").value.trim());
+        } catch (e) {
+          alert(e.message);
+        }
+      });
+    });
 
     document.querySelectorAll("[data-delete-product]").forEach((btn) => {
       btn.addEventListener("click", async () => {
