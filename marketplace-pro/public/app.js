@@ -574,15 +574,20 @@ function updateGlobalSearchPlaceholder() {
       const willOpen = dropdown.style.display !== "block";
       closeAllDropdowns();
       if (willOpen) {
-        // Same fix as the "PUBLISH A BOOK" dropdown just below: .topbar-nav
-        // scrolls horizontally, and per the CSS spec that forces its
-        // overflow-y to "auto" too, which silently clips this menu's normal
-        // position:absolute/top:100% placement (it opened, but was covered/
-        // unclickable behind the rest of the nav icons). Anchoring it with
-        // position:fixed at click time, computed from the button's real
-        // screen position, escapes that clipping entirely.
+        // This button lives in the bottom icon-nav tab bar (mobile), not the
+        // top header - unlike "PUBLISH A BOOK" below, which opens downward
+        // from the top bar. Anchoring this one downward too (rect.bottom + 6)
+        // pushed the whole menu below the bottom edge of the screen - it was
+        // technically open (display:block) but rendered entirely off-viewport,
+        // which looked exactly like "nothing happens" when tapped. Opening it
+        // upward instead - anchored to the button's TOP edge, growing toward
+        // the top of the screen - keeps it on-screen and clickable. Still
+        // position:fixed (not the CSS default position:absolute/top:100%)
+        // because .topbar-nav's horizontal scroll still clips absolutely-
+        // positioned children the same way documented for nav-post-dropdown.
         const rect = marketplaceBtn.getBoundingClientRect();
-        dropdown.style.top = rect.bottom + 6 + "px";
+        dropdown.style.top = "auto";
+        dropdown.style.bottom = (window.innerHeight - rect.top + 6) + "px";
         dropdown.style.left = rect.left + "px";
       }
       dropdown.style.display = willOpen ? "block" : "none";
