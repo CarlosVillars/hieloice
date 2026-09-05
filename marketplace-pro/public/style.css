@@ -962,13 +962,13 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
 .product-thumb-wrap { position: relative; }
 .product-thumb {
   width: 100%;
-  height: 80px;
+  height: 150px;
   object-fit: cover;
   background: var(--bg-surface-alt);
 }
 .product-thumb-empty {
   width: 100%;
-  height: 80px;
+  height: 150px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -976,11 +976,15 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   background: var(--bg-surface-alt);
   font-size: 32px;
 }
-.product-card-body { padding: 12px; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+/* Body fields sit close together on purpose (title -> price -> city -> seller),
+   each one context for the next. Every field needs margin:0 - otherwise the
+   browser's default <p> margin stacks on top of this flex gap and the card
+   balloons with dead space (that's what made listings feel too long). */
+.product-card-body { padding: 12px; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .product-title { font-size: 14px; font-weight: 700; margin: 0; }
-.product-price { font-size: 16px; font-weight: 800; color: var(--accent-text); }
-.product-location { font-size: 12px; color: var(--text-muted); }
-.product-seller-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); margin-top: 4px; flex-wrap: wrap; }
+.product-price { font-size: 16px; font-weight: 800; color: var(--accent-text); margin: 0; }
+.product-location { font-size: 12px; color: var(--text-muted); margin: 0; }
+.product-seller-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
 .mini-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; background: var(--bg-surface-alt); }
 .empty-state { color: var(--text-muted); padding: 40px; text-align: center; grid-column: 1/-1; background: var(--bg-surface); border-radius: 10px; border: 1px dashed var(--border-color); }
 
