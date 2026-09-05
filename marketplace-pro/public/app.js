@@ -573,6 +573,18 @@ function updateGlobalSearchPlaceholder() {
       e.stopPropagation();
       const willOpen = dropdown.style.display !== "block";
       closeAllDropdowns();
+      if (willOpen) {
+        // Same fix as the "PUBLISH A BOOK" dropdown just below: .topbar-nav
+        // scrolls horizontally, and per the CSS spec that forces its
+        // overflow-y to "auto" too, which silently clips this menu's normal
+        // position:absolute/top:100% placement (it opened, but was covered/
+        // unclickable behind the rest of the nav icons). Anchoring it with
+        // position:fixed at click time, computed from the button's real
+        // screen position, escapes that clipping entirely.
+        const rect = marketplaceBtn.getBoundingClientRect();
+        dropdown.style.top = rect.bottom + 6 + "px";
+        dropdown.style.left = rect.left + "px";
+      }
       dropdown.style.display = willOpen ? "block" : "none";
       const icon = marketplaceBtn.querySelector(".icon-nav-cartbooks");
       if (icon) {

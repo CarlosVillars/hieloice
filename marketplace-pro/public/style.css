@@ -284,6 +284,10 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
    set in JS at click time - see wireIconNav in app.js) escapes that clipping
    entirely by anchoring to the viewport instead of the scrolling row. */
 #nav-post-dropdown { position: fixed; top: auto; left: auto; transform: none; }
+/* Same clipping bug, same fix, for the Marketplace icon's dropdown (which
+   now also holds the Audiobooks entries) - see wireIconNav() in app.js,
+   which sets top/left here at click time from the button's real position. */
+#icon-nav-marketplace-dropdown { position: fixed; top: auto; left: auto; transform: none; }
 
 /* On narrow phones, shrink the text/padding/gaps a bit so the row reads as
    one clean line instead of relying on horizontal scroll as much. */
