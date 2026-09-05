@@ -260,6 +260,19 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
   font-size: 24px;
   line-height: 1;
 }
+/* The notifications bell is the last icon in this horizontally-scrolling row
+   (nothing reserves space after it, and for a logged-in user Log In/Sign Up
+   right after it are hidden). Its unread-count badge sits on top of the bell
+   via position:absolute with a right:-8px overhang - it pokes out further
+   right than the bell's own box. With no room reserved past the bell, that
+   overhang rendered right at (and past) the row's own scrollable edge and
+   got clipped/"cornered". Reserving a bit of real, in-flow space after the
+   bell (not touching the badge itself, which is already sized/centered
+   correctly) gives the overhang somewhere to sit. This is in-flow margin,
+   not container padding, specifically because trailing padding on a
+   scrolled/overflow:auto row is unreliable across browsers - an in-flow
+   margin on the actual last child always reserves real scrollable width. */
+.nav-notifications-link { margin-right: 14px; }
 .nav-link:hover { color: var(--accent-text-on); text-decoration: underline; }
 .nav-link-btn {
   background: none;
