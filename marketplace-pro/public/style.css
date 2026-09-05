@@ -380,7 +380,14 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); }
    previously dead code - setUnreadBadge() looked for an element that
    didn't exist in the markup, so the count silently never showed here. */
 .nav-messages-link { position: relative; }
-.nav-messages-badge { min-width: 15px; height: 15px; padding: 0 4px; margin-left: 5px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; align-items: center; justify-content: center; vertical-align: middle; }
+/* Was inline (margin-left + vertical-align), which added its own height to
+   the .topbar-nav row - and since that row scrolls horizontally, the
+   overflow-x:auto/overflow-y:auto clipping bug (documented above on
+   nav-post-dropdown and icon-nav-marketplace-dropdown) sliced the top of the
+   badge off. Taking it out of flow entirely (position:absolute, pinned to
+   the corner of the bell icon) means it no longer adds to the row's content
+   height, so there's nothing left for that row to clip. */
+.nav-messages-badge { position: absolute; top: -4px; right: -6px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 800; align-items: center; justify-content: center; line-height: 15px; }
 .icon-nav-dropdown-wrap { position: relative; }
 .icon-nav-dropdown {
   position: absolute;
