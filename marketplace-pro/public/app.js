@@ -573,6 +573,10 @@ function updateGlobalSearchPlaceholder() {
       e.stopPropagation();
       const willOpen = dropdown.style.display !== "block";
       closeAllDropdowns();
+      // Set display:block first (before measuring/positioning) so
+      // dropdown.offsetWidth below reflects its real rendered size instead
+      // of 0 (a display:none element always measures 0-width).
+      dropdown.style.display = willOpen ? "block" : "none";
       if (willOpen) {
         // This button lives in the bottom icon-nav tab bar (mobile), not the
         // top header - unlike "PUBLISH A BOOK" below, which opens downward
@@ -588,9 +592,21 @@ function updateGlobalSearchPlaceholder() {
         const rect = marketplaceBtn.getBoundingClientRect();
         dropdown.style.top = "auto";
         dropdown.style.bottom = (window.innerHeight - rect.top + 6) + "px";
-        dropdown.style.left = rect.left + "px";
+        // The Marketplace icon sits 5th of 6 in the bottom tab bar, so its
+        // left edge is far to the right on a phone screen. Left-aligning the
+        // menu to that same x kept pushing its right edge past the edge of
+        // the screen (labels like "Sell a Book" / "Narrate a Book" got cut
+        // off). Clamp so the menu's right edge never goes past the viewport
+        // (with an 8px margin), and never goes negative on the left either.
+        const margin = 8;
+        let left = rect.left;
+        const ddWidth = dropdown.offsetWidth || 190;
+        if (left + ddWidth + margin > window.innerWidth) {
+          left = window.innerWidth - ddWidth - margin;
+        }
+        if (left < margin) left = margin;
+        dropdown.style.left = left + "px";
       }
-      dropdown.style.display = willOpen ? "block" : "none";
       const icon = marketplaceBtn.querySelector(".icon-nav-cartbooks");
       if (icon) {
         icon.classList.remove("pop");
